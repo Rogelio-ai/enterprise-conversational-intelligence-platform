@@ -1,0 +1,56 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+.venv/
+venv/
+
+# Node
+node_modules/
+dist/
+build/
+.vite/
+coverage/
+
+# Environment / secrets
+.env
+.env.*
+!.env.example
+
+# Credentials / certificates
+*.pem
+*.key
+*.p12
+*.pfx
+
+# IDE
+.vscode/
+.idea/
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs / runtime
+*.log
+logs/
+tmp/
+temp/
+*.pid
+
+# Local persistent data
+docker-data/
+data/mysql/
+data/redis/
+data/minio/
+
+# Temporary / backup
+*.bak
+*.backup
+*.swp
+*.swo
+*~
