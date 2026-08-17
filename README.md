@@ -253,6 +253,42 @@ Commercial Status
 
 ---
 
+# Development Runtime
+
+The first executable baseline contains only the FastAPI service and an isolated local MySQL service.
+
+```bash
+cp .env.example .env
+docker compose up --build
+```
+
+Compose applies the Alembic migration before starting the API. To apply it explicitly or inspect the migration state:
+
+```bash
+docker compose exec api alembic upgrade head
+docker compose exec api alembic current
+```
+
+Run backend tests in an isolated container:
+
+```bash
+docker compose run --rm api pytest
+```
+
+Runtime endpoints are available at:
+
+* `http://localhost:8000/health`
+* `http://localhost:8000/ready`
+* `http://localhost:8000/metrics`
+
+Stop the runtime without deleting the MySQL volume:
+
+```bash
+docker compose down
+```
+
+---
+
 # Long-Term Vision
 
 Build a reusable enterprise platform capable of supporting multiple industries through Domain Packs while preserving a common conversational intelligence core.
@@ -264,4 +300,3 @@ Restaurant Intelligence Platform is the first commercial realization of that vis
 # License
 
 License information will be defined before the first commercial release.
-
