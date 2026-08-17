@@ -34,6 +34,15 @@ class Settings(BaseSettings):
     mysql_pool_size: int = Field(default=5, alias='MYSQL_POOL_SIZE', ge=1, le=50)
     mysql_max_overflow: int = Field(default=10, alias='MYSQL_MAX_OVERFLOW', ge=0, le=100)
 
+    auth_jwt_secret: SecretStr = Field(alias='AUTH_JWT_SECRET', min_length=32)
+    auth_jwt_algorithm: Literal['HS256', 'HS384', 'HS512'] = Field(
+        default='HS256', alias='AUTH_JWT_ALGORITHM'
+    )
+    auth_access_token_ttl_minutes: int = Field(
+        default=60, alias='AUTH_ACCESS_TOKEN_TTL_MINUTES', ge=1, le=1440
+    )
+    password_min_length: int = Field(default=12, alias='PASSWORD_MIN_LENGTH', ge=8, le=128)
+
     @field_validator('app_env', mode='before')
     @classmethod
     def normalize_environment(cls, value: object) -> object:
@@ -49,6 +58,13 @@ class Settings(BaseSettings):
     def require_database_password(cls, value: SecretStr) -> SecretStr:
         if not value.get_secret_value():
             raise ValueError('MYSQL_PASSWORD must not be empty')
+        return value
+
+    @field_validator('auth_jwt_secret')
+    @classmethod
+    def require_auth_secret(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError('AUTH_JWT_SECRET must not be empty')
         return value
 
     @property

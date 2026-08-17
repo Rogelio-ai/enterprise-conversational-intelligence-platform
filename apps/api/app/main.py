@@ -7,7 +7,9 @@ from typing import Protocol
 
 from fastapi import FastAPI
 
+from app.api.routes.auth import router as auth_router
 from app.api.routes.health import router as health_router
+from app.api.routes.tenants import router as tenants_router
 from app.core.config import Settings, get_settings
 from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging
@@ -49,4 +51,6 @@ def create_app(
     app.add_middleware(RuntimeMiddleware)
     register_error_handlers(app)
     app.include_router(health_router)
+    app.include_router(auth_router)
+    app.include_router(tenants_router)
     return app

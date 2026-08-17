@@ -100,6 +100,8 @@ class RuntimeMiddleware(BaseHTTPMiddleware):
                     'status_code': status_code,
                     'duration_ms': round(duration_seconds * 1000, 3),
                     'correlation_id': correlation_id,
+                    'user_id': getattr(request.state, 'user_id', None),
+                    'tenant_id': getattr(request.state, 'tenant_id', None),
                 },
             )
             _correlation_id_context.reset(context_token)

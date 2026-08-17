@@ -255,7 +255,8 @@ Commercial Status
 
 # Development Runtime
 
-The first executable baseline contains only the FastAPI service and an isolated local MySQL service.
+The executable baseline contains the FastAPI service and an isolated local MySQL service. Copy the
+example environment and replace `AUTH_JWT_SECRET` with a random value of at least 32 characters.
 
 ```bash
 cp .env.example .env
@@ -268,6 +269,46 @@ Compose applies the Alembic migration before starting the API. To apply it expli
 docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
+
+Authentication uses an Argon2 password hash and a signed access token. The relevant settings are
+`AUTH_JWT_SECRET`, `AUTH_JWT_ALGORITHM`, `AUTH_ACCESS_TOKEN_TTL_MINUTES`, and
+`PASSWORD_MIN_LENGTH`.
+
+Bootstrap the first development or staging Tenant administrator with explicit environment values:
+
+```bash
+docker compose exec \
+  -e BOOTSTRAP_TENANT_NAME='Development Tenant' \
+  -e BOOTSTRAP_TENANT_SLUG='development' \
+  -e BOOTSTRAP_ADMIN_EMAIL='admin@example.invalid' \
+  -e BOOTSTRAP_ADMIN_PASSWORD \
+  -e BOOTSTRAP_ADMIN_DISPLAY_NAME='Development Admin' \
+  api python -m app.bootstrap_admin
+```
+
+Set `BOOTSTRAP_ADMIN_PASSWORD` in the invoking shell; the command does not print it. Re-running the
+same bootstrap is safe and reports `already_configured`.
+
+Log in (include `tenant_id` when the User has more than one active Tenant membership):
+
+```bash
+curl -X POST http://localhost:8000/auth/login \
+  -H 'Content-Type: application/json' \
+  -d '{"email":"admin@example.invalid","password":"<password>"}'
+```
+
+Use the returned access token for the authenticated context and permission-protected Tenant:
+
+```bash
+curl http://localhost:8000/auth/me -H 'Authorization: Bearer <access-token>'
+curl http://localhost:8000/tenants/current \
+  -H 'Authorization: Bearer <access-token>' \
+  -H 'X-Tenant-ID: <signed-tenant-id>'
+```
+
+A single active membership is inferred during login. Multiple active memberships require an
+explicit `tenant_id` at login. `X-Tenant-ID` may only confirm the Tenant bound into the signed token;
+it cannot switch or grant Tenant access.
 
 Run backend tests in an isolated container:
 
