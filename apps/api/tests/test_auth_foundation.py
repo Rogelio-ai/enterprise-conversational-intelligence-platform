@@ -286,7 +286,7 @@ def test_disabled_user_blocks_an_existing_token(client, sql_connection) -> None:
 
 
 def test_bootstrap_is_idempotent(integration_settings, sql_connection) -> None:
-    _, prefix = sql_connection
+    connection, prefix = sql_connection
     values = BootstrapInput(
         tenant_name='Bootstrap Tenant',
         tenant_slug=f'{prefix}-bootstrap',
@@ -304,3 +304,24 @@ def test_bootstrap_is_idempotent(integration_settings, sql_connection) -> None:
     assert first.user_id == second.user_id
     assert first.membership_id == second.membership_id
     assert first.role_id == second.role_id
+    with connection.cursor() as cursor:
+        cursor.execute(
+            '''
+            SELECT P.code
+            FROM role_permissions AS RP
+            JOIN permissions AS P ON P.id = RP.permission_id
+            WHERE RP.role_id = %s
+              AND P.code IN (
+                  'organization.read', 'organization.manage',
+                  'location.read', 'location.manage'
+              )
+            ORDER BY P.code
+            ''',
+            (first.role_id,),
+        )
+        assert [row['code'] for row in cursor.fetchall()] == [
+            'location.manage',
+            'location.read',
+            'organization.manage',
+            'organization.read',
+        ]

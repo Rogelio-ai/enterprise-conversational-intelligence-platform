@@ -7,9 +7,12 @@ from app.models.identity import (
     TenantMembership,
     User,
 )
+from app.models.organization import Location, Organization
 
 __all__ = [
     'MembershipRole',
+    'Location',
+    'Organization',
     'Permission',
     'Role',
     'RolePermission',

@@ -90,6 +90,16 @@ def sql_connection(integration_settings: Settings):
         yield connection, prefix
     finally:
         with connection.cursor() as cursor:
+            cursor.execute(
+                'DELETE FROM locations WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM organizations WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
             cursor.execute('DELETE FROM tenants WHERE slug LIKE %s', (f'{prefix}%',))
             cursor.execute('DELETE FROM users WHERE email LIKE %s', (f'{prefix}%@example.test',))
             cursor.execute('DELETE FROM permissions WHERE code LIKE %s', (f'{prefix}.%',))

@@ -21,7 +21,11 @@ APPLICATION_TABLES = {
     'roles',
     'role_permissions',
     'membership_roles',
+    'organizations',
+    'locations',
 }
+
+LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {'organizations', 'locations'}
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
     ('fk_tenant_memberships_tenant', 'tenant_memberships', 'tenant_id', 'tenants', 'id', 1),
@@ -68,12 +72,48 @@ EXPECTED_FOREIGN_KEY_COLUMNS = {
         'tenant_id',
         2,
     ),
+    ('fk_organizations_tenant', 'organizations', 'tenant_id', 'tenants', 'id', 1),
+    ('fk_locations_tenant', 'locations', 'tenant_id', 'tenants', 'id', 1),
+    (
+        'fk_locations_organization_tenant',
+        'locations',
+        'organization_id',
+        'organizations',
+        'id',
+        1,
+    ),
+    (
+        'fk_locations_organization_tenant',
+        'locations',
+        'tenant_id',
+        'organizations',
+        'tenant_id',
+        2,
+    ),
+}
+
+EXPECTED_INDEX_COLUMNS = {
+    ('organizations', 'uq_organizations_id_tenant', 'id', 1, 0),
+    ('organizations', 'uq_organizations_id_tenant', 'tenant_id', 2, 0),
+    ('organizations', 'uq_organizations_tenant_code', 'tenant_id', 1, 0),
+    ('organizations', 'uq_organizations_tenant_code', 'code', 2, 0),
+    ('organizations', 'ix_organizations_tenant_status', 'tenant_id', 1, 1),
+    ('organizations', 'ix_organizations_tenant_status', 'status', 2, 1),
+    ('organizations', 'ix_organizations_tenant_status', 'id', 3, 1),
+    ('locations', 'uq_locations_id_tenant', 'id', 1, 0),
+    ('locations', 'uq_locations_id_tenant', 'tenant_id', 2, 0),
+    ('locations', 'uq_locations_organization_code', 'organization_id', 1, 0),
+    ('locations', 'uq_locations_organization_code', 'code', 2, 0),
+    ('locations', 'ix_locations_tenant_organization_status', 'tenant_id', 1, 1),
+    ('locations', 'ix_locations_tenant_organization_status', 'organization_id', 2, 1),
+    ('locations', 'ix_locations_tenant_organization_status', 'status', 3, 1),
+    ('locations', 'ix_locations_tenant_organization_status', 'id', 4, 1),
 }
 
 API_ROOT = Path(__file__).resolve().parents[1]
 
 
-def _database_contract(connection) -> tuple[set[tuple], set[tuple]]:
+def _database_contract(connection) -> tuple[set[tuple], set[tuple], set[tuple]]:
     with connection.cursor() as cursor:
         placeholders = ', '.join(['%s'] * len(APPLICATION_TABLES))
         cursor.execute(
@@ -118,16 +158,38 @@ def _database_contract(connection) -> tuple[set[tuple], set[tuple]]:
             )
             for row in cursor.fetchall()
         }
-    return tables, foreign_keys
+        index_names = {row[1] for row in EXPECTED_INDEX_COLUMNS}
+        index_placeholders = ', '.join(['%s'] * len(index_names))
+        cursor.execute(
+            f'''
+            SELECT TABLE_NAME, INDEX_NAME, COLUMN_NAME, SEQ_IN_INDEX, NON_UNIQUE
+            FROM information_schema.STATISTICS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND INDEX_NAME IN ({index_placeholders})
+            ''',
+            tuple(sorted(index_names)),
+        )
+        indexes = {
+            (
+                row['TABLE_NAME'],
+                row['INDEX_NAME'],
+                row['COLUMN_NAME'],
+                row['SEQ_IN_INDEX'],
+                row['NON_UNIQUE'],
+            )
+            for row in cursor.fetchall()
+        }
+    return tables, foreign_keys, indexes
 
 
 def _assert_database_contract(connection) -> None:
-    tables, foreign_keys = _database_contract(connection)
+    tables, foreign_keys, indexes = _database_contract(connection)
     assert {row[0] for row in tables} == APPLICATION_TABLES
     assert {row[1] for row in tables} == {'InnoDB'}
     assert {row[2] for row in tables} == {'utf8mb4'}
     assert {row[3] for row in tables} == {'utf8mb4_unicode_ci'}
     assert foreign_keys == EXPECTED_FOREIGN_KEY_COLUMNS
+    assert indexes == EXPECTED_INDEX_COLUMNS
 
 
 def _run_alembic(database_name: str, revision: str) -> None:
@@ -195,7 +257,7 @@ def test_model_metadata_declares_portable_mysql_table_options() -> None:
 
 def test_database_tables_enforce_storage_contract(sql_connection) -> None:
     connection, _ = sql_connection
-    tables, _ = _database_contract(connection)
+    tables, _, _ = _database_contract(connection)
     assert {row[0] for row in tables} == APPLICATION_TABLES
     assert {row[1] for row in tables} == {'InnoDB'}
     assert {row[2] for row in tables} == {'utf8mb4'}
@@ -204,8 +266,9 @@ def test_database_tables_enforce_storage_contract(sql_connection) -> None:
 
 def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
     connection, _ = sql_connection
-    _, foreign_keys = _database_contract(connection)
+    _, foreign_keys, indexes = _database_contract(connection)
     assert foreign_keys == EXPECTED_FOREIGN_KEY_COLUMNS
+    assert indexes == EXPECTED_INDEX_COLUMNS
 
 
 def test_foreign_key_is_actually_enforced(sql_connection) -> None:
@@ -235,6 +298,92 @@ def test_fresh_install_reaches_portable_database_contract(
         connection.close()
 
 
+def test_upgrade_from_0003_reaches_contract_and_upgrades_existing_tenant_admin(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0003_database_portability_remediation')
+
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name, slug, status) VALUES ('Upgrade Tenant', 'upgrade', 'ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                '''
+                INSERT INTO roles (tenant_id, name, description, status)
+                VALUES (%s, 'TENANT_ADMIN', 'Existing administrator', 'ACTIVE')
+                ''',
+                (tenant_id,),
+            )
+            role_id = int(cursor.lastrowid)
+            cursor.execute(
+                '''
+                INSERT INTO permissions (code, description)
+                VALUES ('organization.read', 'Preexisting permission')
+                '''
+            )
+            permission_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO role_permissions (role_id, permission_id) VALUES (%s, %s)',
+                (role_id, permission_id),
+            )
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                '''
+                SELECT P.code
+                FROM role_permissions AS RP
+                JOIN permissions AS P ON P.id = RP.permission_id
+                WHERE RP.role_id = %s
+                  AND P.code IN (
+                      'organization.read', 'organization.manage',
+                      'location.read', 'location.manage'
+                  )
+                ORDER BY P.code
+                ''',
+                (role_id,),
+            )
+            assert [row['code'] for row in cursor.fetchall()] == [
+                'location.manage',
+                'location.read',
+                'organization.manage',
+                'organization.read',
+            ]
+            cursor.execute(
+                '''
+                SELECT P.code, COUNT(*) AS assignment_count
+                FROM role_permissions AS RP
+                JOIN permissions AS P ON P.id = RP.permission_id
+                WHERE RP.role_id = %s
+                  AND P.code IN (
+                      'organization.read', 'organization.manage',
+                      'location.read', 'location.manage'
+                  )
+                GROUP BY P.code
+                ''',
+                (role_id,),
+            )
+            assert {row['code']: row['assignment_count'] for row in cursor.fetchall()} == {
+                'location.manage': 1,
+                'location.read': 1,
+                'organization.manage': 1,
+                'organization.read': 1,
+            }
+    finally:
+        connection.close()
+
+
 def test_upgrade_from_unsafe_0002_schema_reaches_portable_database_contract(
     isolated_database,
     integration_settings: Settings,
@@ -258,13 +407,13 @@ def test_upgrade_from_unsafe_0002_schema_reaches_portable_database_contract(
                     f"ALTER TABLE `{row['TABLE_NAME']}` "
                     f"DROP FOREIGN KEY `{row['CONSTRAINT_NAME']}`"
                 )
-            for table_name in APPLICATION_TABLES:
+            for table_name in LEGACY_APPLICATION_TABLES:
                 cursor.execute(
                     f'ALTER TABLE `{table_name}` ENGINE=MyISAM, '
                     'CONVERT TO CHARACTER SET latin1 COLLATE latin1_swedish_ci'
                 )
 
-        unsafe_tables, unsafe_foreign_keys = _database_contract(connection)
+        unsafe_tables, unsafe_foreign_keys, _ = _database_contract(connection)
         assert {row[1] for row in unsafe_tables} == {'MyISAM'}
         assert {row[2] for row in unsafe_tables} == {'latin1'}
         assert {row[3] for row in unsafe_tables} == {'latin1_swedish_ci'}

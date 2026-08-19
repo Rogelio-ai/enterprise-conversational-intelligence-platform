@@ -1,0 +1,12 @@
+services:
+  mysql:
+    image: mariadb:10.6
+    environment:
+      MARIADB_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE is required}
+      MARIADB_USER: ${MYSQL_USER:?MYSQL_USER is required}
+      MARIADB_PASSWORD: ${MYSQL_PASSWORD:?MYSQL_PASSWORD is required}
+      MARIADB_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?MYSQL_ROOT_PASSWORD is required}
+    healthcheck:
+      test:
+        - CMD-SHELL
+        - healthcheck.sh --connect --innodb_initialized

@@ -270,6 +270,8 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
+The current application migration head is `0004_organization_location_foundation`.
+
 Authentication uses an Argon2 password hash and a signed access token. The relevant settings are
 `AUTH_JWT_SECRET`, `AUTH_JWT_ALGORITHM`, `AUTH_ACCESS_TOKEN_TTL_MINUTES`, and
 `PASSWORD_MIN_LENGTH`.
@@ -306,6 +308,18 @@ curl http://localhost:8000/tenants/current \
   -H 'X-Tenant-ID: <signed-tenant-id>'
 ```
 
+The Organization and Location foundation exposes these tenant-scoped endpoints:
+
+```text
+GET|POST   /organizations
+GET|PATCH  /organizations/{organization_id}
+GET|POST   /locations
+GET|PATCH  /locations/{location_id}
+```
+
+They use `organization.read`, `organization.manage`, `location.read`, and `location.manage`.
+Tenant ownership is always taken from the signed authentication context, never from request data.
+
 A single active membership is inferred during login. Multiple active memberships require an
 explicit `tenant_id` at login. `X-Tenant-ID` may only confirm the Tenant bound into the signed token;
 it cannot switch or grant Tenant access.
@@ -314,6 +328,14 @@ Run backend tests in an isolated container:
 
 ```bash
 docker compose run --rm api pytest
+```
+
+Run the same migration and integration suite against an isolated MariaDB 10.6 service with:
+
+```bash
+docker compose -p pryecip-mariadb -f compose.yaml -f compose.mariadb.yaml \
+  run --build --rm api pytest
+docker compose -p pryecip-mariadb -f compose.yaml -f compose.mariadb.yaml down -v
 ```
 
 Runtime endpoints are available at:
