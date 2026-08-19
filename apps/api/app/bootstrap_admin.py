@@ -28,6 +28,8 @@ CORE_PERMISSIONS = {
     'organization.manage': 'Manage Tenant organizations.',
     'location.read': 'Read Tenant locations.',
     'location.manage': 'Manage Tenant locations.',
+    'resource.read': 'Read Tenant resources.',
+    'resource.manage': 'Manage Tenant resources.',
 }
 _SLUG_PATTERN = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 

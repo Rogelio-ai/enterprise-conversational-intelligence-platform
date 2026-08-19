@@ -23,9 +23,10 @@ APPLICATION_TABLES = {
     'membership_roles',
     'organizations',
     'locations',
+    'resources',
 }
 
-LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {'organizations', 'locations'}
+LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {'organizations', 'locations', 'resources'}
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
     ('fk_tenant_memberships_tenant', 'tenant_memberships', 'tenant_id', 'tenants', 'id', 1),
@@ -90,6 +91,23 @@ EXPECTED_FOREIGN_KEY_COLUMNS = {
         'tenant_id',
         2,
     ),
+    ('fk_resources_tenant', 'resources', 'tenant_id', 'tenants', 'id', 1),
+    (
+        'fk_resources_location_tenant',
+        'resources',
+        'location_id',
+        'locations',
+        'id',
+        1,
+    ),
+    (
+        'fk_resources_location_tenant',
+        'resources',
+        'tenant_id',
+        'locations',
+        'tenant_id',
+        2,
+    ),
 }
 
 EXPECTED_INDEX_COLUMNS = {
@@ -108,6 +126,20 @@ EXPECTED_INDEX_COLUMNS = {
     ('locations', 'ix_locations_tenant_organization_status', 'organization_id', 2, 1),
     ('locations', 'ix_locations_tenant_organization_status', 'status', 3, 1),
     ('locations', 'ix_locations_tenant_organization_status', 'id', 4, 1),
+    ('resources', 'uq_resources_id_tenant', 'id', 1, 0),
+    ('resources', 'uq_resources_id_tenant', 'tenant_id', 2, 0),
+    ('resources', 'uq_resources_location_code', 'location_id', 1, 0),
+    ('resources', 'uq_resources_location_code', 'code', 2, 0),
+    ('resources', 'ix_resources_tenant_location_type_status', 'tenant_id', 1, 1),
+    ('resources', 'ix_resources_tenant_location_type_status', 'location_id', 2, 1),
+    ('resources', 'ix_resources_tenant_location_type_status', 'resource_type', 3, 1),
+    ('resources', 'ix_resources_tenant_location_type_status', 'status', 4, 1),
+    ('resources', 'ix_resources_tenant_location_type_status', 'id', 5, 1),
+}
+
+EXPECTED_RESOURCE_CHECKS = {
+    ('resources', 'ck_resources_status'),
+    ('resources', 'ck_resources_type'),
 }
 
 API_ROOT = Path(__file__).resolve().parents[1]
@@ -190,6 +222,19 @@ def _assert_database_contract(connection) -> None:
     assert {row[3] for row in tables} == {'utf8mb4_unicode_ci'}
     assert foreign_keys == EXPECTED_FOREIGN_KEY_COLUMNS
     assert indexes == EXPECTED_INDEX_COLUMNS
+    with connection.cursor() as cursor:
+        cursor.execute(
+            '''
+            SELECT TABLE_NAME, CONSTRAINT_NAME
+            FROM information_schema.TABLE_CONSTRAINTS
+            WHERE CONSTRAINT_SCHEMA = DATABASE()
+              AND CONSTRAINT_TYPE = 'CHECK'
+              AND TABLE_NAME = 'resources'
+            '''
+        )
+        assert {(row['TABLE_NAME'], row['CONSTRAINT_NAME']) for row in cursor.fetchall()} == (
+            EXPECTED_RESOURCE_CHECKS
+        )
 
 
 def _run_alembic(database_name: str, revision: str) -> None:
@@ -269,6 +314,19 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
     _, foreign_keys, indexes = _database_contract(connection)
     assert foreign_keys == EXPECTED_FOREIGN_KEY_COLUMNS
     assert indexes == EXPECTED_INDEX_COLUMNS
+    with connection.cursor() as cursor:
+        cursor.execute(
+            '''
+            SELECT TABLE_NAME, CONSTRAINT_NAME
+            FROM information_schema.TABLE_CONSTRAINTS
+            WHERE CONSTRAINT_SCHEMA = DATABASE()
+              AND CONSTRAINT_TYPE = 'CHECK'
+              AND TABLE_NAME = 'resources'
+            '''
+        )
+        assert {(row['TABLE_NAME'], row['CONSTRAINT_NAME']) for row in cursor.fetchall()} == (
+            EXPECTED_RESOURCE_CHECKS
+        )
 
 
 def test_foreign_key_is_actually_enforced(sql_connection) -> None:
@@ -348,7 +406,8 @@ def test_upgrade_from_0003_reaches_contract_and_upgrades_existing_tenant_admin(
                 WHERE RP.role_id = %s
                   AND P.code IN (
                       'organization.read', 'organization.manage',
-                      'location.read', 'location.manage'
+                      'location.read', 'location.manage',
+                      'resource.read', 'resource.manage'
                   )
                 ORDER BY P.code
                 ''',
@@ -359,6 +418,8 @@ def test_upgrade_from_0003_reaches_contract_and_upgrades_existing_tenant_admin(
                 'location.read',
                 'organization.manage',
                 'organization.read',
+                'resource.manage',
+                'resource.read',
             ]
             cursor.execute(
                 '''
@@ -368,7 +429,8 @@ def test_upgrade_from_0003_reaches_contract_and_upgrades_existing_tenant_admin(
                 WHERE RP.role_id = %s
                   AND P.code IN (
                       'organization.read', 'organization.manage',
-                      'location.read', 'location.manage'
+                      'location.read', 'location.manage',
+                      'resource.read', 'resource.manage'
                   )
                 GROUP BY P.code
                 ''',
@@ -379,6 +441,72 @@ def test_upgrade_from_0003_reaches_contract_and_upgrades_existing_tenant_admin(
                 'location.read': 1,
                 'organization.manage': 1,
                 'organization.read': 1,
+                'resource.manage': 1,
+                'resource.read': 1,
+            }
+    finally:
+        connection.close()
+
+
+def test_upgrade_from_0004_reaches_contract_and_upgrades_existing_tenant_admin(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0004_organization_location_foundation')
+
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                '''
+                INSERT INTO tenants (name, slug, status)
+                VALUES ('Resource Tenant', 'resource', 'ACTIVE')
+                '''
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                '''
+                INSERT INTO roles (tenant_id, name, description, status)
+                VALUES (%s, 'TENANT_ADMIN', 'Existing administrator', 'ACTIVE')
+                ''',
+                (tenant_id,),
+            )
+            role_id = int(cursor.lastrowid)
+            cursor.execute(
+                '''
+                INSERT INTO permissions (code, description)
+                VALUES ('resource.read', 'Preexisting')
+                '''
+            )
+            permission_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO role_permissions (role_id, permission_id) VALUES (%s, %s)',
+                (role_id, permission_id),
+            )
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                '''
+                SELECT P.code, COUNT(*) AS assignment_count
+                FROM role_permissions AS RP
+                JOIN permissions AS P ON P.id = RP.permission_id
+                WHERE RP.role_id = %s
+                  AND P.code IN ('resource.read', 'resource.manage')
+                GROUP BY P.code
+                ''',
+                (role_id,),
+            )
+            assert {row['code']: row['assignment_count'] for row in cursor.fetchall()} == {
+                'resource.manage': 1,
+                'resource.read': 1,
             }
     finally:
         connection.close()

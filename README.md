@@ -270,7 +270,7 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
-The current application migration head is `0004_organization_location_foundation`.
+The current application migration head is `0005_resource_foundation`.
 
 Authentication uses an Argon2 password hash and a signed access token. The relevant settings are
 `AUTH_JWT_SECRET`, `AUTH_JWT_ALGORITHM`, `AUTH_ACCESS_TOKEN_TTL_MINUTES`, and
@@ -308,16 +308,20 @@ curl http://localhost:8000/tenants/current \
   -H 'X-Tenant-ID: <signed-tenant-id>'
 ```
 
-The Organization and Location foundation exposes these tenant-scoped endpoints:
+The Organization, Location, and Resource foundations expose these tenant-scoped endpoints:
 
 ```text
 GET|POST   /organizations
 GET|PATCH  /organizations/{organization_id}
 GET|POST   /locations
 GET|PATCH  /locations/{location_id}
+GET|POST   /resources
+GET|PATCH  /resources/{resource_id}
 ```
 
-They use `organization.read`, `organization.manage`, `location.read`, and `location.manage`.
+They use the corresponding `organization.read|manage`, `location.read|manage`, and
+`resource.read|manage` permissions. Resource is a bounded, Location-owned physical operational
+identity; hierarchy, capacity, availability, and other real-time operational state are deferred.
 Tenant ownership is always taken from the signed authentication context, never from request data.
 
 A single active membership is inferred during login. Multiple active memberships require an

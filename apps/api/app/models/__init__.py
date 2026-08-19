@@ -8,6 +8,7 @@ from app.models.identity import (
     User,
 )
 from app.models.organization import Location, Organization
+from app.models.resource import Resource
 
 __all__ = [
     'MembershipRole',
@@ -16,6 +17,7 @@ __all__ = [
     'Permission',
     'Role',
     'RolePermission',
+    'Resource',
     'Tenant',
     'TenantMembership',
     'User',

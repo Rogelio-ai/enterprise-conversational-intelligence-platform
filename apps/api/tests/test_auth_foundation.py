@@ -313,7 +313,8 @@ def test_bootstrap_is_idempotent(integration_settings, sql_connection) -> None:
             WHERE RP.role_id = %s
               AND P.code IN (
                   'organization.read', 'organization.manage',
-                  'location.read', 'location.manage'
+                  'location.read', 'location.manage',
+                  'resource.read', 'resource.manage'
               )
             ORDER BY P.code
             ''',
@@ -324,4 +325,6 @@ def test_bootstrap_is_idempotent(integration_settings, sql_connection) -> None:
             'location.read',
             'organization.manage',
             'organization.read',
+            'resource.manage',
+            'resource.read',
         ]
