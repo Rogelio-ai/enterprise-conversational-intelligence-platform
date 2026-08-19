@@ -34,6 +34,12 @@ from app.restaurant.integrations.pos.ports import (
     PricingPort,
     PromotionPort,
 )
+from app.restaurant.integrations.pos.mock import (
+    MockPosAdapter,
+    MockPosDataset,
+    MockPosFailureMode,
+    build_mock_pos_dataset,
+)
 
 __all__ = [
     'CanonicalOrderStatus',
@@ -50,6 +56,9 @@ __all__ = [
     'ExternalPromotion',
     'LocationPort',
     'LocationScopedPosRequestContext',
+    'MockPosAdapter',
+    'MockPosDataset',
+    'MockPosFailureMode',
     'OrderPort',
     'OrderStatusPort',
     'PosErrorKind',
@@ -64,4 +73,5 @@ __all__ = [
     'PosUnsupportedCapabilityError',
     'PricingPort',
     'PromotionPort',
+    'build_mock_pos_dataset',
 ]
