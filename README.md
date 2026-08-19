@@ -324,6 +324,10 @@ They use the corresponding `organization.read|manage`, `location.read|manage`, a
 identity; hierarchy, capacity, availability, and other real-time operational state are deferred.
 Tenant ownership is always taken from the signed authentication context, never from request data.
 
+The Restaurant Domain Pack includes an internal, vendor-neutral POS integration contract for
+Location, Customer, Catalog, Pricing, Promotion, and Order capabilities. No Mock or real POS
+adapter is implemented yet; the next planned increment is the Mock POS Adapter.
+
 A single active membership is inferred during login. Multiple active memberships require an
 explicit `tenant_id` at login. `X-Tenant-ID` may only confirm the Tenant bound into the signed token;
 it cannot switch or grant Tenant access.
