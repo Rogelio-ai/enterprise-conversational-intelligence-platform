@@ -31,6 +31,12 @@ class Resource(TimestampMixin, Base):
             ondelete='RESTRICT',
         ),
         UniqueConstraint('id', 'tenant_id', name='uq_resources_id_tenant'),
+        UniqueConstraint(
+            'id',
+            'tenant_id',
+            'location_id',
+            name='uq_resources_id_tenant_location',
+        ),
         UniqueConstraint('location_id', 'code', name='uq_resources_location_code'),
         CheckConstraint(
             "resource_type IN ('AREA', 'TABLE', 'WORKSTATION', 'EQUIPMENT', 'VEHICLE', 'DEVICE')",

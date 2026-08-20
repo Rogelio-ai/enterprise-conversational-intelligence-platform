@@ -319,13 +319,16 @@ def test_bootstrap_is_idempotent(integration_settings, sql_connection) -> None:
                   'product.read', 'product.manage',
                   'menu.read', 'menu.manage',
                   'pricing.read', 'pricing.manage',
-                  'promotion.read', 'promotion.manage'
+                  'promotion.read', 'promotion.manage',
+                  'conversation.read', 'conversation.manage'
               )
             ORDER BY P.code
             ''',
             (first.role_id,),
         )
         assert [row['code'] for row in cursor.fetchall()] == [
+            'conversation.manage',
+            'conversation.read',
             'customer.manage',
             'customer.read',
             'location.manage',

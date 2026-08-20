@@ -37,6 +37,9 @@ APPLICATION_TABLES = {
     'promotions',
     'promotion_products',
     'promotion_locations',
+    'conversations',
+    'conversation_participants',
+    'conversation_messages',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -56,6 +59,9 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'promotions',
     'promotion_products',
     'promotion_locations',
+    'conversations',
+    'conversation_participants',
+    'conversation_messages',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -384,6 +390,21 @@ EXPECTED_DOMAIN_CHECKS = {
     ('promotions', 'ck_promotions_all_locations'),
     ('promotion_products', 'ck_promotion_products_status'),
     ('promotion_locations', 'ck_promotion_locations_status'),
+    ('conversations', 'ck_conversations_channel'),
+    ('conversations', 'ck_conversations_status'),
+    ('conversations', 'ck_conversations_status_closed_at'),
+    ('conversations', 'ck_conversations_next_sequence'),
+    ('conversations', 'ck_conversations_resource_requires_location'),
+    ('conversations', 'ck_conversations_default_language_length'),
+    ('conversation_participants', 'ck_conversation_participants_type'),
+    ('conversation_participants', 'ck_conversation_participants_references'),
+    ('conversation_participants', 'ck_conversation_participants_language_length'),
+    ('conversation_messages', 'ck_conversation_messages_sequence'),
+    ('conversation_messages', 'ck_conversation_messages_modality'),
+    ('conversation_messages', 'ck_conversation_messages_content'),
+    ('conversation_messages', 'ck_conversation_messages_language_source'),
+    ('conversation_messages', 'ck_conversation_messages_language_pair'),
+    ('conversation_messages', 'ck_conversation_messages_language_length'),
 }
 
 for table, prefix, target, target_table in (
@@ -421,6 +442,36 @@ _index('promotion_products', 'uq_promotion_products_tenant_promotion_product', (
 _index('promotion_products', 'ix_promotion_products_tenant_product_status', ('tenant_id', 'product_id', 'status', 'promotion_id'), 1)
 _index('promotion_locations', 'uq_promotion_locations_tenant_promotion_location', ('tenant_id', 'promotion_id', 'location_id'), 0)
 _index('promotion_locations', 'ix_promotion_locations_tenant_location_status', ('tenant_id', 'location_id', 'status', 'promotion_id'), 1)
+_index('resources', 'uq_resources_id_tenant_location', ('id', 'tenant_id', 'location_id'), 0)
+_index('conversations', 'uq_conversations_id_tenant', ('id', 'tenant_id'), 0)
+_index('conversations', 'ix_conversations_tenant_org_status', ('tenant_id', 'organization_id', 'status', 'id'), 1)
+_index('conversations', 'ix_conversations_tenant_location_status', ('tenant_id', 'location_id', 'status', 'id'), 1)
+_index('conversations', 'ix_conversations_tenant_resource', ('tenant_id', 'resource_id', 'id'), 1)
+_index('conversation_participants', 'uq_conversation_participants_id_tenant_conversation', ('id', 'tenant_id', 'conversation_id'), 0)
+_index('conversation_participants', 'uq_conversation_participants_conversation_customer', ('conversation_id', 'customer_id'), 0)
+_index('conversation_participants', 'ix_conversation_participants_conversation_type', ('tenant_id', 'conversation_id', 'participant_type', 'id'), 1)
+_index('conversation_participants', 'ix_conversation_participants_customer', ('tenant_id', 'customer_id', 'id'), 1)
+_index('conversation_participants', 'ix_conversation_participants_membership', ('tenant_id', 'tenant_membership_id', 'id'), 1)
+_index('conversation_messages', 'uq_conversation_messages_tenant_conversation_sequence', ('tenant_id', 'conversation_id', 'sequence_number'), 0)
+_index('conversation_messages', 'ix_conversation_messages_participant', ('tenant_id', 'participant_id', 'id'), 1)
+
+for constraint, table, local_columns, target_table, target_columns in (
+    ('fk_conversations_tenant', 'conversations', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_conversations_organization_tenant', 'conversations', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
+    ('fk_conversations_location_tenant_org', 'conversations', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_conversations_resource_tenant_location', 'conversations', ('resource_id', 'tenant_id', 'location_id'), 'resources', ('id', 'tenant_id', 'location_id')),
+    ('fk_conversation_participants_tenant', 'conversation_participants', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_conversation_participants_conversation_tenant', 'conversation_participants', ('conversation_id', 'tenant_id'), 'conversations', ('id', 'tenant_id')),
+    ('fk_conversation_participants_customer_tenant', 'conversation_participants', ('customer_id', 'tenant_id'), 'customers', ('id', 'tenant_id')),
+    ('fk_conversation_participants_membership_tenant', 'conversation_participants', ('tenant_membership_id', 'tenant_id'), 'tenant_memberships', ('id', 'tenant_id')),
+    ('fk_conversation_messages_tenant', 'conversation_messages', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_conversation_messages_conversation_tenant', 'conversation_messages', ('conversation_id', 'tenant_id'), 'conversations', ('id', 'tenant_id')),
+    ('fk_conversation_messages_participant_tenant_conversation', 'conversation_messages', ('participant_id', 'tenant_id', 'conversation_id'), 'conversation_participants', ('id', 'tenant_id', 'conversation_id')),
+):
+    EXPECTED_FOREIGN_KEY_COLUMNS.update(
+        (constraint, table, local, target_table, target, position)
+        for position, (local, target) in enumerate(zip(local_columns, target_columns), 1)
+    )
 
 API_ROOT = Path(__file__).resolve().parents[1]
 
@@ -512,7 +563,8 @@ def _assert_database_contract(connection) -> None:
               AND TABLE_NAME IN (
                   'resources', 'customers', 'product_categories', 'products', 'menus',
                   'menu_locations', 'menu_sections', 'menu_items', 'product_prices',
-                  'promotions', 'promotion_products', 'promotion_locations'
+                  'promotions', 'promotion_products', 'promotion_locations',
+                  'conversations', 'conversation_participants', 'conversation_messages'
               )
             '''
         )
@@ -629,7 +681,8 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
               AND TABLE_NAME IN (
                   'resources', 'customers', 'product_categories', 'products', 'menus',
                   'menu_locations', 'menu_sections', 'menu_items', 'product_prices',
-                  'promotions', 'promotion_products', 'promotion_locations'
+                  'promotions', 'promotion_products', 'promotion_locations',
+                  'conversations', 'conversation_participants', 'conversation_messages'
               )
             '''
         )
@@ -1015,6 +1068,53 @@ def test_upgrade_from_0007_reaches_pricing_contract_and_grants_permissions(
                 'pricing.read': 1,
                 'promotion.manage': 1,
                 'promotion.read': 1,
+            }
+    finally:
+        connection.close()
+
+
+def test_upgrade_from_0008_reaches_conversation_contract_and_grants_permissions(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0008_pricing_promotion_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name, slug, status) "
+                "VALUES ('Conversation Tenant', 'conversation', 'ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO roles (tenant_id, name, description, status) "
+                "VALUES (%s, 'TENANT_ADMIN', 'Existing administrator', 'ACTIVE')",
+                (tenant_id,),
+            )
+            role_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                '''
+                SELECT P.code, COUNT(*) AS assignment_count
+                FROM role_permissions AS RP
+                JOIN permissions AS P ON P.id = RP.permission_id
+                WHERE RP.role_id = %s
+                  AND P.code IN ('conversation.read', 'conversation.manage')
+                GROUP BY P.code
+                ''',
+                (role_id,),
+            )
+            assert {row['code']: row['assignment_count'] for row in cursor.fetchall()} == {
+                'conversation.manage': 1,
+                'conversation.read': 1,
             }
     finally:
         connection.close()

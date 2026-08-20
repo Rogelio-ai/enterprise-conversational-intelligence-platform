@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.customers import router as customers_router
+from app.api.routes.conversations import router as conversations_router
 from app.api.routes.health import router as health_router
 from app.api.routes.locations import router as locations_router
 from app.api.routes.menus import router as menus_router
@@ -64,6 +65,7 @@ def create_app(
     app.include_router(locations_router)
     app.include_router(resources_router)
     app.include_router(customers_router)
+    app.include_router(conversations_router)
     app.include_router(products_router)
     app.include_router(pricing_router)
     app.include_router(menus_router)

@@ -40,6 +40,8 @@ CORE_PERMISSIONS = {
     'pricing.manage': 'Manage Organization product prices.',
     'promotion.read': 'Read Organization promotions.',
     'promotion.manage': 'Manage Organization promotions.',
+    'conversation.read': 'Read Tenant conversations, participants, and messages.',
+    'conversation.manage': 'Manage Tenant conversations, participants, and messages.',
 }
 _SLUG_PATTERN = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 

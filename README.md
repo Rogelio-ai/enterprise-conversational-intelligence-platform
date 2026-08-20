@@ -270,13 +270,22 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
-The current application migration head is `0008_pricing_promotion_foundation`.
+The current application migration head is `0009_conversation_foundation`.
 
 The Restaurant domain now includes an Organization-owned canonical Menu and Product foundation.
 Product categories classify reusable Products, while one-level Menu sections control presentation;
 Menu-to-Location assignments determine where a Menu applies. POS product observations resolve through
 the vendor-neutral `CatalogPort` into canonical Products using case-sensitive external mappings.
 Access is governed by `product.read`, `product.manage`, `menu.read`, and `menu.manage`.
+
+The Conversation foundation stores tenant-owned, Organization-scoped conversations, explicit
+participants, and append-only semantic messages. Supported channels are `IN_PERSON_DIGITAL`,
+`PHONE`, `WHATSAPP`, `WEB_CHAT`, and `MOBILE_APP`; message modalities are `TEXT`, `VOICE`, and
+`TOUCH`. CUSTOMER, DIGITAL_WAITER, HUMAN_STAFF, and SYSTEM participants support anonymous and
+multi-customer interactions. Nullable BCP-47-style defaults, participant preferences, and
+per-message language observations preserve multilingual Unicode content without changing the
+original evidence. AI behavior, translation/localization, media, connectors, and provider mappings
+remain explicitly deferred. Access uses `conversation.read` and `conversation.manage`.
 
 The commercial-offer foundation stores one current Product-and-Location Price using exact
 `DECIMAL(19,4)` money and an explicit currency, with immutable PLATFORM/POS provenance. An explicit

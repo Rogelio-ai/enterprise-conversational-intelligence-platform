@@ -1,4 +1,5 @@
 from app.models.customer import Customer, CustomerExternalIdentity
+from app.models.conversation import Conversation, ConversationMessage, ConversationParticipant
 from app.models.identity import (
     MembershipRole,
     Permission,
@@ -24,6 +25,9 @@ from app.models.resource import Resource
 __all__ = [
     'Customer',
     'CustomerExternalIdentity',
+    'Conversation',
+    'ConversationMessage',
+    'ConversationParticipant',
     'MembershipRole',
     'Menu',
     'MenuItem',
