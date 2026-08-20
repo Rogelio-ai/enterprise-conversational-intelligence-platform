@@ -36,6 +36,10 @@ CORE_PERMISSIONS = {
     'product.manage': 'Manage Organization products and categories.',
     'menu.read': 'Read Organization menus.',
     'menu.manage': 'Manage Organization menus.',
+    'pricing.read': 'Read Organization product prices.',
+    'pricing.manage': 'Manage Organization product prices.',
+    'promotion.read': 'Read Organization promotions.',
+    'promotion.manage': 'Manage Organization promotions.',
 }
 _SLUG_PATTERN = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 

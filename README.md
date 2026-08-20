@@ -270,15 +270,21 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
-The current application migration head is `0007_menu_product_foundation`.
+The current application migration head is `0008_pricing_promotion_foundation`.
 
 The Restaurant domain now includes an Organization-owned canonical Menu and Product foundation.
 Product categories classify reusable Products, while one-level Menu sections control presentation;
 Menu-to-Location assignments determine where a Menu applies. POS product observations resolve through
 the vendor-neutral `CatalogPort` into canonical Products using case-sensitive external mappings.
-Access is governed by `product.read`, `product.manage`, `menu.read`, and `menu.manage`. Price,
-promotion, and operational availability remain outside this foundation and are owned by WS-09 and
-later operational work.
+Access is governed by `product.read`, `product.manage`, `menu.read`, and `menu.manage`.
+
+The commercial-offer foundation stores one current Product-and-Location Price using exact
+`DECIMAL(19,4)` money and an explicit currency, with immutable PLATFORM/POS provenance. An explicit
+`PricingPort` resolver can project a mapped POS Price; reads never trigger POS access. Promotions
+support only percentage and fixed-amount benefits, Product targets, all-or-selected Location scope,
+and a UTC half-open validity interval. Candidate lookup returns every matching Promotion without
+choosing, stacking, or calculating an effective Price. PromotionPort canonicalization remains
+deferred. Access uses `pricing.read`, `pricing.manage`, `promotion.read`, and `promotion.manage`.
 
 Authentication uses an Argon2 password hash and a signed access token. The relevant settings are
 `AUTH_JWT_SECRET`, `AUTH_JWT_ALGORITHM`, `AUTH_ACCESS_TOKEN_TTL_MINUTES`, and

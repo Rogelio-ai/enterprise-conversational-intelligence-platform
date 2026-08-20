@@ -33,6 +33,10 @@ APPLICATION_TABLES = {
     'menu_locations',
     'menu_sections',
     'menu_items',
+    'product_prices',
+    'promotions',
+    'promotion_products',
+    'promotion_locations',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -48,6 +52,10 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'menu_locations',
     'menu_sections',
     'menu_items',
+    'product_prices',
+    'promotions',
+    'promotion_products',
+    'promotion_locations',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -363,7 +371,56 @@ EXPECTED_DOMAIN_CHECKS = {
     ('menu_sections', 'ck_menu_sections_display_order'),
     ('menu_items', 'ck_menu_items_status'),
     ('menu_items', 'ck_menu_items_display_order'),
+    ('product_prices', 'ck_product_prices_amount'),
+    ('product_prices', 'ck_product_prices_currency'),
+    ('product_prices', 'ck_product_prices_status'),
+    ('product_prices', 'ck_product_prices_source'),
+    ('promotions', 'ck_promotions_type'),
+    ('promotions', 'ck_promotions_status'),
+    ('promotions', 'ck_promotions_source'),
+    ('promotions', 'ck_promotions_interval'),
+    ('promotions', 'ck_promotions_currency'),
+    ('promotions', 'ck_promotions_benefit'),
+    ('promotions', 'ck_promotions_all_locations'),
+    ('promotion_products', 'ck_promotion_products_status'),
+    ('promotion_locations', 'ck_promotion_locations_status'),
 }
+
+for table, prefix, target, target_table in (
+    ('product_prices', 'product_prices', 'product', 'products'),
+    ('product_prices', 'product_prices', 'location', 'locations'),
+    ('promotion_products', 'promotion_products', 'promotion', 'promotions'),
+    ('promotion_products', 'promotion_products', 'product', 'products'),
+    ('promotion_locations', 'promotion_locations', 'promotion', 'promotions'),
+    ('promotion_locations', 'promotion_locations', 'location', 'locations'),
+):
+    constraint = f'fk_{prefix}_{target}_tenant_org'
+    EXPECTED_FOREIGN_KEY_COLUMNS.update({
+        (constraint, table, f'{target}_id', target_table, 'id', 1),
+        (constraint, table, 'tenant_id', target_table, 'tenant_id', 2),
+        (constraint, table, 'organization_id', target_table, 'organization_id', 3),
+    })
+for table in ('product_prices', 'promotions', 'promotion_products', 'promotion_locations'):
+    EXPECTED_FOREIGN_KEY_COLUMNS.add((f'fk_{table}_tenant', table, 'tenant_id', 'tenants', 'id', 1))
+for table in ('product_prices', 'promotions'):
+    EXPECTED_FOREIGN_KEY_COLUMNS.update({
+        (f'fk_{table}_organization_tenant', table, 'organization_id', 'organizations', 'id', 1),
+        (f'fk_{table}_organization_tenant', table, 'tenant_id', 'organizations', 'tenant_id', 2),
+    })
+
+def _index(table: str, name: str, columns: tuple[str, ...], non_unique: int) -> None:
+    EXPECTED_INDEX_COLUMNS.update((table, name, column, position, non_unique) for position, column in enumerate(columns, 1))
+
+_index('product_prices', 'uq_product_prices_tenant_product_location', ('tenant_id', 'product_id', 'location_id'), 0)
+_index('product_prices', 'ix_product_prices_tenant_org_location_status_product', ('tenant_id', 'organization_id', 'location_id', 'status', 'product_id'), 1)
+_index('product_prices', 'ix_product_prices_tenant_org_product_status', ('tenant_id', 'organization_id', 'product_id', 'status'), 1)
+_index('promotions', 'uq_promotions_id_tenant_org', ('id', 'tenant_id', 'organization_id'), 0)
+_index('promotions', 'ix_promotions_tenant_org_status_type', ('tenant_id', 'organization_id', 'status', 'promotion_type', 'id'), 1)
+_index('promotions', 'ix_promotions_tenant_org_interval', ('tenant_id', 'organization_id', 'starts_at', 'ends_at', 'id'), 1)
+_index('promotion_products', 'uq_promotion_products_tenant_promotion_product', ('tenant_id', 'promotion_id', 'product_id'), 0)
+_index('promotion_products', 'ix_promotion_products_tenant_product_status', ('tenant_id', 'product_id', 'status', 'promotion_id'), 1)
+_index('promotion_locations', 'uq_promotion_locations_tenant_promotion_location', ('tenant_id', 'promotion_id', 'location_id'), 0)
+_index('promotion_locations', 'ix_promotion_locations_tenant_location_status', ('tenant_id', 'location_id', 'status', 'promotion_id'), 1)
 
 API_ROOT = Path(__file__).resolve().parents[1]
 
@@ -454,7 +511,8 @@ def _assert_database_contract(connection) -> None:
               AND CONSTRAINT_TYPE = 'CHECK'
               AND TABLE_NAME IN (
                   'resources', 'customers', 'product_categories', 'products', 'menus',
-                  'menu_locations', 'menu_sections', 'menu_items'
+                  'menu_locations', 'menu_sections', 'menu_items', 'product_prices',
+                  'promotions', 'promotion_products', 'promotion_locations'
               )
             '''
         )
@@ -570,7 +628,8 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
               AND CONSTRAINT_TYPE = 'CHECK'
               AND TABLE_NAME IN (
                   'resources', 'customers', 'product_categories', 'products', 'menus',
-                  'menu_locations', 'menu_sections', 'menu_items'
+                  'menu_locations', 'menu_sections', 'menu_items', 'product_prices',
+                  'promotions', 'promotion_products', 'promotion_locations'
               )
             '''
         )
@@ -905,6 +964,57 @@ def test_upgrade_from_0006_reaches_menu_product_contract_and_grants_permissions(
                 'menu.read': 1,
                 'product.manage': 1,
                 'product.read': 1,
+            }
+    finally:
+        connection.close()
+
+
+def test_upgrade_from_0007_reaches_pricing_contract_and_grants_permissions(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0007_menu_product_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name, slug, status) VALUES ('Pricing Tenant', 'pricing', 'ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO roles (tenant_id, name, description, status) "
+                "VALUES (%s, 'TENANT_ADMIN', 'Existing administrator', 'ACTIVE')",
+                (tenant_id,),
+            )
+            role_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                '''
+                SELECT P.code, COUNT(*) AS assignment_count
+                FROM role_permissions AS RP
+                JOIN permissions AS P ON P.id = RP.permission_id
+                WHERE RP.role_id = %s
+                  AND P.code IN (
+                      'pricing.read', 'pricing.manage',
+                      'promotion.read', 'promotion.manage'
+                  )
+                GROUP BY P.code
+                ''',
+                (role_id,),
+            )
+            assert {row['code']: row['assignment_count'] for row in cursor.fetchall()} == {
+                'pricing.manage': 1,
+                'pricing.read': 1,
+                'promotion.manage': 1,
+                'promotion.read': 1,
             }
     finally:
         connection.close()

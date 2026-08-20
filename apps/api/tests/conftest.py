@@ -90,6 +90,12 @@ def sql_connection(integration_settings: Settings):
         yield connection, prefix
     finally:
         with connection.cursor() as cursor:
+            for table in ('promotion_locations', 'promotion_products', 'promotions', 'product_prices'):
+                cursor.execute(
+                    f'DELETE FROM {table} WHERE tenant_id IN '
+                    '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                    (f'{prefix}%',),
+                )
             cursor.execute(
                 'DELETE FROM menu_items WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',

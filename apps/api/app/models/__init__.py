@@ -18,6 +18,7 @@ from app.models.menu import (
     ProductExternalMapping,
 )
 from app.models.organization import Location, Organization
+from app.models.pricing import ProductPrice, Promotion, PromotionLocation, PromotionProduct
 from app.models.resource import Resource
 
 __all__ = [
@@ -34,6 +35,10 @@ __all__ = [
     'Product',
     'ProductCategory',
     'ProductExternalMapping',
+    'ProductPrice',
+    'Promotion',
+    'PromotionLocation',
+    'PromotionProduct',
     'Role',
     'RolePermission',
     'Resource',
