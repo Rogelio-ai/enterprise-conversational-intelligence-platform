@@ -270,7 +270,7 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
-The current application migration head is `0005_resource_foundation`.
+The current application migration head is `0006_customer_foundation`.
 
 Authentication uses an Argon2 password hash and a signed access token. The relevant settings are
 `AUTH_JWT_SECRET`, `AUTH_JWT_ALGORITHM`, `AUTH_ACCESS_TOKEN_TTL_MINUTES`, and
@@ -317,12 +317,20 @@ GET|POST   /locations
 GET|PATCH  /locations/{location_id}
 GET|POST   /resources
 GET|PATCH  /resources/{resource_id}
+GET|POST   /customers
+GET|PATCH  /customers/{customer_id}
 ```
 
 They use the corresponding `organization.read|manage`, `location.read|manage`, and
 `resource.read|manage` permissions. Resource is a bounded, Location-owned physical operational
 identity; hierarchy, capacity, availability, and other real-time operational state are deferred.
 Tenant ownership is always taken from the signed authentication context, never from request data.
+
+Customer is a canonical, Tenant-owned Restaurant identity with one optional normalized email and
+phone. Its endpoints use `customer.read|manage`. POS Customer identifiers are preserved separately
+through Tenant- and connector-scoped external mappings. The internal resolver depends on the
+vendor-neutral `CustomerPort`; CRM, preferences, history, addresses, loyalty, automatic contact
+merging, and POS synchronization remain deferred.
 
 The Restaurant Domain Pack includes an internal, vendor-neutral POS integration contract for
 Location, Customer, Catalog, Pricing, Promotion, and Order capabilities. A deterministic,

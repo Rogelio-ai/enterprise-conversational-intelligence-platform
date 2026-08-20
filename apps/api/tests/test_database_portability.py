@@ -24,9 +24,17 @@ APPLICATION_TABLES = {
     'organizations',
     'locations',
     'resources',
+    'customers',
+    'customer_external_identities',
 }
 
-LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {'organizations', 'locations', 'resources'}
+LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
+    'organizations',
+    'locations',
+    'resources',
+    'customers',
+    'customer_external_identities',
+}
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
     ('fk_tenant_memberships_tenant', 'tenant_memberships', 'tenant_id', 'tenants', 'id', 1),
@@ -108,6 +116,31 @@ EXPECTED_FOREIGN_KEY_COLUMNS = {
         'tenant_id',
         2,
     ),
+    ('fk_customers_tenant', 'customers', 'tenant_id', 'tenants', 'id', 1),
+    (
+        'fk_customer_external_identities_tenant',
+        'customer_external_identities',
+        'tenant_id',
+        'tenants',
+        'id',
+        1,
+    ),
+    (
+        'fk_customer_external_identities_customer_tenant',
+        'customer_external_identities',
+        'customer_id',
+        'customers',
+        'id',
+        1,
+    ),
+    (
+        'fk_customer_external_identities_customer_tenant',
+        'customer_external_identities',
+        'tenant_id',
+        'customers',
+        'tenant_id',
+        2,
+    ),
 }
 
 EXPECTED_INDEX_COLUMNS = {
@@ -135,11 +168,66 @@ EXPECTED_INDEX_COLUMNS = {
     ('resources', 'ix_resources_tenant_location_type_status', 'resource_type', 3, 1),
     ('resources', 'ix_resources_tenant_location_type_status', 'status', 4, 1),
     ('resources', 'ix_resources_tenant_location_type_status', 'id', 5, 1),
+    ('customers', 'uq_customers_id_tenant', 'id', 1, 0),
+    ('customers', 'uq_customers_id_tenant', 'tenant_id', 2, 0),
+    ('customers', 'ix_customers_tenant_status', 'tenant_id', 1, 1),
+    ('customers', 'ix_customers_tenant_status', 'status', 2, 1),
+    ('customers', 'ix_customers_tenant_status', 'id', 3, 1),
+    ('customers', 'ix_customers_tenant_email', 'tenant_id', 1, 1),
+    ('customers', 'ix_customers_tenant_email', 'email', 2, 1),
+    ('customers', 'ix_customers_tenant_email', 'id', 3, 1),
+    ('customers', 'ix_customers_tenant_phone', 'tenant_id', 1, 1),
+    ('customers', 'ix_customers_tenant_phone', 'phone', 2, 1),
+    ('customers', 'ix_customers_tenant_phone', 'id', 3, 1),
+    (
+        'customer_external_identities',
+        'uq_customer_external_identity_source',
+        'tenant_id',
+        1,
+        0,
+    ),
+    (
+        'customer_external_identities',
+        'uq_customer_external_identity_source',
+        'connector_key',
+        2,
+        0,
+    ),
+    (
+        'customer_external_identities',
+        'uq_customer_external_identity_source',
+        'external_customer_id',
+        3,
+        0,
+    ),
+    (
+        'customer_external_identities',
+        'ix_customer_external_identities_customer',
+        'tenant_id',
+        1,
+        1,
+    ),
+    (
+        'customer_external_identities',
+        'ix_customer_external_identities_customer',
+        'customer_id',
+        2,
+        1,
+    ),
+    (
+        'customer_external_identities',
+        'ix_customer_external_identities_customer',
+        'id',
+        3,
+        1,
+    ),
 }
 
-EXPECTED_RESOURCE_CHECKS = {
+EXPECTED_DOMAIN_CHECKS = {
     ('resources', 'ck_resources_status'),
     ('resources', 'ck_resources_type'),
+    ('customers', 'ck_customers_status'),
+    ('customers', 'ck_customers_source'),
 }
 
 API_ROOT = Path(__file__).resolve().parents[1]
@@ -229,12 +317,22 @@ def _assert_database_contract(connection) -> None:
             FROM information_schema.TABLE_CONSTRAINTS
             WHERE CONSTRAINT_SCHEMA = DATABASE()
               AND CONSTRAINT_TYPE = 'CHECK'
-              AND TABLE_NAME = 'resources'
+              AND TABLE_NAME IN ('resources', 'customers')
             '''
         )
         assert {(row['TABLE_NAME'], row['CONSTRAINT_NAME']) for row in cursor.fetchall()} == (
-            EXPECTED_RESOURCE_CHECKS
+            EXPECTED_DOMAIN_CHECKS
         )
+        cursor.execute(
+            '''
+            SELECT COLLATION_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'customer_external_identities'
+              AND COLUMN_NAME = 'external_customer_id'
+            '''
+        )
+        assert cursor.fetchone()['COLLATION_NAME'] == 'utf8mb4_bin'
 
 
 def _run_alembic(database_name: str, revision: str) -> None:
@@ -321,12 +419,22 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
             FROM information_schema.TABLE_CONSTRAINTS
             WHERE CONSTRAINT_SCHEMA = DATABASE()
               AND CONSTRAINT_TYPE = 'CHECK'
-              AND TABLE_NAME = 'resources'
+              AND TABLE_NAME IN ('resources', 'customers')
             '''
         )
         assert {(row['TABLE_NAME'], row['CONSTRAINT_NAME']) for row in cursor.fetchall()} == (
-            EXPECTED_RESOURCE_CHECKS
+            EXPECTED_DOMAIN_CHECKS
         )
+        cursor.execute(
+            '''
+            SELECT COLLATION_NAME
+            FROM information_schema.COLUMNS
+            WHERE TABLE_SCHEMA = DATABASE()
+              AND TABLE_NAME = 'customer_external_identities'
+              AND COLUMN_NAME = 'external_customer_id'
+            '''
+        )
+        assert cursor.fetchone()['COLLATION_NAME'] == 'utf8mb4_bin'
 
 
 def test_foreign_key_is_actually_enforced(sql_connection) -> None:
@@ -407,13 +515,16 @@ def test_upgrade_from_0003_reaches_contract_and_upgrades_existing_tenant_admin(
                   AND P.code IN (
                       'organization.read', 'organization.manage',
                       'location.read', 'location.manage',
-                      'resource.read', 'resource.manage'
+                      'resource.read', 'resource.manage',
+                      'customer.read', 'customer.manage'
                   )
                 ORDER BY P.code
                 ''',
                 (role_id,),
             )
             assert [row['code'] for row in cursor.fetchall()] == [
+                'customer.manage',
+                'customer.read',
                 'location.manage',
                 'location.read',
                 'organization.manage',
@@ -430,13 +541,16 @@ def test_upgrade_from_0003_reaches_contract_and_upgrades_existing_tenant_admin(
                   AND P.code IN (
                       'organization.read', 'organization.manage',
                       'location.read', 'location.manage',
-                      'resource.read', 'resource.manage'
+                      'resource.read', 'resource.manage',
+                      'customer.read', 'customer.manage'
                   )
                 GROUP BY P.code
                 ''',
                 (role_id,),
             )
             assert {row['code']: row['assignment_count'] for row in cursor.fetchall()} == {
+                'customer.manage': 1,
+                'customer.read': 1,
                 'location.manage': 1,
                 'location.read': 1,
                 'organization.manage': 1,
@@ -507,6 +621,66 @@ def test_upgrade_from_0004_reaches_contract_and_upgrades_existing_tenant_admin(
             assert {row['code']: row['assignment_count'] for row in cursor.fetchall()} == {
                 'resource.manage': 1,
                 'resource.read': 1,
+            }
+    finally:
+        connection.close()
+
+
+def test_upgrade_from_0005_reaches_customer_contract_and_upgrades_existing_tenant_admin(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0005_resource_foundation')
+
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name, slug, status) "
+                "VALUES ('Customer Tenant', 'customer', 'ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                '''
+                INSERT INTO roles (tenant_id, name, description, status)
+                VALUES (%s, 'TENANT_ADMIN', 'Existing administrator', 'ACTIVE')
+                ''',
+                (tenant_id,),
+            )
+            role_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO permissions (code, description) "
+                "VALUES ('customer.read', 'Preexisting')"
+            )
+            permission_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO role_permissions (role_id, permission_id) VALUES (%s, %s)',
+                (role_id, permission_id),
+            )
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                '''
+                SELECT P.code, COUNT(*) AS assignment_count
+                FROM role_permissions AS RP
+                JOIN permissions AS P ON P.id = RP.permission_id
+                WHERE RP.role_id = %s
+                  AND P.code IN ('customer.read', 'customer.manage')
+                GROUP BY P.code
+                ''',
+                (role_id,),
+            )
+            assert {row['code']: row['assignment_count'] for row in cursor.fetchall()} == {
+                'customer.manage': 1,
+                'customer.read': 1,
             }
     finally:
         connection.close()
