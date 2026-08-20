@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 from decimal import Decimal
 
@@ -13,6 +14,8 @@ from app.restaurant.integrations.pos.errors import PosInvalidDataError, PosMappi
 from app.restaurant.integrations.pos.ports import PricingPort
 
 logger = logging.getLogger('ecip.pricing')
+
+_WINNER_VISIBILITY_DELAYS_SECONDS = (0.01, 0.02, 0.04)
 
 
 class PriceAuthorityConflictError(RuntimeError):
@@ -30,6 +33,28 @@ def _validate_money(amount: Decimal, currency: str, context: LocationScopedPosRe
     if len(normalized) != 3 or not normalized.isascii() or not normalized.isalpha():
         raise _pos_error(PosInvalidDataError, 'POS Price currency is invalid', context)
     return amount, normalized
+
+
+async def _find_visible_price_winner(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    product_id: int,
+    location_id: int,
+) -> ProductPrice | None:
+    for delay in _WINNER_VISIBILITY_DELAYS_SECONDS:
+        await asyncio.sleep(delay)
+        winner = await db.scalar(
+            select(ProductPrice).where(
+                ProductPrice.tenant_id == tenant_id,
+                ProductPrice.product_id == product_id,
+                ProductPrice.location_id == location_id,
+            )
+        )
+        if winner is not None:
+            return winner
+        await db.rollback()
+    return None
 
 
 async def resolve_external_price(
@@ -90,7 +115,12 @@ async def resolve_external_price(
         error_code = error_args[0] if error_args else None
         if isinstance(exc, OperationalError) and error_code not in {1205, 1213}:
             raise
-        winner = await db.scalar(select(ProductPrice).where(ProductPrice.tenant_id == tenant_id, ProductPrice.product_id == canonical_product_id, ProductPrice.location_id == location_id))
+        winner = await _find_visible_price_winner(
+            db,
+            tenant_id=tenant_id,
+            product_id=canonical_product_id,
+            location_id=location_id,
+        )
         if winner is None:
             raise
         if winner.source == 'PLATFORM':
