@@ -60,6 +60,12 @@ class Location(TimestampMixin, Base):
         ),
         UniqueConstraint('organization_id', 'code', name='uq_locations_organization_code'),
         UniqueConstraint('id', 'tenant_id', name='uq_locations_id_tenant'),
+        UniqueConstraint(
+            'id',
+            'tenant_id',
+            'organization_id',
+            name='uq_locations_id_tenant_organization',
+        ),
         CheckConstraint(
             "status IN ('ACTIVE', 'INACTIVE')",
             name='ck_locations_status',

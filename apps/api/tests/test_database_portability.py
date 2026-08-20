@@ -26,6 +26,13 @@ APPLICATION_TABLES = {
     'resources',
     'customers',
     'customer_external_identities',
+    'product_categories',
+    'products',
+    'product_external_mappings',
+    'menus',
+    'menu_locations',
+    'menu_sections',
+    'menu_items',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -34,6 +41,13 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'resources',
     'customers',
     'customer_external_identities',
+    'product_categories',
+    'products',
+    'product_external_mappings',
+    'menus',
+    'menu_locations',
+    'menu_sections',
+    'menu_items',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -141,6 +155,43 @@ EXPECTED_FOREIGN_KEY_COLUMNS = {
         'tenant_id',
         2,
     ),
+    ('fk_product_categories_tenant', 'product_categories', 'tenant_id', 'tenants', 'id', 1),
+    ('fk_product_categories_organization_tenant', 'product_categories', 'organization_id', 'organizations', 'id', 1),
+    ('fk_product_categories_organization_tenant', 'product_categories', 'tenant_id', 'organizations', 'tenant_id', 2),
+    ('fk_products_tenant', 'products', 'tenant_id', 'tenants', 'id', 1),
+    ('fk_products_organization_tenant', 'products', 'organization_id', 'organizations', 'id', 1),
+    ('fk_products_organization_tenant', 'products', 'tenant_id', 'organizations', 'tenant_id', 2),
+    ('fk_products_category_tenant_org', 'products', 'category_id', 'product_categories', 'id', 1),
+    ('fk_products_category_tenant_org', 'products', 'tenant_id', 'product_categories', 'tenant_id', 2),
+    ('fk_products_category_tenant_org', 'products', 'organization_id', 'product_categories', 'organization_id', 3),
+    ('fk_product_external_mappings_tenant', 'product_external_mappings', 'tenant_id', 'tenants', 'id', 1),
+    ('fk_product_external_mappings_product_tenant', 'product_external_mappings', 'product_id', 'products', 'id', 1),
+    ('fk_product_external_mappings_product_tenant', 'product_external_mappings', 'tenant_id', 'products', 'tenant_id', 2),
+    ('fk_menus_tenant', 'menus', 'tenant_id', 'tenants', 'id', 1),
+    ('fk_menus_organization_tenant', 'menus', 'organization_id', 'organizations', 'id', 1),
+    ('fk_menus_organization_tenant', 'menus', 'tenant_id', 'organizations', 'tenant_id', 2),
+    ('fk_menu_locations_tenant', 'menu_locations', 'tenant_id', 'tenants', 'id', 1),
+    ('fk_menu_locations_menu_tenant_org', 'menu_locations', 'menu_id', 'menus', 'id', 1),
+    ('fk_menu_locations_menu_tenant_org', 'menu_locations', 'tenant_id', 'menus', 'tenant_id', 2),
+    ('fk_menu_locations_menu_tenant_org', 'menu_locations', 'organization_id', 'menus', 'organization_id', 3),
+    ('fk_menu_locations_location_tenant_org', 'menu_locations', 'location_id', 'locations', 'id', 1),
+    ('fk_menu_locations_location_tenant_org', 'menu_locations', 'tenant_id', 'locations', 'tenant_id', 2),
+    ('fk_menu_locations_location_tenant_org', 'menu_locations', 'organization_id', 'locations', 'organization_id', 3),
+    ('fk_menu_sections_tenant', 'menu_sections', 'tenant_id', 'tenants', 'id', 1),
+    ('fk_menu_sections_menu_tenant_org', 'menu_sections', 'menu_id', 'menus', 'id', 1),
+    ('fk_menu_sections_menu_tenant_org', 'menu_sections', 'tenant_id', 'menus', 'tenant_id', 2),
+    ('fk_menu_sections_menu_tenant_org', 'menu_sections', 'organization_id', 'menus', 'organization_id', 3),
+    ('fk_menu_items_tenant', 'menu_items', 'tenant_id', 'tenants', 'id', 1),
+    ('fk_menu_items_menu_tenant_org', 'menu_items', 'menu_id', 'menus', 'id', 1),
+    ('fk_menu_items_menu_tenant_org', 'menu_items', 'tenant_id', 'menus', 'tenant_id', 2),
+    ('fk_menu_items_menu_tenant_org', 'menu_items', 'organization_id', 'menus', 'organization_id', 3),
+    ('fk_menu_items_section_menu_tenant_org', 'menu_items', 'section_id', 'menu_sections', 'id', 1),
+    ('fk_menu_items_section_menu_tenant_org', 'menu_items', 'menu_id', 'menu_sections', 'menu_id', 2),
+    ('fk_menu_items_section_menu_tenant_org', 'menu_items', 'tenant_id', 'menu_sections', 'tenant_id', 3),
+    ('fk_menu_items_section_menu_tenant_org', 'menu_items', 'organization_id', 'menu_sections', 'organization_id', 4),
+    ('fk_menu_items_product_tenant_org', 'menu_items', 'product_id', 'products', 'id', 1),
+    ('fk_menu_items_product_tenant_org', 'menu_items', 'tenant_id', 'products', 'tenant_id', 2),
+    ('fk_menu_items_product_tenant_org', 'menu_items', 'organization_id', 'products', 'organization_id', 3),
 }
 
 EXPECTED_INDEX_COLUMNS = {
@@ -221,6 +272,81 @@ EXPECTED_INDEX_COLUMNS = {
         3,
         1,
     ),
+    ('locations', 'uq_locations_id_tenant_organization', 'id', 1, 0),
+    ('locations', 'uq_locations_id_tenant_organization', 'tenant_id', 2, 0),
+    ('locations', 'uq_locations_id_tenant_organization', 'organization_id', 3, 0),
+    ('product_categories', 'uq_product_categories_id_tenant', 'id', 1, 0),
+    ('product_categories', 'uq_product_categories_id_tenant', 'tenant_id', 2, 0),
+    ('product_categories', 'uq_product_categories_id_tenant_org', 'id', 1, 0),
+    ('product_categories', 'uq_product_categories_id_tenant_org', 'tenant_id', 2, 0),
+    ('product_categories', 'uq_product_categories_id_tenant_org', 'organization_id', 3, 0),
+    ('product_categories', 'uq_product_categories_tenant_org_name', 'tenant_id', 1, 0),
+    ('product_categories', 'uq_product_categories_tenant_org_name', 'organization_id', 2, 0),
+    ('product_categories', 'uq_product_categories_tenant_org_name', 'name', 3, 0),
+    ('product_categories', 'ix_product_categories_tenant_org_status_name', 'tenant_id', 1, 1),
+    ('product_categories', 'ix_product_categories_tenant_org_status_name', 'organization_id', 2, 1),
+    ('product_categories', 'ix_product_categories_tenant_org_status_name', 'status', 3, 1),
+    ('product_categories', 'ix_product_categories_tenant_org_status_name', 'name', 4, 1),
+    ('product_categories', 'ix_product_categories_tenant_org_status_name', 'id', 5, 1),
+    ('products', 'uq_products_id_tenant', 'id', 1, 0),
+    ('products', 'uq_products_id_tenant', 'tenant_id', 2, 0),
+    ('products', 'uq_products_id_tenant_org', 'id', 1, 0),
+    ('products', 'uq_products_id_tenant_org', 'tenant_id', 2, 0),
+    ('products', 'uq_products_id_tenant_org', 'organization_id', 3, 0),
+    ('products', 'ix_products_tenant_org_status_name', 'tenant_id', 1, 1),
+    ('products', 'ix_products_tenant_org_status_name', 'organization_id', 2, 1),
+    ('products', 'ix_products_tenant_org_status_name', 'status', 3, 1),
+    ('products', 'ix_products_tenant_org_status_name', 'name', 4, 1),
+    ('products', 'ix_products_tenant_org_status_name', 'id', 5, 1),
+    ('products', 'ix_products_tenant_org_category', 'tenant_id', 1, 1),
+    ('products', 'ix_products_tenant_org_category', 'organization_id', 2, 1),
+    ('products', 'ix_products_tenant_org_category', 'category_id', 3, 1),
+    ('products', 'ix_products_tenant_org_category', 'id', 4, 1),
+    ('product_external_mappings', 'uq_product_external_mapping_source', 'tenant_id', 1, 0),
+    ('product_external_mappings', 'uq_product_external_mapping_source', 'connector_key', 2, 0),
+    ('product_external_mappings', 'uq_product_external_mapping_source', 'external_product_id', 3, 0),
+    ('product_external_mappings', 'ix_product_external_mappings_product', 'tenant_id', 1, 1),
+    ('product_external_mappings', 'ix_product_external_mappings_product', 'product_id', 2, 1),
+    ('product_external_mappings', 'ix_product_external_mappings_product', 'id', 3, 1),
+    ('menus', 'uq_menus_id_tenant', 'id', 1, 0),
+    ('menus', 'uq_menus_id_tenant', 'tenant_id', 2, 0),
+    ('menus', 'uq_menus_id_tenant_org', 'id', 1, 0),
+    ('menus', 'uq_menus_id_tenant_org', 'tenant_id', 2, 0),
+    ('menus', 'uq_menus_id_tenant_org', 'organization_id', 3, 0),
+    ('menus', 'ix_menus_tenant_org_status_name', 'tenant_id', 1, 1),
+    ('menus', 'ix_menus_tenant_org_status_name', 'organization_id', 2, 1),
+    ('menus', 'ix_menus_tenant_org_status_name', 'status', 3, 1),
+    ('menus', 'ix_menus_tenant_org_status_name', 'name', 4, 1),
+    ('menus', 'ix_menus_tenant_org_status_name', 'id', 5, 1),
+    ('menu_locations', 'uq_menu_locations_tenant_menu_location', 'tenant_id', 1, 0),
+    ('menu_locations', 'uq_menu_locations_tenant_menu_location', 'menu_id', 2, 0),
+    ('menu_locations', 'uq_menu_locations_tenant_menu_location', 'location_id', 3, 0),
+    ('menu_locations', 'ix_menu_locations_tenant_location_status', 'tenant_id', 1, 1),
+    ('menu_locations', 'ix_menu_locations_tenant_location_status', 'location_id', 2, 1),
+    ('menu_locations', 'ix_menu_locations_tenant_location_status', 'status', 3, 1),
+    ('menu_locations', 'ix_menu_locations_tenant_location_status', 'menu_id', 4, 1),
+    ('menu_sections', 'uq_menu_sections_id_menu_tenant_org', 'id', 1, 0),
+    ('menu_sections', 'uq_menu_sections_id_menu_tenant_org', 'menu_id', 2, 0),
+    ('menu_sections', 'uq_menu_sections_id_menu_tenant_org', 'tenant_id', 3, 0),
+    ('menu_sections', 'uq_menu_sections_id_menu_tenant_org', 'organization_id', 4, 0),
+    ('menu_sections', 'ix_menu_sections_menu_status_order', 'tenant_id', 1, 1),
+    ('menu_sections', 'ix_menu_sections_menu_status_order', 'menu_id', 2, 1),
+    ('menu_sections', 'ix_menu_sections_menu_status_order', 'status', 3, 1),
+    ('menu_sections', 'ix_menu_sections_menu_status_order', 'display_order', 4, 1),
+    ('menu_sections', 'ix_menu_sections_menu_status_order', 'id', 5, 1),
+    ('menu_items', 'uq_menu_items_tenant_menu_product', 'tenant_id', 1, 0),
+    ('menu_items', 'uq_menu_items_tenant_menu_product', 'menu_id', 2, 0),
+    ('menu_items', 'uq_menu_items_tenant_menu_product', 'product_id', 3, 0),
+    ('menu_items', 'ix_menu_items_section_status_order', 'tenant_id', 1, 1),
+    ('menu_items', 'ix_menu_items_section_status_order', 'menu_id', 2, 1),
+    ('menu_items', 'ix_menu_items_section_status_order', 'section_id', 3, 1),
+    ('menu_items', 'ix_menu_items_section_status_order', 'status', 4, 1),
+    ('menu_items', 'ix_menu_items_section_status_order', 'display_order', 5, 1),
+    ('menu_items', 'ix_menu_items_section_status_order', 'id', 6, 1),
+    ('menu_items', 'ix_menu_items_tenant_product', 'tenant_id', 1, 1),
+    ('menu_items', 'ix_menu_items_tenant_product', 'product_id', 2, 1),
+    ('menu_items', 'ix_menu_items_tenant_product', 'menu_id', 3, 1),
+    ('menu_items', 'ix_menu_items_tenant_product', 'id', 4, 1),
 }
 
 EXPECTED_DOMAIN_CHECKS = {
@@ -228,6 +354,15 @@ EXPECTED_DOMAIN_CHECKS = {
     ('resources', 'ck_resources_type'),
     ('customers', 'ck_customers_status'),
     ('customers', 'ck_customers_source'),
+    ('product_categories', 'ck_product_categories_status'),
+    ('products', 'ck_products_status'),
+    ('products', 'ck_products_source'),
+    ('menus', 'ck_menus_status'),
+    ('menu_locations', 'ck_menu_locations_status'),
+    ('menu_sections', 'ck_menu_sections_status'),
+    ('menu_sections', 'ck_menu_sections_display_order'),
+    ('menu_items', 'ck_menu_items_status'),
+    ('menu_items', 'ck_menu_items_display_order'),
 }
 
 API_ROOT = Path(__file__).resolve().parents[1]
@@ -317,7 +452,10 @@ def _assert_database_contract(connection) -> None:
             FROM information_schema.TABLE_CONSTRAINTS
             WHERE CONSTRAINT_SCHEMA = DATABASE()
               AND CONSTRAINT_TYPE = 'CHECK'
-              AND TABLE_NAME IN ('resources', 'customers')
+              AND TABLE_NAME IN (
+                  'resources', 'customers', 'product_categories', 'products', 'menus',
+                  'menu_locations', 'menu_sections', 'menu_items'
+              )
             '''
         )
         assert {(row['TABLE_NAME'], row['CONSTRAINT_NAME']) for row in cursor.fetchall()} == (
@@ -325,14 +463,25 @@ def _assert_database_contract(connection) -> None:
         )
         cursor.execute(
             '''
-            SELECT COLLATION_NAME
+            SELECT TABLE_NAME, COLUMN_NAME, COLLATION_NAME
             FROM information_schema.COLUMNS
             WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'customer_external_identities'
-              AND COLUMN_NAME = 'external_customer_id'
+              AND (
+                  (TABLE_NAME = 'customer_external_identities'
+                   AND COLUMN_NAME = 'external_customer_id')
+                  OR
+                  (TABLE_NAME = 'product_external_mappings'
+                   AND COLUMN_NAME = 'external_product_id')
+              )
             '''
         )
-        assert cursor.fetchone()['COLLATION_NAME'] == 'utf8mb4_bin'
+        assert {
+            (row['TABLE_NAME'], row['COLUMN_NAME'], row['COLLATION_NAME'])
+            for row in cursor.fetchall()
+        } == {
+            ('customer_external_identities', 'external_customer_id', 'utf8mb4_bin'),
+            ('product_external_mappings', 'external_product_id', 'utf8mb4_bin'),
+        }
 
 
 def _run_alembic(database_name: str, revision: str) -> None:
@@ -419,7 +568,10 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
             FROM information_schema.TABLE_CONSTRAINTS
             WHERE CONSTRAINT_SCHEMA = DATABASE()
               AND CONSTRAINT_TYPE = 'CHECK'
-              AND TABLE_NAME IN ('resources', 'customers')
+              AND TABLE_NAME IN (
+                  'resources', 'customers', 'product_categories', 'products', 'menus',
+                  'menu_locations', 'menu_sections', 'menu_items'
+              )
             '''
         )
         assert {(row['TABLE_NAME'], row['CONSTRAINT_NAME']) for row in cursor.fetchall()} == (
@@ -427,14 +579,25 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
         )
         cursor.execute(
             '''
-            SELECT COLLATION_NAME
+            SELECT TABLE_NAME, COLUMN_NAME, COLLATION_NAME
             FROM information_schema.COLUMNS
             WHERE TABLE_SCHEMA = DATABASE()
-              AND TABLE_NAME = 'customer_external_identities'
-              AND COLUMN_NAME = 'external_customer_id'
+              AND (
+                  (TABLE_NAME = 'customer_external_identities'
+                   AND COLUMN_NAME = 'external_customer_id')
+                  OR
+                  (TABLE_NAME = 'product_external_mappings'
+                   AND COLUMN_NAME = 'external_product_id')
+              )
             '''
         )
-        assert cursor.fetchone()['COLLATION_NAME'] == 'utf8mb4_bin'
+        assert {
+            (row['TABLE_NAME'], row['COLUMN_NAME'], row['COLLATION_NAME'])
+            for row in cursor.fetchall()
+        } == {
+            ('customer_external_identities', 'external_customer_id', 'utf8mb4_bin'),
+            ('product_external_mappings', 'external_product_id', 'utf8mb4_bin'),
+        }
 
 
 def test_foreign_key_is_actually_enforced(sql_connection) -> None:
@@ -681,6 +844,67 @@ def test_upgrade_from_0005_reaches_customer_contract_and_upgrades_existing_tenan
             assert {row['code']: row['assignment_count'] for row in cursor.fetchall()} == {
                 'customer.manage': 1,
                 'customer.read': 1,
+            }
+    finally:
+        connection.close()
+
+
+def test_upgrade_from_0006_reaches_menu_product_contract_and_grants_permissions(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0006_customer_foundation')
+
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name, slug, status) VALUES ('Catalog Tenant', 'catalog', 'ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                '''
+                INSERT INTO roles (tenant_id, name, description, status)
+                VALUES (%s, 'TENANT_ADMIN', 'Existing administrator', 'ACTIVE')
+                ''',
+                (tenant_id,),
+            )
+            role_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO permissions (code, description) "
+                "VALUES ('product.read', 'Preexisting permission')"
+            )
+            permission_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO role_permissions (role_id, permission_id) VALUES (%s, %s)',
+                (role_id, permission_id),
+            )
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                '''
+                SELECT P.code, COUNT(*) AS assignment_count
+                FROM role_permissions AS RP
+                JOIN permissions AS P ON P.id = RP.permission_id
+                WHERE RP.role_id = %s
+                  AND P.code IN ('product.read', 'product.manage', 'menu.read', 'menu.manage')
+                GROUP BY P.code
+                ''',
+                (role_id,),
+            )
+            assert {row['code']: row['assignment_count'] for row in cursor.fetchall()} == {
+                'menu.manage': 1,
+                'menu.read': 1,
+                'product.manage': 1,
+                'product.read': 1,
             }
     finally:
         connection.close()

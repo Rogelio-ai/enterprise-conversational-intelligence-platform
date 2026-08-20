@@ -315,7 +315,9 @@ def test_bootstrap_is_idempotent(integration_settings, sql_connection) -> None:
                   'organization.read', 'organization.manage',
                   'location.read', 'location.manage',
                   'resource.read', 'resource.manage',
-                  'customer.read', 'customer.manage'
+                  'customer.read', 'customer.manage',
+                  'product.read', 'product.manage',
+                  'menu.read', 'menu.manage'
               )
             ORDER BY P.code
             ''',
@@ -326,8 +328,12 @@ def test_bootstrap_is_idempotent(integration_settings, sql_connection) -> None:
             'customer.read',
             'location.manage',
             'location.read',
+            'menu.manage',
+            'menu.read',
             'organization.manage',
             'organization.read',
+            'product.manage',
+            'product.read',
             'resource.manage',
             'resource.read',
         ]

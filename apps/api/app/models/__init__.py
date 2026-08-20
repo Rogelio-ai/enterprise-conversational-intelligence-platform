@@ -8,6 +8,15 @@ from app.models.identity import (
     TenantMembership,
     User,
 )
+from app.models.menu import (
+    Menu,
+    MenuItem,
+    MenuLocation,
+    MenuSection,
+    Product,
+    ProductCategory,
+    ProductExternalMapping,
+)
 from app.models.organization import Location, Organization
 from app.models.resource import Resource
 
@@ -15,9 +24,16 @@ __all__ = [
     'Customer',
     'CustomerExternalIdentity',
     'MembershipRole',
+    'Menu',
+    'MenuItem',
+    'MenuLocation',
+    'MenuSection',
     'Location',
     'Organization',
     'Permission',
+    'Product',
+    'ProductCategory',
+    'ProductExternalMapping',
     'Role',
     'RolePermission',
     'Resource',
