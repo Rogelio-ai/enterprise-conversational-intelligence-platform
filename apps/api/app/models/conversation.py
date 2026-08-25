@@ -207,6 +207,12 @@ class ConversationMessage(Base):
             'sequence_number',
             name='uq_conversation_messages_tenant_conversation_sequence',
         ),
+        UniqueConstraint(
+            'id',
+            'tenant_id',
+            'conversation_id',
+            name='uq_conversation_messages_id_tenant_conversation',
+        ),
         CheckConstraint('sequence_number >= 1', name='ck_conversation_messages_sequence'),
         CheckConstraint(
             "modality IN ('TEXT', 'VOICE', 'TOUCH')",

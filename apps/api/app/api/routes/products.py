@@ -13,7 +13,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthenticatedContext, get_db, require_permission
 from app.core.middleware import get_correlation_id
-from app.models import Menu, MenuItem, Organization, Product, ProductCategory
+from app.models import Menu, Organization, Product, ProductCategory
+from app.restaurant.catalog.queries import product_statement
 
 
 Lifecycle = Literal['ACTIVE', 'INACTIVE']
@@ -128,10 +129,6 @@ def _is_constraint(exc: IntegrityError, constraint_name: str) -> bool:
         return False
     match = _DUPLICATE_KEY_PATTERN.search(str(arguments[1]))
     return match is not None and match.group(1).rsplit('.', 1)[-1] == constraint_name
-
-
-def _escaped_like(value: str) -> str:
-    return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
 
 
 async def _get_organization(
@@ -298,6 +295,7 @@ async def list_products(
     offset: int = Query(default=0, ge=0),
 ) -> ProductListResponse:
     await _get_organization(db, tenant_id=context.tenant_id, organization_id=organization_id)
+    normalized_q = q.strip() if q is not None else None
     if category_id is not None:
         await _get_category(
             db,
@@ -305,9 +303,13 @@ async def list_products(
             category_id=category_id,
             organization_id=organization_id,
         )
-    statement = select(Product).where(
-        Product.tenant_id == context.tenant_id,
-        Product.organization_id == organization_id,
+    statement = product_statement(
+        tenant_id=context.tenant_id,
+        organization_id=organization_id,
+        status=status_filter,
+        category_id=category_id,
+        menu_id=menu_id,
+        query_text=normalized_q,
     )
     if menu_id is not None:
         menu = await db.scalar(
@@ -319,25 +321,12 @@ async def list_products(
         )
         if menu is None:
             raise _not_found('Menu')
-        statement = statement.join(
-            MenuItem,
-            (MenuItem.product_id == Product.id)
-            & (MenuItem.tenant_id == Product.tenant_id),
-        ).where(MenuItem.menu_id == menu_id)
-    if status_filter is not None:
-        statement = statement.where(Product.status == status_filter)
-    if category_id is not None:
-        statement = statement.where(Product.category_id == category_id)
     if q is not None:
-        normalized_q = q.strip()
         if not normalized_q:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail='Product search text cannot be blank',
             )
-        statement = statement.where(
-            Product.name.like(f'%{_escaped_like(normalized_q)}%', escape='\\')
-        )
     result = await db.execute(statement.order_by(Product.id).limit(limit).offset(offset))
     return ProductListResponse(items=list(result.scalars().all()), limit=limit, offset=offset)
 

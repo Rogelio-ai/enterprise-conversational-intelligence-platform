@@ -2,13 +2,22 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import exists, or_, select
 from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.models import Location, Product, ProductExternalMapping, ProductPrice
+from app.models import (
+    Location,
+    Product,
+    ProductExternalMapping,
+    ProductPrice,
+    Promotion,
+    PromotionLocation,
+    PromotionProduct,
+)
 from app.restaurant.integrations.pos.contracts import LocationScopedPosRequestContext
 from app.restaurant.integrations.pos.errors import PosInvalidDataError, PosMappingError
 from app.restaurant.integrations.pos.ports import PricingPort
@@ -20,6 +29,91 @@ _WINNER_VISIBILITY_DELAYS_SECONDS = (0.01, 0.02, 0.04)
 
 class PriceAuthorityConflictError(RuntimeError):
     """A POS projection attempted to replace a platform-authored Price."""
+
+
+class PricingReadContextError(LookupError):
+    """Canonical Product/Location context was not found in trusted scope."""
+
+
+async def get_canonical_current_price(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    product_id: int,
+    location_id: int,
+) -> ProductPrice | None:
+    product = await db.scalar(
+        select(Product).where(Product.id == product_id, Product.tenant_id == tenant_id)
+    )
+    if product is None:
+        raise PricingReadContextError('Product not found')
+    location = await db.scalar(
+        select(Location).where(
+            Location.id == location_id,
+            Location.tenant_id == tenant_id,
+            Location.organization_id == product.organization_id,
+        )
+    )
+    if location is None:
+        raise PricingReadContextError('Location not found')
+    return await db.scalar(
+        select(ProductPrice).where(
+            ProductPrice.tenant_id == tenant_id,
+            ProductPrice.product_id == product.id,
+            ProductPrice.location_id == location.id,
+            ProductPrice.status == 'ACTIVE',
+        )
+    )
+
+
+async def find_canonical_applicable_promotions(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    product_id: int,
+    location_id: int,
+    effective_at: datetime,
+) -> tuple[Promotion, ...]:
+    product = await db.scalar(
+        select(Product).where(Product.id == product_id, Product.tenant_id == tenant_id)
+    )
+    if product is None:
+        raise PricingReadContextError('Product not found')
+    location = await db.scalar(
+        select(Location).where(
+            Location.id == location_id,
+            Location.tenant_id == tenant_id,
+            Location.organization_id == product.organization_id,
+        )
+    )
+    if location is None:
+        raise PricingReadContextError('Location not found')
+    product_match = exists().where(
+        PromotionProduct.promotion_id == Promotion.id,
+        PromotionProduct.tenant_id == tenant_id,
+        PromotionProduct.product_id == product.id,
+        PromotionProduct.status == 'ACTIVE',
+    )
+    location_match = exists().where(
+        PromotionLocation.promotion_id == Promotion.id,
+        PromotionLocation.tenant_id == tenant_id,
+        PromotionLocation.location_id == location.id,
+        PromotionLocation.status == 'ACTIVE',
+    )
+    result = await db.execute(
+        select(Promotion)
+        .where(
+            Promotion.tenant_id == tenant_id,
+            Promotion.organization_id == product.organization_id,
+            Promotion.status == 'ACTIVE',
+            Promotion.starts_at <= effective_at,
+            effective_at < Promotion.ends_at,
+            product_match,
+            or_(Promotion.applies_to_all_locations.is_(True), location_match),
+        )
+        .order_by(Promotion.id)
+    )
+    return tuple(result.scalars().all())
 
 
 def _pos_error(error_type, message: str, context: LocationScopedPosRequestContext):

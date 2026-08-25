@@ -40,6 +40,8 @@ APPLICATION_TABLES = {
     'conversations',
     'conversation_participants',
     'conversation_messages',
+    'intelligence_derivations',
+    'restaurant_message_intents',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -62,6 +64,8 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'conversations',
     'conversation_participants',
     'conversation_messages',
+    'intelligence_derivations',
+    'restaurant_message_intents',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -405,6 +409,14 @@ EXPECTED_DOMAIN_CHECKS = {
     ('conversation_messages', 'ck_conversation_messages_language_source'),
     ('conversation_messages', 'ck_conversation_messages_language_pair'),
     ('conversation_messages', 'ck_conversation_messages_language_length'),
+    ('intelligence_derivations', 'ck_intelligence_derivations_schema_key'),
+    ('intelligence_derivations', 'ck_intelligence_derivations_schema_version'),
+    ('intelligence_derivations', 'ck_intelligence_derivations_producer_key'),
+    ('intelligence_derivations', 'ck_intelligence_derivations_producer_version'),
+    ('intelligence_derivations', 'ck_intelligence_derivations_correlation_id'),
+    ('restaurant_message_intents', 'ck_restaurant_message_intents_ordinal'),
+    ('restaurant_message_intents', 'ck_restaurant_message_intents_confidence'),
+    ('restaurant_message_intents', 'ck_restaurant_message_intents_code'),
 }
 
 for table, prefix, target, target_table in (
@@ -453,7 +465,13 @@ _index('conversation_participants', 'ix_conversation_participants_conversation_t
 _index('conversation_participants', 'ix_conversation_participants_customer', ('tenant_id', 'customer_id', 'id'), 1)
 _index('conversation_participants', 'ix_conversation_participants_membership', ('tenant_id', 'tenant_membership_id', 'id'), 1)
 _index('conversation_messages', 'uq_conversation_messages_tenant_conversation_sequence', ('tenant_id', 'conversation_id', 'sequence_number'), 0)
+_index('conversation_messages', 'uq_conversation_messages_id_tenant_conversation', ('id', 'tenant_id', 'conversation_id'), 0)
 _index('conversation_messages', 'ix_conversation_messages_participant', ('tenant_id', 'participant_id', 'id'), 1)
+_index('intelligence_derivations', 'uq_intelligence_derivations_id_tenant', ('id', 'tenant_id'), 0)
+_index('intelligence_derivations', 'ix_intelligence_derivations_tenant_message_created', ('tenant_id', 'source_message_id', 'created_at', 'id'), 1)
+_index('intelligence_derivations', 'ix_intelligence_derivations_tenant_conversation', ('tenant_id', 'conversation_id', 'id'), 1)
+_index('restaurant_message_intents', 'uq_restaurant_message_intents_derivation_ordinal', ('derivation_id', 'ordinal'), 0)
+_index('restaurant_message_intents', 'ix_restaurant_message_intents_tenant_code', ('tenant_id', 'intent_code', 'id'), 1)
 
 for constraint, table, local_columns, target_table, target_columns in (
     ('fk_conversations_tenant', 'conversations', ('tenant_id',), 'tenants', ('id',)),
@@ -467,6 +485,11 @@ for constraint, table, local_columns, target_table, target_columns in (
     ('fk_conversation_messages_tenant', 'conversation_messages', ('tenant_id',), 'tenants', ('id',)),
     ('fk_conversation_messages_conversation_tenant', 'conversation_messages', ('conversation_id', 'tenant_id'), 'conversations', ('id', 'tenant_id')),
     ('fk_conversation_messages_participant_tenant_conversation', 'conversation_messages', ('participant_id', 'tenant_id', 'conversation_id'), 'conversation_participants', ('id', 'tenant_id', 'conversation_id')),
+    ('fk_intelligence_derivations_tenant', 'intelligence_derivations', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_intelligence_derivations_conversation_tenant', 'intelligence_derivations', ('conversation_id', 'tenant_id'), 'conversations', ('id', 'tenant_id')),
+    ('fk_intelligence_derivations_message_tenant_conversation', 'intelligence_derivations', ('source_message_id', 'tenant_id', 'conversation_id'), 'conversation_messages', ('id', 'tenant_id', 'conversation_id')),
+    ('fk_restaurant_message_intents_tenant', 'restaurant_message_intents', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_restaurant_message_intents_derivation_tenant', 'restaurant_message_intents', ('derivation_id', 'tenant_id'), 'intelligence_derivations', ('id', 'tenant_id')),
 ):
     EXPECTED_FOREIGN_KEY_COLUMNS.update(
         (constraint, table, local, target_table, target, position)
@@ -564,7 +587,8 @@ def _assert_database_contract(connection) -> None:
                   'resources', 'customers', 'product_categories', 'products', 'menus',
                   'menu_locations', 'menu_sections', 'menu_items', 'product_prices',
                   'promotions', 'promotion_products', 'promotion_locations',
-                  'conversations', 'conversation_participants', 'conversation_messages'
+                  'conversations', 'conversation_participants', 'conversation_messages',
+                  'intelligence_derivations', 'restaurant_message_intents'
               )
             '''
         )
@@ -682,7 +706,8 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
                   'resources', 'customers', 'product_categories', 'products', 'menus',
                   'menu_locations', 'menu_sections', 'menu_items', 'product_prices',
                   'promotions', 'promotion_products', 'promotion_locations',
-                  'conversations', 'conversation_participants', 'conversation_messages'
+                  'conversations', 'conversation_participants', 'conversation_messages',
+                  'intelligence_derivations', 'restaurant_message_intents'
               )
             '''
         )
@@ -1116,6 +1141,63 @@ def test_upgrade_from_0008_reaches_conversation_contract_and_grants_permissions(
                 'conversation.manage': 1,
                 'conversation.read': 1,
             }
+    finally:
+        connection.close()
+
+
+def test_upgrade_from_0009_reaches_intelligence_derivation_contract(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0009_conversation_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name, slug, status) VALUES ('WS11 Tenant', 'ws11', 'ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id, code, name, status) "
+                "VALUES (%s, 'ORG', 'Org', 'ACTIVE')",
+                (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO conversations "
+                "(tenant_id, organization_id, channel, status, next_message_sequence) "
+                "VALUES (%s, %s, 'PHONE', 'ACTIVE', 2)",
+                (tenant_id, organization_id),
+            )
+            conversation_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO conversation_participants "
+                "(tenant_id, conversation_id, participant_type) "
+                "VALUES (%s, %s, 'CUSTOMER')",
+                (tenant_id, conversation_id),
+            )
+            participant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO conversation_messages "
+                "(tenant_id, conversation_id, participant_id, sequence_number, modality, content_text) "
+                "VALUES (%s, %s, %s, 1, 'TEXT', 'preserved evidence')",
+                (tenant_id, conversation_id, participant_id),
+            )
+            message_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT content_text FROM conversation_messages WHERE id=%s',
+                (message_id,),
+            )
+            assert cursor.fetchone()['content_text'] == 'preserved evidence'
     finally:
         connection.close()
 

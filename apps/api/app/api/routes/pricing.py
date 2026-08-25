@@ -7,13 +7,14 @@ from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_serializer, field_validator, model_validator
-from sqlalchemy import and_, exists, or_, select
+from sqlalchemy import and_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthenticatedContext, get_db, require_permission
 from app.core.middleware import get_correlation_id
 from app.models import Location, Organization, Product, ProductPrice, Promotion, PromotionLocation, PromotionProduct
+from app.restaurant.pricing import service as pricing_service
 
 router = APIRouter(tags=['pricing', 'promotions'])
 logger = logging.getLogger('ecip.pricing')
@@ -384,9 +385,10 @@ async def patch_price(price_id: Annotated[int, Path(gt=0)], payload: PricePatch,
 
 @router.get('/products/{product_id}/price', response_model=CurrentPriceResponse)
 async def current_price(product_id: Annotated[int, Path(gt=0)], location_id: int = Query(gt=0), context: Annotated[AuthenticatedContext, Depends(require_permission('pricing.read'))] = None, db: Annotated[AsyncSession, Depends(get_db)] = None):
-    product = await _product(db, context.tenant_id, product_id)
-    await _location(db, context.tenant_id, location_id, product.organization_id)
-    price = await db.scalar(select(ProductPrice).where(ProductPrice.tenant_id == context.tenant_id, ProductPrice.product_id == product_id, ProductPrice.location_id == location_id, ProductPrice.status == 'ACTIVE'))
+    try:
+        price = await pricing_service.get_canonical_current_price(db, tenant_id=context.tenant_id, product_id=product_id, location_id=location_id)
+    except pricing_service.PricingReadContextError as exc:
+        raise HTTPException(404, str(exc)) from exc
     if price is None: raise HTTPException(404, 'Current Price not found')
     return CurrentPriceResponse(price_id=price.id, product_id=price.product_id, location_id=price.location_id, amount=price.amount, currency=price.currency, status=price.status, source=price.source, updated_at=price.updated_at)
 
@@ -395,12 +397,11 @@ async def current_price(product_id: Annotated[int, Path(gt=0)], location_id: int
 async def applicable_promotions(product_id: int = Query(gt=0), location_id: int = Query(gt=0), effective_at: datetime = Query(), context: Annotated[AuthenticatedContext, Depends(require_permission('promotion.read'))] = None, db: Annotated[AsyncSession, Depends(get_db)] = None):
     try: effective = _utc_naive(effective_at)
     except ValueError as exc: raise HTTPException(422, str(exc)) from exc
-    product = await _product(db, context.tenant_id, product_id)
-    await _location(db, context.tenant_id, location_id, product.organization_id)
-    product_match = exists().where(PromotionProduct.promotion_id == Promotion.id, PromotionProduct.tenant_id == context.tenant_id, PromotionProduct.product_id == product_id, PromotionProduct.status == 'ACTIVE')
-    location_match = exists().where(PromotionLocation.promotion_id == Promotion.id, PromotionLocation.tenant_id == context.tenant_id, PromotionLocation.location_id == location_id, PromotionLocation.status == 'ACTIVE')
-    result = await db.execute(select(Promotion).where(Promotion.tenant_id == context.tenant_id, Promotion.organization_id == product.organization_id, Promotion.status == 'ACTIVE', Promotion.starts_at <= effective, effective < Promotion.ends_at, product_match, or_(Promotion.applies_to_all_locations.is_(True), location_match)).order_by(Promotion.id))
-    return [CandidateResponse(promotion_id=p.id, **{k:getattr(p,k) for k in ('name','promotion_type','benefit_value','currency','starts_at','ends_at','applies_to_all_locations')}) for p in result.scalars()]
+    try:
+        promotions = await pricing_service.find_canonical_applicable_promotions(db, tenant_id=context.tenant_id, product_id=product_id, location_id=location_id, effective_at=effective)
+    except pricing_service.PricingReadContextError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    return [CandidateResponse(promotion_id=p.id, **{k:getattr(p,k) for k in ('name','promotion_type','benefit_value','currency','starts_at','ends_at','applies_to_all_locations')}) for p in promotions]
 
 
 @router.get('/promotions', response_model=PromotionList)

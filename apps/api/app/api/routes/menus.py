@@ -22,6 +22,7 @@ from app.models import (
     Organization,
     Product,
 )
+from app.restaurant.catalog.queries import load_menu_graph, menu_statement
 
 
 Lifecycle = Literal['ACTIVE', 'INACTIVE']
@@ -215,10 +216,6 @@ def _is_constraint(exc: IntegrityError, constraint_name: str) -> bool:
     return match is not None and match.group(1).rsplit('.', 1)[-1] == constraint_name
 
 
-def _escaped_like(value: str) -> str:
-    return value.replace('\\', '\\\\').replace('%', '\\%').replace('_', '\\_')
-
-
 async def _get_organization(
     db: AsyncSession, *, tenant_id: int, organization_id: int
 ) -> Organization:
@@ -340,10 +337,7 @@ async def list_menus(
     offset: int = Query(default=0, ge=0),
 ) -> MenuListResponse:
     await _get_organization(db, tenant_id=context.tenant_id, organization_id=organization_id)
-    statement = select(Menu).where(
-        Menu.tenant_id == context.tenant_id,
-        Menu.organization_id == organization_id,
-    )
+    normalized_q = q.strip() if q is not None else None
     if location_id is not None:
         await _get_location(
             db,
@@ -351,20 +345,19 @@ async def list_menus(
             location_id=location_id,
             organization_id=organization_id,
         )
-        statement = statement.join(
-            MenuLocation,
-            (MenuLocation.menu_id == Menu.id) & (MenuLocation.tenant_id == Menu.tenant_id),
-        ).where(MenuLocation.location_id == location_id)
-    if status_filter is not None:
-        statement = statement.where(Menu.status == status_filter)
     if q is not None:
-        normalized_q = q.strip()
         if not normalized_q:
             raise HTTPException(
                 status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail='Menu search text cannot be blank',
             )
-        statement = statement.where(Menu.name.like(f'%{_escaped_like(normalized_q)}%', escape='\\'))
+    statement = menu_statement(
+        tenant_id=context.tenant_id,
+        organization_id=organization_id,
+        location_id=location_id,
+        status=status_filter,
+        query_text=normalized_q,
+    )
     result = await db.execute(statement.order_by(Menu.id).limit(limit).offset(offset))
     return MenuListResponse(items=list(result.scalars().all()), limit=limit, offset=offset)
 
@@ -397,52 +390,35 @@ async def get_menu(
     context: Annotated[AuthenticatedContext, Depends(require_permission('menu.read'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> MenuDetailResponse:
-    menu = await _get_menu(db, tenant_id=context.tenant_id, menu_id=menu_id)
-    location_result = await db.execute(
-        select(MenuLocation)
-        .where(MenuLocation.tenant_id == context.tenant_id, MenuLocation.menu_id == menu.id)
-        .order_by(MenuLocation.id)
+    graph = await load_menu_graph(
+        db, tenant_id=context.tenant_id, menu_id=menu_id, active_only=False
     )
-    section_result = await db.execute(
-        select(MenuSection)
-        .where(MenuSection.tenant_id == context.tenant_id, MenuSection.menu_id == menu.id)
-        .order_by(MenuSection.display_order, MenuSection.id)
-    )
-    item_result = await db.execute(
-        select(MenuItem, Product)
-        .join(
-            Product,
-            (Product.id == MenuItem.product_id)
-            & (Product.tenant_id == MenuItem.tenant_id),
-        )
-        .where(MenuItem.tenant_id == context.tenant_id, MenuItem.menu_id == menu.id)
-        .order_by(MenuItem.display_order, MenuItem.id)
-    )
-    items_by_section: dict[int, list[MenuItemDetailResponse]] = {}
-    for item, product in item_result.all():
-        detail = MenuItemDetailResponse(
-            **MenuItemResponse.model_validate(item).model_dump(),
-            product=MenuProductSummary(
-                id=product.id,
-                category_id=product.category_id,
-                name=product.name,
-                description=product.description,
-                status=product.status,
-            ),
-        )
-        items_by_section.setdefault(item.section_id, []).append(detail)
+    if graph is None:
+        raise _not_found('Menu')
     sections = [
         MenuSectionDetailResponse(
-            **MenuSectionResponse.model_validate(section).model_dump(),
-            items=items_by_section.get(section.id, []),
+            **MenuSectionResponse.model_validate(section_record.section).model_dump(),
+            items=[
+                MenuItemDetailResponse(
+                    **MenuItemResponse.model_validate(item).model_dump(),
+                    product=MenuProductSummary(
+                        id=product.id,
+                        category_id=product.category_id,
+                        name=product.name,
+                        description=product.description,
+                        status=product.status,
+                    ),
+                )
+                for item, product in section_record.items
+            ],
         )
-        for section in section_result.scalars().all()
+        for section_record in graph.sections
     ]
     return MenuDetailResponse(
-        **MenuResponse.model_validate(menu).model_dump(),
+        **MenuResponse.model_validate(graph.menu).model_dump(),
         locations=[
             MenuLocationResponse.model_validate(location)
-            for location in location_result.scalars().all()
+            for location in graph.locations
         ],
         sections=sections,
     )

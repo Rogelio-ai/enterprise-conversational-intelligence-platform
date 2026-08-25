@@ -9,6 +9,7 @@ from app.models.identity import (
     TenantMembership,
     User,
 )
+from app.models.intelligence import IntelligenceDerivation, RestaurantMessageIntent
 from app.models.menu import (
     Menu,
     MenuItem,
@@ -34,6 +35,7 @@ __all__ = [
     'MenuLocation',
     'MenuSection',
     'Location',
+    'IntelligenceDerivation',
     'Organization',
     'Permission',
     'Product',
@@ -46,6 +48,7 @@ __all__ = [
     'Role',
     'RolePermission',
     'Resource',
+    'RestaurantMessageIntent',
     'Tenant',
     'TenantMembership',
     'User',

@@ -270,7 +270,15 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
-The current application migration head is `0009_conversation_foundation`.
+The current application migration head is `0010_intelligence_derivation_foundation`.
+
+The bounded Restaurant conversational-intelligence foundation records provider-neutral,
+append-only derivation provenance and versioned Restaurant message intents without changing the
+canonical Conversation evidence. An internal Restaurant-owned understanding port accepts trusted
+Conversation scope and bounded ordered history; only a deterministic test fake is provided. Typed
+read-only knowledge capabilities reuse canonical Menu, Product, current Price, and Promotion
+candidate rules. There is no public intelligence endpoint, AI provider, response generator,
+business mutation, Product Composition, Order Draft, RAG, translation, or voice processing.
 
 The Restaurant domain now includes an Organization-owned canonical Menu and Product foundation.
 Product categories classify reusable Products, while one-level Menu sections control presentation;
