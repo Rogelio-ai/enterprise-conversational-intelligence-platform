@@ -21,6 +21,12 @@ from app.models.menu import (
 )
 from app.models.organization import Location, Organization
 from app.models.pricing import ProductPrice, Promotion, PromotionLocation, PromotionProduct
+from app.models.product_structure import (
+    ProductChoiceGroup,
+    ProductChoiceOption,
+    ProductComponent,
+    ProductComposition,
+)
 from app.models.resource import Resource
 
 __all__ = [
@@ -40,6 +46,10 @@ __all__ = [
     'Permission',
     'Product',
     'ProductCategory',
+    'ProductChoiceGroup',
+    'ProductChoiceOption',
+    'ProductComponent',
+    'ProductComposition',
     'ProductExternalMapping',
     'ProductPrice',
     'Promotion',

@@ -108,6 +108,17 @@ def sql_connection(integration_settings: Settings):
                     '(SELECT id FROM tenants WHERE slug LIKE %s)',
                     (f'{prefix}%',),
                 )
+            for table in (
+                'product_choice_options',
+                'product_choice_groups',
+                'product_components',
+                'product_compositions',
+            ):
+                cursor.execute(
+                    f'DELETE FROM {table} WHERE tenant_id IN '
+                    '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                    (f'{prefix}%',),
+                )
             cursor.execute(
                 'DELETE FROM menu_items WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
@@ -135,6 +146,11 @@ def sql_connection(integration_settings: Settings):
             )
             cursor.execute(
                 'DELETE FROM products WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'UPDATE product_categories SET parent_id = NULL WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),
             )

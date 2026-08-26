@@ -13,13 +13,18 @@ from app.restaurant.catalog.queries import (
     menu_statement,
     product_statement,
 )
+from app.restaurant.catalog.structure import load_composition_graph
 from app.restaurant.intelligence.errors import KnowledgeNotFoundError, KnowledgeUnavailableError
 from app.restaurant.knowledge.contracts import (
+    ChoiceGroupKnowledge,
+    ChoiceOptionKnowledge,
     CurrentPriceKnowledge,
+    FixedComponentKnowledge,
     LocationMenuKnowledge,
     MenuItemKnowledge,
     MenuSectionKnowledge,
     ProductKnowledge,
+    ProductCompositionKnowledge,
     PromotionCandidateKnowledge,
 )
 from app.restaurant.pricing import service as pricing_service
@@ -201,6 +206,57 @@ async def get_product(
     if product is None:
         raise KnowledgeNotFoundError('Product not found')
     return _product(product)
+
+
+@_stable_knowledge_errors
+async def get_product_composition(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    organization_id: int,
+    product_id: int,
+) -> ProductCompositionKnowledge:
+    await _require_organization(db, tenant_id=tenant_id, organization_id=organization_id)
+    graph = await load_composition_graph(
+        db,
+        tenant_id=tenant_id,
+        product_id=product_id,
+        active_only=True,
+    )
+    if graph is None or graph.composition.organization_id != organization_id:
+        raise KnowledgeNotFoundError('Active Product Composition not found')
+    return ProductCompositionKnowledge(
+        composition_id=graph.composition.id,
+        product=_product(graph.product),
+        fixed_components=tuple(
+            FixedComponentKnowledge(
+                component_id=record.component.id,
+                product=_product(record.product),
+                quantity=record.component.quantity,
+                display_order=record.component.display_order,
+            )
+            for record in graph.components
+        ),
+        choice_groups=tuple(
+            ChoiceGroupKnowledge(
+                group_id=record.group.id,
+                name=record.group.name,
+                min_selections=record.group.min_selections,
+                max_selections=record.group.max_selections,
+                display_order=record.group.display_order,
+                options=tuple(
+                    ChoiceOptionKnowledge(
+                        option_id=option.option.id,
+                        product=_product(option.product),
+                        quantity=option.option.quantity,
+                        display_order=option.option.display_order,
+                    )
+                    for option in record.options
+                ),
+            )
+            for record in graph.groups
+        ),
+    )
 
 
 @_stable_knowledge_errors

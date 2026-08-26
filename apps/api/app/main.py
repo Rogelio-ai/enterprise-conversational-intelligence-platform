@@ -15,6 +15,7 @@ from app.api.routes.locations import router as locations_router
 from app.api.routes.menus import router as menus_router
 from app.api.routes.organizations import router as organizations_router
 from app.api.routes.products import router as products_router
+from app.api.routes.product_compositions import router as product_compositions_router
 from app.api.routes.pricing import router as pricing_router
 from app.api.routes.resources import router as resources_router
 from app.api.routes.tenants import router as tenants_router
@@ -67,6 +68,7 @@ def create_app(
     app.include_router(customers_router)
     app.include_router(conversations_router)
     app.include_router(products_router)
+    app.include_router(product_compositions_router)
     app.include_router(pricing_router)
     app.include_router(menus_router)
     return app

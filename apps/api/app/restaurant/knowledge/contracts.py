@@ -60,3 +60,37 @@ class PromotionCandidateKnowledge:
     starts_at: datetime
     ends_at: datetime
     applies_to_all_locations: bool
+
+
+@dataclass(frozen=True, slots=True)
+class FixedComponentKnowledge:
+    component_id: int
+    product: ProductKnowledge
+    quantity: Decimal
+    display_order: int
+
+
+@dataclass(frozen=True, slots=True)
+class ChoiceOptionKnowledge:
+    option_id: int
+    product: ProductKnowledge
+    quantity: Decimal
+    display_order: int
+
+
+@dataclass(frozen=True, slots=True)
+class ChoiceGroupKnowledge:
+    group_id: int
+    name: str
+    min_selections: int
+    max_selections: int
+    display_order: int
+    options: tuple[ChoiceOptionKnowledge, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class ProductCompositionKnowledge:
+    composition_id: int
+    product: ProductKnowledge
+    fixed_components: tuple[FixedComponentKnowledge, ...]
+    choice_groups: tuple[ChoiceGroupKnowledge, ...]

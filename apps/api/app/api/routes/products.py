@@ -15,6 +15,7 @@ from app.api.deps import AuthenticatedContext, get_db, require_permission
 from app.core.middleware import get_correlation_id
 from app.models import Menu, Organization, Product, ProductCategory
 from app.restaurant.catalog.queries import product_statement
+from app.restaurant.catalog import structure
 
 
 Lifecycle = Literal['ACTIVE', 'INACTIVE']
@@ -28,20 +29,27 @@ class ProductCategoryCreateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
 
     organization_id: int = Field(gt=0)
+    parent_id: int | None = Field(default=None, gt=0)
     name: str = Field(min_length=1, max_length=200)
+    display_order: int = Field(default=0, ge=0)
 
 
 class ProductCategoryUpdateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
 
+    parent_id: int | None = Field(default=None, gt=0)
     name: str | None = Field(default=None, min_length=1, max_length=200)
+    display_order: int | None = Field(default=None, ge=0)
     status: Lifecycle | None = None
 
     @model_validator(mode='after')
     def validate_patch(self) -> 'ProductCategoryUpdateRequest':
         if not self.model_fields_set:
             raise ValueError('At least one field is required')
-        if any(getattr(self, field) is None for field in self.model_fields_set):
+        if any(
+            getattr(self, field) is None
+            for field in self.model_fields_set - {'parent_id'}
+        ):
             raise ValueError('Product Category fields cannot be null')
         return self
 
@@ -52,7 +60,9 @@ class ProductCategoryResponse(BaseModel):
     id: int
     tenant_id: int
     organization_id: int
+    parent_id: int | None
     name: str
+    display_order: int
     status: str
     created_at: datetime
     updated_at: datetime
@@ -198,7 +208,11 @@ async def list_product_categories(
     )
     if status_filter is not None:
         statement = statement.where(ProductCategory.status == status_filter)
-    result = await db.execute(statement.order_by(ProductCategory.id).limit(limit).offset(offset))
+    result = await db.execute(
+        statement.order_by(ProductCategory.display_order, ProductCategory.id)
+        .limit(limit)
+        .offset(offset)
+    )
     return ProductCategoryListResponse(
         items=list(result.scalars().all()), limit=limit, offset=offset
     )
@@ -217,10 +231,23 @@ async def create_product_category(
     await _get_organization(
         db, tenant_id=context.tenant_id, organization_id=payload.organization_id
     )
+    if payload.parent_id is not None:
+        try:
+            await structure.validate_new_category_parent(
+                db,
+                tenant_id=context.tenant_id,
+                organization_id=payload.organization_id,
+                parent_id=payload.parent_id,
+            )
+        except structure.StructureNotFoundError as exc:
+            await db.rollback()
+            raise _not_found('Parent Product Category') from exc
     category = ProductCategory(
         tenant_id=context.tenant_id,
         organization_id=payload.organization_id,
+        parent_id=payload.parent_id,
         name=payload.name,
+        display_order=payload.display_order,
         status='ACTIVE',
     )
     db.add(category)
@@ -254,10 +281,26 @@ async def update_product_category(
     context: Annotated[AuthenticatedContext, Depends(require_permission('product.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ProductCategory:
-    category = await _get_category(
-        db, tenant_id=context.tenant_id, category_id=category_id, for_update=True
-    )
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    updates = payload.model_dump(exclude_unset=True)
+    if 'parent_id' in updates:
+        try:
+            category = await structure.set_category_parent(
+                db,
+                tenant_id=context.tenant_id,
+                category_id=category_id,
+                parent_id=updates.pop('parent_id'),
+            )
+        except structure.StructureNotFoundError as exc:
+            await db.rollback()
+            raise _not_found(str(exc).removesuffix(' not found')) from exc
+        except structure.StructureConflictError as exc:
+            await db.rollback()
+            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
+    else:
+        category = await _get_category(
+            db, tenant_id=context.tenant_id, category_id=category_id, for_update=True
+        )
+    for field, value in updates.items():
         setattr(category, field, value)
     try:
         await db.commit()

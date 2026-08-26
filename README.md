@@ -251,6 +251,22 @@ Commercial Status
 
 **Pre-MVP**
 
+## Restaurant Product Structure Foundation
+
+Restaurant Products retain one canonical Organization-scoped identity. `ProductCategory` supports
+cycle-safe parent/child classification and deterministic display ordering while remaining distinct
+from customer-facing `MenuSection` placement.
+
+A Product may own one current commercial composition containing:
+
+* Fixed canonical Product components with exact included quantities.
+* Choice groups with explicit minimum and maximum selections.
+* Canonical Product options with exact included quantities.
+* Deterministic, read-only selection validation for future Order Draft consumption.
+
+Commercial composition is intentionally single-level. Nested compositions, Buffet entitlement,
+daily availability, price deltas, Recipe, Ingredient, Inventory and Order Draft remain deferred.
+
 ---
 
 # Development Runtime

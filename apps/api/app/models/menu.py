@@ -35,6 +35,16 @@ class ProductCategory(TimestampMixin, Base):
             name='fk_product_categories_organization_tenant',
             ondelete='RESTRICT',
         ),
+        ForeignKeyConstraint(
+            ['parent_id', 'tenant_id', 'organization_id'],
+            [
+                'product_categories.id',
+                'product_categories.tenant_id',
+                'product_categories.organization_id',
+            ],
+            name='fk_product_categories_parent_tenant_org',
+            ondelete='RESTRICT',
+        ),
         UniqueConstraint('id', 'tenant_id', name='uq_product_categories_id_tenant'),
         UniqueConstraint(
             'id',
@@ -51,6 +61,9 @@ class ProductCategory(TimestampMixin, Base):
         CheckConstraint(
             "status IN ('ACTIVE', 'INACTIVE')", name='ck_product_categories_status'
         ),
+        CheckConstraint(
+            'display_order >= 0', name='ck_product_categories_display_order'
+        ),
         Index(
             'ix_product_categories_tenant_org_status_name',
             'tenant_id',
@@ -59,12 +72,25 @@ class ProductCategory(TimestampMixin, Base):
             'name',
             'id',
         ),
+        Index(
+            'ix_product_categories_tenant_org_parent_status_order',
+            'tenant_id',
+            'organization_id',
+            'parent_id',
+            'status',
+            'display_order',
+            'id',
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    parent_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
+    display_order: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default='0'
+    )
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default='ACTIVE', server_default=_ACTIVE_DEFAULT
     )

@@ -42,6 +42,10 @@ APPLICATION_TABLES = {
     'conversation_messages',
     'intelligence_derivations',
     'restaurant_message_intents',
+    'product_compositions',
+    'product_components',
+    'product_choice_groups',
+    'product_choice_options',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -66,6 +70,10 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'conversation_messages',
     'intelligence_derivations',
     'restaurant_message_intents',
+    'product_compositions',
+    'product_components',
+    'product_choice_groups',
+    'product_choice_options',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -417,6 +425,19 @@ EXPECTED_DOMAIN_CHECKS = {
     ('restaurant_message_intents', 'ck_restaurant_message_intents_ordinal'),
     ('restaurant_message_intents', 'ck_restaurant_message_intents_confidence'),
     ('restaurant_message_intents', 'ck_restaurant_message_intents_code'),
+    ('product_categories', 'ck_product_categories_display_order'),
+    ('product_compositions', 'ck_product_compositions_status'),
+    ('product_components', 'ck_product_components_quantity'),
+    ('product_components', 'ck_product_components_display_order'),
+    ('product_components', 'ck_product_components_status'),
+    ('product_choice_groups', 'ck_product_choice_groups_min'),
+    ('product_choice_groups', 'ck_product_choice_groups_max'),
+    ('product_choice_groups', 'ck_product_choice_groups_range'),
+    ('product_choice_groups', 'ck_product_choice_groups_display_order'),
+    ('product_choice_groups', 'ck_product_choice_groups_status'),
+    ('product_choice_options', 'ck_product_choice_options_quantity'),
+    ('product_choice_options', 'ck_product_choice_options_display_order'),
+    ('product_choice_options', 'ck_product_choice_options_status'),
 }
 
 for table, prefix, target, target_table in (
@@ -472,8 +493,34 @@ _index('intelligence_derivations', 'ix_intelligence_derivations_tenant_message_c
 _index('intelligence_derivations', 'ix_intelligence_derivations_tenant_conversation', ('tenant_id', 'conversation_id', 'id'), 1)
 _index('restaurant_message_intents', 'uq_restaurant_message_intents_derivation_ordinal', ('derivation_id', 'ordinal'), 0)
 _index('restaurant_message_intents', 'ix_restaurant_message_intents_tenant_code', ('tenant_id', 'intent_code', 'id'), 1)
+_index('product_categories', 'ix_product_categories_tenant_org_parent_status_order', ('tenant_id', 'organization_id', 'parent_id', 'status', 'display_order', 'id'), 1)
+_index('product_compositions', 'uq_product_compositions_id_tenant_org', ('id', 'tenant_id', 'organization_id'), 0)
+_index('product_compositions', 'uq_product_compositions_tenant_org_product', ('tenant_id', 'organization_id', 'product_id'), 0)
+_index('product_compositions', 'ix_product_compositions_tenant_org_product_status', ('tenant_id', 'organization_id', 'product_id', 'status', 'id'), 1)
+_index('product_components', 'uq_product_components_composition_product', ('tenant_id', 'organization_id', 'composition_id', 'component_product_id'), 0)
+_index('product_components', 'ix_product_components_tenant_org_composition_status_order', ('tenant_id', 'organization_id', 'composition_id', 'status', 'display_order', 'id'), 1)
+_index('product_choice_groups', 'uq_product_choice_groups_id_tenant_org', ('id', 'tenant_id', 'organization_id'), 0)
+_index('product_choice_groups', 'uq_product_choice_groups_composition_name', ('tenant_id', 'organization_id', 'composition_id', 'name'), 0)
+_index('product_choice_groups', 'ix_product_choice_groups_tenant_org_composition_status_order', ('tenant_id', 'organization_id', 'composition_id', 'status', 'display_order', 'id'), 1)
+_index('product_choice_options', 'uq_product_choice_options_group_product', ('tenant_id', 'organization_id', 'group_id', 'option_product_id'), 0)
+_index('product_choice_options', 'ix_product_choice_options_tenant_org_group_status_order', ('tenant_id', 'organization_id', 'group_id', 'status', 'display_order', 'id'), 1)
 
 for constraint, table, local_columns, target_table, target_columns in (
+    ('fk_product_categories_parent_tenant_org', 'product_categories', ('parent_id', 'tenant_id', 'organization_id'), 'product_categories', ('id', 'tenant_id', 'organization_id')),
+    ('fk_product_compositions_tenant', 'product_compositions', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_product_compositions_organization_tenant', 'product_compositions', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
+    ('fk_product_compositions_product_tenant_org', 'product_compositions', ('product_id', 'tenant_id', 'organization_id'), 'products', ('id', 'tenant_id', 'organization_id')),
+    ('fk_product_components_tenant', 'product_components', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_product_components_organization_tenant', 'product_components', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
+    ('fk_product_components_composition_tenant_org', 'product_components', ('composition_id', 'tenant_id', 'organization_id'), 'product_compositions', ('id', 'tenant_id', 'organization_id')),
+    ('fk_product_components_product_tenant_org', 'product_components', ('component_product_id', 'tenant_id', 'organization_id'), 'products', ('id', 'tenant_id', 'organization_id')),
+    ('fk_product_choice_groups_tenant', 'product_choice_groups', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_product_choice_groups_organization_tenant', 'product_choice_groups', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
+    ('fk_product_choice_groups_composition_tenant_org', 'product_choice_groups', ('composition_id', 'tenant_id', 'organization_id'), 'product_compositions', ('id', 'tenant_id', 'organization_id')),
+    ('fk_product_choice_options_tenant', 'product_choice_options', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_product_choice_options_organization_tenant', 'product_choice_options', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
+    ('fk_product_choice_options_group_tenant_org', 'product_choice_options', ('group_id', 'tenant_id', 'organization_id'), 'product_choice_groups', ('id', 'tenant_id', 'organization_id')),
+    ('fk_product_choice_options_product_tenant_org', 'product_choice_options', ('option_product_id', 'tenant_id', 'organization_id'), 'products', ('id', 'tenant_id', 'organization_id')),
     ('fk_conversations_tenant', 'conversations', ('tenant_id',), 'tenants', ('id',)),
     ('fk_conversations_organization_tenant', 'conversations', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
     ('fk_conversations_location_tenant_org', 'conversations', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
@@ -588,7 +635,9 @@ def _assert_database_contract(connection) -> None:
                   'menu_locations', 'menu_sections', 'menu_items', 'product_prices',
                   'promotions', 'promotion_products', 'promotion_locations',
                   'conversations', 'conversation_participants', 'conversation_messages',
-                  'intelligence_derivations', 'restaurant_message_intents'
+                  'intelligence_derivations', 'restaurant_message_intents',
+                  'product_compositions', 'product_components',
+                  'product_choice_groups', 'product_choice_options'
               )
             '''
         )
@@ -707,7 +756,9 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
                   'menu_locations', 'menu_sections', 'menu_items', 'product_prices',
                   'promotions', 'promotion_products', 'promotion_locations',
                   'conversations', 'conversation_participants', 'conversation_messages',
-                  'intelligence_derivations', 'restaurant_message_intents'
+                  'intelligence_derivations', 'restaurant_message_intents',
+                  'product_compositions', 'product_components',
+                  'product_choice_groups', 'product_choice_options'
               )
             '''
         )
@@ -750,6 +801,143 @@ def test_foreign_key_is_actually_enforced(sql_connection) -> None:
             )
 
 
+def test_ws12_raw_scope_and_check_probes_are_rollback_only(sql_connection) -> None:
+    connection, prefix = sql_connection
+    connection.autocommit(False)
+    connection.begin()
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES ('Probe A',%s,'ACTIVE')",
+                (f'{prefix}-probe-a',),
+            )
+            tenant_a = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES ('Probe B',%s,'ACTIVE')",
+                (f'{prefix}-probe-b',),
+            )
+            tenant_b = int(cursor.lastrowid)
+            organizations = []
+            for tenant_id, code in ((tenant_a, 'A1'), (tenant_a, 'A2'), (tenant_b, 'B1')):
+                cursor.execute(
+                    "INSERT INTO organizations (tenant_id,code,name,status) VALUES (%s,%s,%s,'ACTIVE')",
+                    (tenant_id, f'{code}-{uuid4().hex[:8]}', code),
+                )
+                organizations.append(int(cursor.lastrowid))
+            org_a, org_a2, org_b = organizations
+
+            categories = []
+            for tenant_id, organization_id, name in (
+                (tenant_a, org_a, 'Category A'),
+                (tenant_a, org_a2, 'Category A2'),
+                (tenant_b, org_b, 'Category B'),
+            ):
+                cursor.execute(
+                    "INSERT INTO product_categories (tenant_id,organization_id,name,status) VALUES (%s,%s,%s,'ACTIVE')",
+                    (tenant_id, organization_id, name),
+                )
+                categories.append(int(cursor.lastrowid))
+            category_a, category_a2, category_b = categories
+
+            products = []
+            for tenant_id, organization_id, name in (
+                (tenant_a, org_a, 'Parent A'),
+                (tenant_a, org_a, 'Child A'),
+                (tenant_a, org_a2, 'Product A2'),
+                (tenant_b, org_b, 'Product B'),
+            ):
+                cursor.execute(
+                    "INSERT INTO products (tenant_id,organization_id,name,status,source) VALUES (%s,%s,%s,'ACTIVE','PLATFORM')",
+                    (tenant_id, organization_id, name),
+                )
+                products.append(int(cursor.lastrowid))
+            parent_a, child_a, product_a2, product_b = products
+            cursor.execute(
+                "INSERT INTO product_compositions (tenant_id,organization_id,product_id,status) VALUES (%s,%s,%s,'INACTIVE')",
+                (tenant_a, org_a, parent_a),
+            )
+            composition_a = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO product_choice_groups (tenant_id,organization_id,composition_id,name,min_selections,max_selections,display_order,status) VALUES (%s,%s,%s,'Choice',0,1,0,'ACTIVE')",
+                (tenant_a, org_a, composition_a),
+            )
+            group_a = int(cursor.lastrowid)
+
+        probes = (
+            (
+                'UPDATE product_categories SET parent_id=%s WHERE id=%s',
+                (category_a2, category_a),
+            ),
+            (
+                'UPDATE product_categories SET parent_id=%s WHERE id=%s',
+                (category_b, category_a),
+            ),
+            (
+                "INSERT INTO product_compositions (tenant_id,organization_id,product_id,status) VALUES (%s,%s,%s,'INACTIVE')",
+                (tenant_a, org_a, product_a2),
+            ),
+            (
+                "INSERT INTO product_compositions (tenant_id,organization_id,product_id,status) VALUES (%s,%s,%s,'INACTIVE')",
+                (tenant_a, org_a, product_b),
+            ),
+            (
+                "INSERT INTO product_components (tenant_id,organization_id,composition_id,component_product_id,quantity,display_order,status) VALUES (%s,%s,%s,%s,1,0,'ACTIVE')",
+                (tenant_b, org_b, composition_a, product_b),
+            ),
+            (
+                "INSERT INTO product_components (tenant_id,organization_id,composition_id,component_product_id,quantity,display_order,status) VALUES (%s,%s,%s,%s,1,0,'ACTIVE')",
+                (tenant_a, org_a, composition_a, product_a2),
+            ),
+            (
+                "INSERT INTO product_components (tenant_id,organization_id,composition_id,component_product_id,quantity,display_order,status) VALUES (%s,%s,%s,%s,1,0,'ACTIVE')",
+                (tenant_a, org_a, composition_a, product_b),
+            ),
+            (
+                "INSERT INTO product_choice_options (tenant_id,organization_id,group_id,option_product_id,quantity,display_order,status) VALUES (%s,%s,%s,%s,1,0,'ACTIVE')",
+                (tenant_a, org_a, group_a, product_a2),
+            ),
+            (
+                "INSERT INTO product_choice_options (tenant_id,organization_id,group_id,option_product_id,quantity,display_order,status) VALUES (%s,%s,%s,%s,1,0,'ACTIVE')",
+                (tenant_a, org_a, group_a, product_b),
+            ),
+            (
+                "INSERT INTO product_choice_options (tenant_id,organization_id,group_id,option_product_id,quantity,display_order,status) VALUES (%s,%s,%s,%s,1,0,'ACTIVE')",
+                (tenant_a, org_a2, group_a, product_a2),
+            ),
+            (
+                "INSERT INTO product_choice_options (tenant_id,organization_id,group_id,option_product_id,quantity,display_order,status) VALUES (%s,%s,%s,%s,1,0,'ACTIVE')",
+                (tenant_b, org_b, group_a, product_b),
+            ),
+            (
+                "INSERT INTO product_components (tenant_id,organization_id,composition_id,component_product_id,quantity,display_order,status) VALUES (%s,%s,%s,%s,0,0,'ACTIVE')",
+                (tenant_a, org_a, composition_a, child_a),
+            ),
+            (
+                "INSERT INTO product_choice_groups (tenant_id,organization_id,composition_id,name,min_selections,max_selections,display_order,status) VALUES (%s,%s,%s,'Invalid range',2,1,0,'ACTIVE')",
+                (tenant_a, org_a, composition_a),
+            ),
+            (
+                "INSERT INTO product_choice_groups (tenant_id,organization_id,composition_id,name,min_selections,max_selections,display_order,status) VALUES (%s,%s,%s,'Invalid minimum',-1,1,0,'ACTIVE')",
+                (tenant_a, org_a, composition_a),
+            ),
+            (
+                "INSERT INTO product_choice_groups (tenant_id,organization_id,composition_id,name,min_selections,max_selections,display_order,status) VALUES (%s,%s,%s,'Invalid maximum',0,0,0,'ACTIVE')",
+                (tenant_a, org_a, composition_a),
+            ),
+        )
+        for statement, parameters in probes:
+            with pytest.raises((pymysql.err.IntegrityError, pymysql.err.OperationalError)):
+                with connection.cursor() as cursor:
+                    cursor.execute(statement, parameters)
+    finally:
+        connection.rollback()
+        connection.autocommit(True)
+
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT COUNT(*) AS count FROM tenants WHERE slug LIKE %s', (f'{prefix}-probe-%',))
+        assert cursor.fetchone()['count'] == 0
+
+
 def test_fresh_install_reaches_portable_database_contract(
     isolated_database,
     integration_settings: Settings,
@@ -760,6 +948,50 @@ def test_fresh_install_reaches_portable_database_contract(
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         _assert_database_contract(connection)
+    finally:
+        connection.close()
+
+
+def test_upgrade_from_0010_preserves_flat_category_and_reaches_contract(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0010_intelligence_derivation_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES ('Upgrade','upgrade-0010','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) VALUES (%s,'ORG','Organization','ACTIVE')",
+                (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO product_categories (tenant_id,organization_id,name,status) VALUES (%s,%s,'Legacy Flat','ACTIVE')",
+                (tenant_id, organization_id),
+            )
+            category_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT parent_id,display_order FROM product_categories WHERE id=%s',
+                (category_id,),
+            )
+            assert cursor.fetchone() == {'parent_id': None, 'display_order': 0}
+            cursor.execute(
+                "SELECT COLUMN_TYPE FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='product_components' AND COLUMN_NAME='quantity'"
+            )
+            assert cursor.fetchone()['COLUMN_TYPE'] == 'decimal(19,4)'
     finally:
         connection.close()
 
