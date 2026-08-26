@@ -46,6 +46,7 @@ APPLICATION_TABLES = {
     'product_components',
     'product_choice_groups',
     'product_choice_options',
+    'product_aliases',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -74,6 +75,7 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'product_components',
     'product_choice_groups',
     'product_choice_options',
+    'product_aliases',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -438,6 +440,10 @@ EXPECTED_DOMAIN_CHECKS = {
     ('product_choice_options', 'ck_product_choice_options_quantity'),
     ('product_choice_options', 'ck_product_choice_options_display_order'),
     ('product_choice_options', 'ck_product_choice_options_status'),
+    ('product_aliases', 'ck_product_aliases_status'),
+    ('product_aliases', 'ck_product_aliases_alias_nonempty'),
+    ('product_aliases', 'ck_product_aliases_normalized_nonempty'),
+    ('product_aliases', 'ck_product_aliases_language_length'),
 }
 
 for table, prefix, target, target_table in (
@@ -504,6 +510,9 @@ _index('product_choice_groups', 'uq_product_choice_groups_composition_name', ('t
 _index('product_choice_groups', 'ix_product_choice_groups_tenant_org_composition_status_order', ('tenant_id', 'organization_id', 'composition_id', 'status', 'display_order', 'id'), 1)
 _index('product_choice_options', 'uq_product_choice_options_group_product', ('tenant_id', 'organization_id', 'group_id', 'option_product_id'), 0)
 _index('product_choice_options', 'ix_product_choice_options_tenant_org_group_status_order', ('tenant_id', 'organization_id', 'group_id', 'status', 'display_order', 'id'), 1)
+_index('product_aliases', 'uq_product_aliases_product_identity', ('tenant_id', 'organization_id', 'product_id', 'normalized_alias', 'language'), 0)
+_index('product_aliases', 'ix_product_aliases_tenant_org_lookup', ('tenant_id', 'organization_id', 'normalized_alias', 'language', 'status', 'product_id', 'id'), 1)
+_index('product_aliases', 'ix_product_aliases_tenant_org_product', ('tenant_id', 'organization_id', 'product_id', 'id'), 1)
 
 for constraint, table, local_columns, target_table, target_columns in (
     ('fk_product_categories_parent_tenant_org', 'product_categories', ('parent_id', 'tenant_id', 'organization_id'), 'product_categories', ('id', 'tenant_id', 'organization_id')),
@@ -521,6 +530,9 @@ for constraint, table, local_columns, target_table, target_columns in (
     ('fk_product_choice_options_organization_tenant', 'product_choice_options', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
     ('fk_product_choice_options_group_tenant_org', 'product_choice_options', ('group_id', 'tenant_id', 'organization_id'), 'product_choice_groups', ('id', 'tenant_id', 'organization_id')),
     ('fk_product_choice_options_product_tenant_org', 'product_choice_options', ('option_product_id', 'tenant_id', 'organization_id'), 'products', ('id', 'tenant_id', 'organization_id')),
+    ('fk_product_aliases_tenant', 'product_aliases', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_product_aliases_organization_tenant', 'product_aliases', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
+    ('fk_product_aliases_product_tenant_org', 'product_aliases', ('product_id', 'tenant_id', 'organization_id'), 'products', ('id', 'tenant_id', 'organization_id')),
     ('fk_conversations_tenant', 'conversations', ('tenant_id',), 'tenants', ('id',)),
     ('fk_conversations_organization_tenant', 'conversations', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
     ('fk_conversations_location_tenant_org', 'conversations', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
@@ -637,7 +649,7 @@ def _assert_database_contract(connection) -> None:
                   'conversations', 'conversation_participants', 'conversation_messages',
                   'intelligence_derivations', 'restaurant_message_intents',
                   'product_compositions', 'product_components',
-                  'product_choice_groups', 'product_choice_options'
+                  'product_choice_groups', 'product_choice_options', 'product_aliases'
               )
             '''
         )
@@ -655,6 +667,9 @@ def _assert_database_contract(connection) -> None:
                   OR
                   (TABLE_NAME = 'product_external_mappings'
                    AND COLUMN_NAME = 'external_product_id')
+                  OR
+                  (TABLE_NAME = 'product_aliases'
+                   AND COLUMN_NAME IN ('normalized_alias', 'language'))
               )
             '''
         )
@@ -664,6 +679,8 @@ def _assert_database_contract(connection) -> None:
         } == {
             ('customer_external_identities', 'external_customer_id', 'utf8mb4_bin'),
             ('product_external_mappings', 'external_product_id', 'utf8mb4_bin'),
+            ('product_aliases', 'normalized_alias', 'utf8mb4_bin'),
+            ('product_aliases', 'language', 'utf8mb4_bin'),
         }
 
 
@@ -758,7 +775,7 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
                   'conversations', 'conversation_participants', 'conversation_messages',
                   'intelligence_derivations', 'restaurant_message_intents',
                   'product_compositions', 'product_components',
-                  'product_choice_groups', 'product_choice_options'
+                  'product_choice_groups', 'product_choice_options', 'product_aliases'
               )
             '''
         )
@@ -776,6 +793,9 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
                   OR
                   (TABLE_NAME = 'product_external_mappings'
                    AND COLUMN_NAME = 'external_product_id')
+                  OR
+                  (TABLE_NAME = 'product_aliases'
+                   AND COLUMN_NAME IN ('normalized_alias', 'language'))
               )
             '''
         )
@@ -785,6 +805,8 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
         } == {
             ('customer_external_identities', 'external_customer_id', 'utf8mb4_bin'),
             ('product_external_mappings', 'external_product_id', 'utf8mb4_bin'),
+            ('product_aliases', 'normalized_alias', 'utf8mb4_bin'),
+            ('product_aliases', 'language', 'utf8mb4_bin'),
         }
 
 
@@ -948,6 +970,51 @@ def test_fresh_install_reaches_portable_database_contract(
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         _assert_database_contract(connection)
+    finally:
+        connection.close()
+
+
+def test_upgrade_from_0011_reaches_product_resolution_contract(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0011_product_structure_composition_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES ('WS13','upgrade-0011','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) "
+                "VALUES (%s,'ORG','Organization','ACTIVE')",
+                (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO products (tenant_id,organization_id,name,status,source) "
+                "VALUES (%s,%s,'Preserved Product','ACTIVE','PLATFORM')",
+                (tenant_id, organization_id),
+            )
+            product_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT name FROM products WHERE id=%s', (product_id,))
+            assert cursor.fetchone()['name'] == 'Preserved Product'
+            cursor.execute(
+                "INSERT INTO product_aliases "
+                "(tenant_id,organization_id,product_id,alias,normalized_alias,language,status) "
+                "VALUES (%s,%s,%s,'Alias','alias','','ACTIVE')",
+                (tenant_id, organization_id, product_id),
+            )
     finally:
         connection.close()
 

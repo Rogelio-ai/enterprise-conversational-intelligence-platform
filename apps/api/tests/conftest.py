@@ -109,6 +109,7 @@ def sql_connection(integration_settings: Settings):
                     (f'{prefix}%',),
                 )
             for table in (
+                'product_aliases',
                 'product_choice_options',
                 'product_choice_groups',
                 'product_components',

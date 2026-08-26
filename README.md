@@ -267,6 +267,18 @@ A Product may own one current commercial composition containing:
 Commercial composition is intentionally single-level. Nested compositions, Buffet entitlement,
 daily availability, price deltas, Recipe, Ingredient, Inventory and Order Draft remain deferred.
 
+## Product and Choice Resolution Foundation
+
+Restaurant catalog data may include curated, Organization-scoped Product aliases. The internal
+resolver uses deterministic Unicode normalization and exact canonical-name or active-alias matching,
+then evaluates Product orderability through the active Location, Menu assignment, Menu, section,
+item, and Product chain. Multiple canonical matches produce a typed ambiguity result; Choice
+resolution remains inside the resolved parent Product's active WS-12 composition and returns
+canonical group and option identities for WS-12 selection validation.
+
+This capability does not provide fuzzy or vector matching, automatic translation, real-time
+availability, Order Draft, final Order, pricing calculation, or POS submission.
+
 ---
 
 # Development Runtime
@@ -286,7 +298,7 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
-The current application migration head is `0010_intelligence_derivation_foundation`.
+The current application migration head is `0012_product_resolution_foundation`.
 
 The bounded Restaurant conversational-intelligence foundation records provider-neutral,
 append-only derivation provenance and versioned Restaurant message intents without changing the

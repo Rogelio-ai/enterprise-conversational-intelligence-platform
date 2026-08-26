@@ -27,6 +27,7 @@ from app.models.product_structure import (
     ProductComponent,
     ProductComposition,
 )
+from app.models.product_resolution import ProductAlias
 from app.models.resource import Resource
 
 __all__ = [
@@ -45,6 +46,7 @@ __all__ = [
     'Organization',
     'Permission',
     'Product',
+    'ProductAlias',
     'ProductCategory',
     'ProductChoiceGroup',
     'ProductChoiceOption',
