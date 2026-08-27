@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 
-from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKeyConstraint, Index, Numeric, String, UniqueConstraint, func, text
+from sqlalchemy import BigInteger, Boolean, CheckConstraint, DateTime, ForeignKeyConstraint, Index, Integer, Numeric, String, UniqueConstraint, func, text
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.base import Base
@@ -50,6 +50,8 @@ class Promotion(TimestampMixin, Base):
         CheckConstraint("currency IS NULL OR (OCTET_LENGTH(currency) = 3 AND ASCII(SUBSTRING(currency, 1, 1)) BETWEEN 65 AND 90 AND ASCII(SUBSTRING(currency, 2, 1)) BETWEEN 65 AND 90 AND ASCII(SUBSTRING(currency, 3, 1)) BETWEEN 65 AND 90)", name='ck_promotions_currency'),
         CheckConstraint("(promotion_type = 'PERCENTAGE_DISCOUNT' AND benefit_value > 0 AND benefit_value <= 100 AND currency IS NULL) OR (promotion_type = 'FIXED_AMOUNT_DISCOUNT' AND benefit_value > 0 AND currency IS NOT NULL)", name='ck_promotions_benefit'),
         CheckConstraint('applies_to_all_locations IN (0, 1)', name='ck_promotions_all_locations'),
+        CheckConstraint('is_combinable IN (0, 1)', name='ck_promotions_is_combinable'),
+        CheckConstraint('priority >= 0', name='ck_promotions_priority'),
         Index('ix_promotions_tenant_org_status_type', 'tenant_id', 'organization_id', 'status', 'promotion_type', 'id'),
         Index('ix_promotions_tenant_org_interval', 'tenant_id', 'organization_id', 'starts_at', 'ends_at', 'id'),
     )
@@ -65,6 +67,12 @@ class Promotion(TimestampMixin, Base):
     starts_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
     ends_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
     applies_to_all_locations: Mapped[bool] = mapped_column(Boolean, nullable=False)
+    is_combinable: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text('0')
+    )
+    priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text('0')
+    )
     status: Mapped[str] = mapped_column(String(16), nullable=False, default='INACTIVE', server_default=text("'INACTIVE'"))
     source: Mapped[str] = mapped_column(String(16), nullable=False)
 

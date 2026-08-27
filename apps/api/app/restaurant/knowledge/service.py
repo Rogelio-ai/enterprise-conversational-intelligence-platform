@@ -322,6 +322,8 @@ async def find_applicable_promotions(
             starts_at=promotion.starts_at,
             ends_at=promotion.ends_at,
             applies_to_all_locations=promotion.applies_to_all_locations,
+            is_combinable=promotion.is_combinable,
+            priority=promotion.priority,
         )
         for promotion in promotions
     )

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
@@ -9,6 +10,8 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthenticatedContext, get_db, require_permission
 from app.core.middleware import get_correlation_id
+from app.restaurant.commercial import errors as commercial_errors
+from app.restaurant.commercial import service as commercial_service
 from app.restaurant.orders import errors, service
 
 
@@ -136,6 +139,57 @@ class DraftResponse(BaseModel):
     items: tuple[DraftItemResponse, ...]
 
 
+class AppliedPromotionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    promotion_id: int
+    name: str
+    promotion_type: str
+    promotion_value: Decimal
+    currency: str | None
+    priority: int
+    is_combinable: bool
+    calculated_discount: Decimal
+
+
+class CheckoutPreviewLineResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    draft_item_id: int
+    product_id: int
+    product_name: str
+    composition_id: int | None
+    quantity: Decimal
+    price_id: int
+    price_source: str
+    unit_price: Decimal
+    base_amount: Decimal
+    applied_promotions: tuple[AppliedPromotionResponse, ...]
+    discount_amount: Decimal
+    commercial_amount: Decimal
+
+
+class CheckoutPreviewResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+
+    status: str
+    draft_id: int
+    draft_version: int
+    tenant_id: int
+    organization_id: int
+    location_id: int
+    resolved_at: datetime
+    currency: str
+    tax_mode: str
+    lines: tuple[CheckoutPreviewLineResponse, ...]
+    subtotal: Decimal
+    total_discount: Decimal
+    pre_round_total: Decimal
+    rounding_adjustment: Decimal
+    payable_total: Decimal
+    commercial_fingerprint: str
+
+
 def _response(value) -> DraftResponse:
     return DraftResponse.model_validate(value)
 
@@ -157,6 +211,14 @@ def _translate_error(exc: Exception) -> HTTPException:
     ):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
     raise exc
+
+
+def _translate_commercial_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, errors.DraftNotFoundError):
+        return HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
+    if isinstance(exc, commercial_errors.CommercialResolutionError):
+        return HTTPException(status.HTTP_409_CONFLICT, str(exc))
+    return _translate_error(exc)
 
 
 @router.post(
@@ -215,6 +277,27 @@ async def get_order_draft(
     except Exception as exc:
         raise _translate_error(exc) from exc
     return _response(value)
+
+
+@router.get(
+    '/order-drafts/{draft_id}/checkout-preview',
+    response_model=CheckoutPreviewResponse,
+)
+async def get_order_draft_checkout_preview(
+    draft_id: Annotated[int, Path(gt=0)],
+    context: Annotated[AuthenticatedContext, Depends(require_permission('order_draft.read'))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CheckoutPreviewResponse:
+    try:
+        value = await commercial_service.resolve_checkout_preview(
+            db,
+            tenant_id=context.tenant_id,
+            draft_id=draft_id,
+            correlation_id=get_correlation_id(),
+        )
+    except Exception as exc:
+        raise _translate_commercial_error(exc) from exc
+    return CheckoutPreviewResponse.model_validate(value)
 
 
 @router.post(

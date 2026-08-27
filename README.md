@@ -292,8 +292,23 @@ Every item or selection mutation requires the current Draft version and executes
 one successful command increments the version exactly once. Conversation closure makes the Draft
 immutable but leaves it readable. Access uses `order_draft.read` and `order_draft.manage` and is
 currently limited to authenticated staff or trusted orchestration. Customer-session authorization,
-commercial Pricing and Promotion finalization, tax/totals, final Order, POS submission, Recipe and
+final Order, commercial acceptance, POS submission, Recipe and
 Ingredient semantics, free-form modifiers, and Buffet entitlement remain deferred.
+
+## Commercial Resolution and Checkout Preview Foundation
+
+A read-only Restaurant commercial resolver revalidates a currently `READY` Order Draft and derives
+its Checkout Preview from the authoritative parent Product Price at the Draft Location. Fixed
+components and selected options remain included and never add their standalone prices. Product-scoped
+percentage and fixed-amount Promotions resolve by ascending numeric priority, then Promotion ID;
+non-combinable Promotions do not stack, while eligible combinable Promotions apply in that stable
+order. Prices are tax-inclusive (`tax_mode = INCLUDED`), all arithmetic remains exact `Decimal`, and
+whole-unit `HALF_DOWN` rounding occurs once at the final payable boundary with its adjustment exposed.
+
+`GET /order-drafts/{draft_id}/checkout-preview` uses `order_draft.read` and returns a transient
+preview—not an Order, quote, receipt, payment, or POS submission. Customer-session authorization,
+commercial acceptance, order-wide Promotions, tax engines, FX conversion, final Order, and POS
+submission remain deferred.
 
 ---
 
@@ -314,7 +329,7 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
-The current application migration head is `0013_order_draft_foundation`.
+The current application migration head is `0014_commercial_resolution_foundation`.
 
 The bounded Restaurant conversational-intelligence foundation records provider-neutral,
 append-only derivation provenance and versioned Restaurant message intents without changing the
@@ -343,9 +358,11 @@ The commercial-offer foundation stores one current Product-and-Location Price us
 `DECIMAL(19,4)` money and an explicit currency, with immutable PLATFORM/POS provenance. An explicit
 `PricingPort` resolver can project a mapped POS Price; reads never trigger POS access. Promotions
 support only percentage and fixed-amount benefits, Product targets, all-or-selected Location scope,
-and a UTC half-open validity interval. Candidate lookup returns every matching Promotion without
-choosing, stacking, or calculating an effective Price. PromotionPort canonicalization remains
-deferred. Access uses `pricing.read`, `pricing.manage`, `promotion.read`, and `promotion.manage`.
+a UTC half-open validity interval, explicit combinability, and ascending numeric priority with
+Promotion ID as the stable tie-breaker. Candidate lookup continues to return every matching
+Promotion without calculating an effective Price; the Restaurant commercial resolver owns
+selection, stacking, and calculation. PromotionPort canonicalization remains deferred. Access uses
+`pricing.read`, `pricing.manage`, `promotion.read`, and `promotion.manage`.
 
 Authentication uses an Argon2 password hash and a signed access token. The relevant settings are
 `AUTH_JWT_SECRET`, `AUTH_JWT_ALGORITHM`, `AUTH_ACCESS_TOKEN_TTL_MINUTES`, and

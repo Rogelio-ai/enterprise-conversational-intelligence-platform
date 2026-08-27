@@ -408,6 +408,8 @@ EXPECTED_DOMAIN_CHECKS = {
     ('promotions', 'ck_promotions_currency'),
     ('promotions', 'ck_promotions_benefit'),
     ('promotions', 'ck_promotions_all_locations'),
+    ('promotions', 'ck_promotions_is_combinable'),
+    ('promotions', 'ck_promotions_priority'),
     ('promotion_products', 'ck_promotion_products_status'),
     ('promotion_locations', 'ck_promotion_locations_status'),
     ('conversations', 'ck_conversations_channel'),
@@ -1199,6 +1201,62 @@ def test_fresh_install_reaches_portable_database_contract(
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         _assert_database_contract(connection)
+    finally:
+        connection.close()
+
+
+def test_upgrade_from_0013_preserves_promotions_and_adds_commercial_policy(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0013_order_draft_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES ('WS15','upgrade-0013','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) "
+                "VALUES (%s,'ORG','Preserved Organization','ACTIVE')",
+                (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO promotions "
+                "(tenant_id,organization_id,name,promotion_type,benefit_value,currency,"
+                "starts_at,ends_at,applies_to_all_locations,status,source) "
+                "VALUES (%s,%s,'Preserved','PERCENTAGE_DISCOUNT',10,NULL,"
+                "'2026-01-01','2027-01-01',1,'INACTIVE','PLATFORM')",
+                (tenant_id, organization_id),
+            )
+            promotion_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT is_combinable, priority FROM promotions WHERE id=%s',
+                (promotion_id,),
+            )
+            assert cursor.fetchone() == {'is_combinable': 0, 'priority': 0}
+            cursor.execute(
+                "SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_DEFAULT "
+                "FROM information_schema.COLUMNS "
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='promotions' "
+                "AND COLUMN_NAME IN ('is_combinable','priority')"
+            )
+            columns = {row['COLUMN_NAME']: row for row in cursor.fetchall()}
+            assert columns['is_combinable']['DATA_TYPE'] == 'tinyint'
+            assert columns['priority']['DATA_TYPE'] in {'int', 'integer'}
+            assert {row['IS_NULLABLE'] for row in columns.values()} == {'NO'}
+            assert {str(row['COLUMN_DEFAULT']) for row in columns.values()} == {'0'}
     finally:
         connection.close()
 

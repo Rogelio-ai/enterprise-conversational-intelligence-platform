@@ -60,6 +60,8 @@ class PromotionCandidateKnowledge:
     starts_at: datetime
     ends_at: datetime
     applies_to_all_locations: bool
+    is_combinable: bool
+    priority: int
 
 
 @dataclass(frozen=True, slots=True)

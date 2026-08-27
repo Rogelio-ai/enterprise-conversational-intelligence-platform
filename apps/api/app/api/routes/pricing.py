@@ -147,6 +147,8 @@ class PromotionCreate(PromotionValues):
     starts_at: datetime
     ends_at: datetime
     applies_to_all_locations: bool
+    is_combinable: bool = False
+    priority: int = Field(default=0, ge=0)
 
     _starts = field_validator('starts_at')(_utc_naive)
     _ends = field_validator('ends_at')(_utc_naive)
@@ -168,6 +170,8 @@ class PromotionPatch(BaseModel):
     starts_at: datetime | None = None
     ends_at: datetime | None = None
     applies_to_all_locations: bool | None = None
+    is_combinable: bool | None = None
+    priority: int | None = Field(default=None, ge=0)
     status: Lifecycle | None = None
 
     _benefit = field_validator('benefit_value')(_validate_decimal)
@@ -232,6 +236,8 @@ class PromotionResponse(BaseModel):
     starts_at: datetime
     ends_at: datetime
     applies_to_all_locations: bool
+    is_combinable: bool
+    priority: int
     status: str
     source: str
     created_at: datetime
@@ -262,6 +268,8 @@ class CandidateResponse(BaseModel):
     starts_at: datetime
     ends_at: datetime
     applies_to_all_locations: bool
+    is_combinable: bool
+    priority: int
 
     @field_serializer('starts_at', 'ends_at')
     def serialize_utc(self, value: datetime) -> str:
@@ -401,7 +409,7 @@ async def applicable_promotions(product_id: int = Query(gt=0), location_id: int 
         promotions = await pricing_service.find_canonical_applicable_promotions(db, tenant_id=context.tenant_id, product_id=product_id, location_id=location_id, effective_at=effective)
     except pricing_service.PricingReadContextError as exc:
         raise HTTPException(404, str(exc)) from exc
-    return [CandidateResponse(promotion_id=p.id, **{k:getattr(p,k) for k in ('name','promotion_type','benefit_value','currency','starts_at','ends_at','applies_to_all_locations')}) for p in promotions]
+    return [CandidateResponse(promotion_id=p.id, **{k:getattr(p,k) for k in ('name','promotion_type','benefit_value','currency','starts_at','ends_at','applies_to_all_locations','is_combinable','priority')}) for p in promotions]
 
 
 @router.get('/promotions', response_model=PromotionList)

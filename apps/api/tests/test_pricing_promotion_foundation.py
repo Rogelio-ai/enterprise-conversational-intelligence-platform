@@ -129,6 +129,7 @@ def test_promotion_validation_activation_associations_and_candidates(client,sql_
     connection,prefix=sql_connection; scope=_scope(connection,prefix); headers=_headers(client,scope)
     response=client.post('/promotions',headers=headers,json=_promotion_payload(scope)); assert response.status_code==201,response.text
     promotion=response.json(); assert promotion['status']=='INACTIVE' and promotion['source']=='PLATFORM'
+    assert promotion['is_combinable'] is False and promotion['priority'] == 0
     invalid=[
         _promotion_payload(scope,promotion_type='BOGO'),
         _promotion_payload(scope,benefit_value='100.0001'),
@@ -144,7 +145,13 @@ def test_promotion_validation_activation_associations_and_candidates(client,sql_
     assert client.patch(f"/promotions/{promotion['id']}",headers=headers,json={'status':'ACTIVE'}).status_code==200
     now=datetime.now(UTC).isoformat(); candidates=client.get('/promotions/applicable',headers=headers,params={'product_id':scope.product_id,'location_id':scope.location_id,'effective_at':now})
     assert candidates.status_code==200,candidates.text; assert [item['promotion_id'] for item in candidates.json()]==[promotion['id']]
-    assert {'effective_price','final_price','discount_amount','applied_promotion','best_promotion','stacking','priority'}.isdisjoint(candidates.json()[0])
+    assert {'effective_price','final_price','discount_amount','applied_promotion','best_promotion','stacking'}.isdisjoint(candidates.json()[0])
+    assert candidates.json()[0]['is_combinable'] is False
+    assert candidates.json()[0]['priority'] == 0
+    updated = client.patch(f"/promotions/{promotion['id']}",headers=headers,json={'is_combinable':True,'priority':7})
+    assert updated.status_code == 200
+    assert updated.json()['is_combinable'] is True and updated.json()['priority'] == 7
+    assert client.patch(f"/promotions/{promotion['id']}",headers=headers,json={'priority':-1}).status_code == 422
     assert client.patch(f"/promotions/{promotion['id']}/products/{scope.product_id}",headers=headers,json={'status':'INACTIVE'}).status_code==409
     assert client.delete(f"/promotions/{promotion['id']}",headers=headers).status_code==405
 
@@ -210,6 +217,8 @@ def test_raw_promotion_constraints_and_relationship_integrity(sql_connection):
         ("INSERT INTO promotions (tenant_id,organization_id,name,promotion_type,benefit_value,currency,starts_at,ends_at,applies_to_all_locations,status,source) VALUES (%s,%s,'Bad','PERCENTAGE_DISCOUNT',101,NULL,%s,%s,1,'INACTIVE','PLATFORM')",(scope.tenant_id,scope.organization_id,now,later)),
         ("INSERT INTO promotions (tenant_id,organization_id,name,promotion_type,benefit_value,currency,starts_at,ends_at,applies_to_all_locations,status,source) VALUES (%s,%s,'Bad','FIXED_AMOUNT_DISCOUNT',1,NULL,%s,%s,1,'INACTIVE','PLATFORM')",(scope.tenant_id,scope.organization_id,now,later)),
         ("INSERT INTO promotions (tenant_id,organization_id,name,promotion_type,benefit_value,currency,starts_at,ends_at,applies_to_all_locations,status,source) VALUES (%s,%s,'Bad','PERCENTAGE_DISCOUNT',10,NULL,%s,%s,1,'BROKEN','PLATFORM')",(scope.tenant_id,scope.organization_id,later,now)),
+        ("INSERT INTO promotions (tenant_id,organization_id,name,promotion_type,benefit_value,currency,starts_at,ends_at,applies_to_all_locations,is_combinable,priority,status,source) VALUES (%s,%s,'Bad combinability','PERCENTAGE_DISCOUNT',10,NULL,%s,%s,1,2,0,'INACTIVE','PLATFORM')",(scope.tenant_id,scope.organization_id,now,later)),
+        ("INSERT INTO promotions (tenant_id,organization_id,name,promotion_type,benefit_value,currency,starts_at,ends_at,applies_to_all_locations,is_combinable,priority,status,source) VALUES (%s,%s,'Bad priority','PERCENTAGE_DISCOUNT',10,NULL,%s,%s,1,0,-1,'INACTIVE','PLATFORM')",(scope.tenant_id,scope.organization_id,now,later)),
     ]
     for statement,params in invalid_promotions:
         with pytest.raises((pymysql.err.IntegrityError,pymysql.err.OperationalError)): _execute(connection,statement,params)

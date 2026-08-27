@@ -1,0 +1,1 @@
+"""Deterministic Restaurant commercial resolution."""
