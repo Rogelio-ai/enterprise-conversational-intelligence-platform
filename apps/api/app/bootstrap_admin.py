@@ -42,6 +42,8 @@ CORE_PERMISSIONS = {
     'promotion.manage': 'Manage Organization promotions.',
     'conversation.read': 'Read Tenant conversations, participants, and messages.',
     'conversation.manage': 'Manage Tenant conversations, participants, and messages.',
+    'order_draft.read': 'Read canonical Restaurant Order Drafts.',
+    'order_draft.manage': 'Manage canonical Restaurant Order Drafts.',
 }
 _SLUG_PATTERN = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 

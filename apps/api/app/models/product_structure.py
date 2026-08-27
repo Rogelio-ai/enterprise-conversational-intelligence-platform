@@ -45,6 +45,13 @@ class ProductComposition(TimestampMixin, Base):
             'id', 'tenant_id', 'organization_id', name='uq_product_compositions_id_tenant_org'
         ),
         UniqueConstraint(
+            'id',
+            'tenant_id',
+            'organization_id',
+            'product_id',
+            name='uq_product_compositions_id_tenant_org_product',
+        ),
+        UniqueConstraint(
             'tenant_id',
             'organization_id',
             'product_id',
@@ -161,6 +168,13 @@ class ProductChoiceGroup(TimestampMixin, Base):
             'id', 'tenant_id', 'organization_id', name='uq_product_choice_groups_id_tenant_org'
         ),
         UniqueConstraint(
+            'id',
+            'tenant_id',
+            'organization_id',
+            'composition_id',
+            name='uq_product_choice_groups_id_tenant_org_composition',
+        ),
+        UniqueConstraint(
             'tenant_id',
             'organization_id',
             'composition_id',
@@ -227,6 +241,13 @@ class ProductChoiceOption(TimestampMixin, Base):
             ['products.id', 'products.tenant_id', 'products.organization_id'],
             name='fk_product_choice_options_product_tenant_org',
             ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'id',
+            'tenant_id',
+            'organization_id',
+            'group_id',
+            name='uq_product_choice_options_id_tenant_org_group',
         ),
         UniqueConstraint(
             'tenant_id',

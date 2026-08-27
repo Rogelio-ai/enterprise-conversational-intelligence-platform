@@ -45,6 +45,13 @@ class Conversation(TimestampMixin, Base):
             ondelete='RESTRICT',
         ),
         UniqueConstraint('id', 'tenant_id', name='uq_conversations_id_tenant'),
+        UniqueConstraint(
+            'id',
+            'tenant_id',
+            'organization_id',
+            'location_id',
+            name='uq_conversations_id_tenant_org_location',
+        ),
         CheckConstraint(
             "channel IN ('IN_PERSON_DIGITAL', 'PHONE', 'WHATSAPP', 'WEB_CHAT', 'MOBILE_APP')",
             name='ck_conversations_channel',

@@ -193,6 +193,32 @@ async def _orderable_product_ids(
     return set(result.scalars().all())
 
 
+async def is_product_orderable(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    organization_id: int,
+    location_id: int,
+    product_id: int,
+) -> bool:
+    """Check one canonical Product against the WS-13 Location/Menu rules."""
+    if product_id <= 0 or not await _scope_is_valid(
+        db,
+        tenant_id=tenant_id,
+        organization_id=organization_id,
+        location_id=location_id,
+    ):
+        return False
+    orderable_ids = await _orderable_product_ids(
+        db,
+        tenant_id=tenant_id,
+        organization_id=organization_id,
+        location_id=location_id,
+        product_ids=(product_id,),
+    )
+    return product_id in orderable_ids
+
+
 def _log_product_outcome(
     request: ProductResolutionRequest, result: ProductResolutionResult
 ) -> None:

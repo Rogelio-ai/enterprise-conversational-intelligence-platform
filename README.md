@@ -265,7 +265,7 @@ A Product may own one current commercial composition containing:
 * Deterministic, read-only selection validation for future Order Draft consumption.
 
 Commercial composition is intentionally single-level. Nested compositions, Buffet entitlement,
-daily availability, price deltas, Recipe, Ingredient, Inventory and Order Draft remain deferred.
+daily availability, price deltas, Recipe, Ingredient and Inventory remain deferred.
 
 ## Product and Choice Resolution Foundation
 
@@ -277,7 +277,23 @@ resolution remains inside the resolved parent Product's active WS-12 composition
 canonical group and option identities for WS-12 selection validation.
 
 This capability does not provide fuzzy or vector matching, automatic translation, real-time
-availability, Order Draft, final Order, pricing calculation, or POS submission.
+availability, final Order, pricing calculation, or POS submission.
+
+## Order Draft Foundation
+
+The Restaurant Domain owns one canonical mutable Order Draft per Conversation. A Draft copies its
+trusted Tenant, Organization, and mandatory Location scope from the active Conversation and stores
+ordered canonical Product items, exact `DECIMAL(19,4)` quantities, and explicit WS-12 ChoiceOption
+selections. Fixed components remain derived. Draft reads deterministically derive `EMPTY`,
+`INCOMPLETE`, `INVALID`, or `READY` by reusing WS-12 selection validation and WS-13 canonical-ID
+Location/Menu orderability rules.
+
+Every item or selection mutation requires the current Draft version and executes under a row lock;
+one successful command increments the version exactly once. Conversation closure makes the Draft
+immutable but leaves it readable. Access uses `order_draft.read` and `order_draft.manage` and is
+currently limited to authenticated staff or trusted orchestration. Customer-session authorization,
+commercial Pricing and Promotion finalization, tax/totals, final Order, POS submission, Recipe and
+Ingredient semantics, free-form modifiers, and Buffet entitlement remain deferred.
 
 ---
 
@@ -298,7 +314,7 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
-The current application migration head is `0012_product_resolution_foundation`.
+The current application migration head is `0013_order_draft_foundation`.
 
 The bounded Restaurant conversational-intelligence foundation records provider-neutral,
 append-only derivation provenance and versioned Restaurant message intents without changing the
@@ -306,7 +322,7 @@ canonical Conversation evidence. An internal Restaurant-owned understanding port
 Conversation scope and bounded ordered history; only a deterministic test fake is provided. Typed
 read-only knowledge capabilities reuse canonical Menu, Product, current Price, and Promotion
 candidate rules. There is no public intelligence endpoint, AI provider, response generator,
-business mutation, Product Composition, Order Draft, RAG, translation, or voice processing.
+business mutation, Product Composition, RAG, translation, or voice processing.
 
 The Restaurant domain now includes an Organization-owned canonical Menu and Product foundation.
 Product categories classify reusable Products, while one-level Menu sections control presentation;

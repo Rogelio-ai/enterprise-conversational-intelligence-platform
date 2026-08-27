@@ -47,6 +47,9 @@ APPLICATION_TABLES = {
     'product_choice_groups',
     'product_choice_options',
     'product_aliases',
+    'order_drafts',
+    'order_draft_items',
+    'order_draft_item_selections',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -76,6 +79,9 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'product_choice_groups',
     'product_choice_options',
     'product_aliases',
+    'order_drafts',
+    'order_draft_items',
+    'order_draft_item_selections',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -444,6 +450,9 @@ EXPECTED_DOMAIN_CHECKS = {
     ('product_aliases', 'ck_product_aliases_alias_nonempty'),
     ('product_aliases', 'ck_product_aliases_normalized_nonempty'),
     ('product_aliases', 'ck_product_aliases_language_length'),
+    ('order_drafts', 'ck_order_drafts_version'),
+    ('order_draft_items', 'ck_order_draft_items_quantity'),
+    ('order_draft_items', 'ck_order_draft_items_position'),
 }
 
 for table, prefix, target, target_table in (
@@ -483,6 +492,7 @@ _index('promotion_locations', 'uq_promotion_locations_tenant_promotion_location'
 _index('promotion_locations', 'ix_promotion_locations_tenant_location_status', ('tenant_id', 'location_id', 'status', 'promotion_id'), 1)
 _index('resources', 'uq_resources_id_tenant_location', ('id', 'tenant_id', 'location_id'), 0)
 _index('conversations', 'uq_conversations_id_tenant', ('id', 'tenant_id'), 0)
+_index('conversations', 'uq_conversations_id_tenant_org_location', ('id', 'tenant_id', 'organization_id', 'location_id'), 0)
 _index('conversations', 'ix_conversations_tenant_org_status', ('tenant_id', 'organization_id', 'status', 'id'), 1)
 _index('conversations', 'ix_conversations_tenant_location_status', ('tenant_id', 'location_id', 'status', 'id'), 1)
 _index('conversations', 'ix_conversations_tenant_resource', ('tenant_id', 'resource_id', 'id'), 1)
@@ -501,18 +511,31 @@ _index('restaurant_message_intents', 'uq_restaurant_message_intents_derivation_o
 _index('restaurant_message_intents', 'ix_restaurant_message_intents_tenant_code', ('tenant_id', 'intent_code', 'id'), 1)
 _index('product_categories', 'ix_product_categories_tenant_org_parent_status_order', ('tenant_id', 'organization_id', 'parent_id', 'status', 'display_order', 'id'), 1)
 _index('product_compositions', 'uq_product_compositions_id_tenant_org', ('id', 'tenant_id', 'organization_id'), 0)
+_index('product_compositions', 'uq_product_compositions_id_tenant_org_product', ('id', 'tenant_id', 'organization_id', 'product_id'), 0)
 _index('product_compositions', 'uq_product_compositions_tenant_org_product', ('tenant_id', 'organization_id', 'product_id'), 0)
 _index('product_compositions', 'ix_product_compositions_tenant_org_product_status', ('tenant_id', 'organization_id', 'product_id', 'status', 'id'), 1)
 _index('product_components', 'uq_product_components_composition_product', ('tenant_id', 'organization_id', 'composition_id', 'component_product_id'), 0)
 _index('product_components', 'ix_product_components_tenant_org_composition_status_order', ('tenant_id', 'organization_id', 'composition_id', 'status', 'display_order', 'id'), 1)
 _index('product_choice_groups', 'uq_product_choice_groups_id_tenant_org', ('id', 'tenant_id', 'organization_id'), 0)
+_index('product_choice_groups', 'uq_product_choice_groups_id_tenant_org_composition', ('id', 'tenant_id', 'organization_id', 'composition_id'), 0)
 _index('product_choice_groups', 'uq_product_choice_groups_composition_name', ('tenant_id', 'organization_id', 'composition_id', 'name'), 0)
 _index('product_choice_groups', 'ix_product_choice_groups_tenant_org_composition_status_order', ('tenant_id', 'organization_id', 'composition_id', 'status', 'display_order', 'id'), 1)
 _index('product_choice_options', 'uq_product_choice_options_group_product', ('tenant_id', 'organization_id', 'group_id', 'option_product_id'), 0)
+_index('product_choice_options', 'uq_product_choice_options_id_tenant_org_group', ('id', 'tenant_id', 'organization_id', 'group_id'), 0)
 _index('product_choice_options', 'ix_product_choice_options_tenant_org_group_status_order', ('tenant_id', 'organization_id', 'group_id', 'status', 'display_order', 'id'), 1)
 _index('product_aliases', 'uq_product_aliases_product_identity', ('tenant_id', 'organization_id', 'product_id', 'normalized_alias', 'language'), 0)
 _index('product_aliases', 'ix_product_aliases_tenant_org_lookup', ('tenant_id', 'organization_id', 'normalized_alias', 'language', 'status', 'product_id', 'id'), 1)
 _index('product_aliases', 'ix_product_aliases_tenant_org_product', ('tenant_id', 'organization_id', 'product_id', 'id'), 1)
+_index('order_drafts', 'uq_order_drafts_tenant_conversation', ('tenant_id', 'conversation_id'), 0)
+_index('order_drafts', 'uq_order_drafts_id_tenant_org', ('id', 'tenant_id', 'organization_id'), 0)
+_index('order_drafts', 'ix_order_drafts_tenant_org_location', ('tenant_id', 'organization_id', 'location_id', 'id'), 1)
+_index('order_draft_items', 'uq_order_draft_items_draft_position', ('draft_id', 'position'), 0)
+_index('order_draft_items', 'uq_order_draft_items_selection_scope', ('id', 'tenant_id', 'organization_id', 'draft_id', 'composition_id'), 0)
+_index('order_draft_items', 'ix_order_draft_items_tenant_draft_order', ('tenant_id', 'draft_id', 'position', 'id'), 1)
+_index('order_draft_items', 'ix_order_draft_items_tenant_org_product', ('tenant_id', 'organization_id', 'product_id', 'id'), 1)
+_index('order_draft_item_selections', 'uq_order_draft_selections_item_option', ('draft_item_id', 'choice_option_id'), 0)
+_index('order_draft_item_selections', 'ix_order_draft_selections_tenant_item_group', ('tenant_id', 'draft_item_id', 'choice_group_id', 'choice_option_id'), 1)
+_index('order_draft_item_selections', 'ix_order_draft_selections_tenant_choice', ('tenant_id', 'organization_id', 'choice_group_id', 'choice_option_id', 'id'), 1)
 
 for constraint, table, local_columns, target_table, target_columns in (
     ('fk_product_categories_parent_tenant_org', 'product_categories', ('parent_id', 'tenant_id', 'organization_id'), 'product_categories', ('id', 'tenant_id', 'organization_id')),
@@ -549,6 +572,18 @@ for constraint, table, local_columns, target_table, target_columns in (
     ('fk_intelligence_derivations_message_tenant_conversation', 'intelligence_derivations', ('source_message_id', 'tenant_id', 'conversation_id'), 'conversation_messages', ('id', 'tenant_id', 'conversation_id')),
     ('fk_restaurant_message_intents_tenant', 'restaurant_message_intents', ('tenant_id',), 'tenants', ('id',)),
     ('fk_restaurant_message_intents_derivation_tenant', 'restaurant_message_intents', ('derivation_id', 'tenant_id'), 'intelligence_derivations', ('id', 'tenant_id')),
+    ('fk_order_drafts_tenant', 'order_drafts', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_order_drafts_organization_tenant', 'order_drafts', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
+    ('fk_order_drafts_location_tenant_org', 'order_drafts', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_order_drafts_conversation_scope', 'order_drafts', ('conversation_id', 'tenant_id', 'organization_id', 'location_id'), 'conversations', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_order_draft_items_tenant', 'order_draft_items', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_order_draft_items_draft_scope', 'order_draft_items', ('draft_id', 'tenant_id', 'organization_id'), 'order_drafts', ('id', 'tenant_id', 'organization_id')),
+    ('fk_order_draft_items_product_scope', 'order_draft_items', ('product_id', 'tenant_id', 'organization_id'), 'products', ('id', 'tenant_id', 'organization_id')),
+    ('fk_order_draft_items_composition_product', 'order_draft_items', ('composition_id', 'tenant_id', 'organization_id', 'product_id'), 'product_compositions', ('id', 'tenant_id', 'organization_id', 'product_id')),
+    ('fk_order_draft_item_selections_tenant', 'order_draft_item_selections', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_order_draft_selections_item_scope', 'order_draft_item_selections', ('draft_item_id', 'tenant_id', 'organization_id', 'draft_id', 'composition_id'), 'order_draft_items', ('id', 'tenant_id', 'organization_id', 'draft_id', 'composition_id')),
+    ('fk_order_draft_selections_group_scope', 'order_draft_item_selections', ('choice_group_id', 'tenant_id', 'organization_id', 'composition_id'), 'product_choice_groups', ('id', 'tenant_id', 'organization_id', 'composition_id')),
+    ('fk_order_draft_selections_option_scope', 'order_draft_item_selections', ('choice_option_id', 'tenant_id', 'organization_id', 'choice_group_id'), 'product_choice_options', ('id', 'tenant_id', 'organization_id', 'group_id')),
 ):
     EXPECTED_FOREIGN_KEY_COLUMNS.update(
         (constraint, table, local, target_table, target, position)
@@ -650,6 +685,7 @@ def _assert_database_contract(connection) -> None:
                   'intelligence_derivations', 'restaurant_message_intents',
                   'product_compositions', 'product_components',
                   'product_choice_groups', 'product_choice_options', 'product_aliases'
+                  , 'order_drafts', 'order_draft_items', 'order_draft_item_selections'
               )
             '''
         )
@@ -776,6 +812,7 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
                   'intelligence_derivations', 'restaurant_message_intents',
                   'product_compositions', 'product_components',
                   'product_choice_groups', 'product_choice_options', 'product_aliases'
+                  , 'order_drafts', 'order_draft_items', 'order_draft_item_selections'
               )
             '''
         )
@@ -960,6 +997,198 @@ def test_ws12_raw_scope_and_check_probes_are_rollback_only(sql_connection) -> No
         assert cursor.fetchone()['count'] == 0
 
 
+def test_ws14_raw_scope_and_check_probes_are_rollback_only(sql_connection) -> None:
+    connection, prefix = sql_connection
+    connection.autocommit(False)
+    connection.begin()
+    try:
+        with connection.cursor() as cursor:
+            tenants = []
+            for suffix in ('a', 'b'):
+                cursor.execute(
+                    "INSERT INTO tenants (name,slug,status) VALUES (%s,%s,'ACTIVE')",
+                    (f'Draft Probe {suffix}', f'{prefix}-draft-{suffix}'),
+                )
+                tenants.append(int(cursor.lastrowid))
+            tenant_a, tenant_b = tenants
+            organizations = []
+            for tenant_id, code in ((tenant_a, 'A'), (tenant_a, 'A2'), (tenant_b, 'B')):
+                cursor.execute(
+                    "INSERT INTO organizations (tenant_id,code,name,status) "
+                    "VALUES (%s,%s,%s,'ACTIVE')",
+                    (tenant_id, f'{code}-{uuid4().hex[:8]}', code),
+                )
+                organizations.append(int(cursor.lastrowid))
+            org_a, org_a2, org_b = organizations
+            locations = []
+            for tenant_id, organization_id, code in (
+                (tenant_a, org_a, 'A'),
+                (tenant_a, org_a, 'A-OTHER'),
+                (tenant_a, org_a2, 'A2'),
+                (tenant_b, org_b, 'B'),
+            ):
+                cursor.execute(
+                    "INSERT INTO locations "
+                    "(tenant_id,organization_id,code,name,timezone,status) "
+                    "VALUES (%s,%s,%s,%s,'America/Mexico_City','ACTIVE')",
+                    (tenant_id, organization_id, f'{code}-{uuid4().hex[:8]}', code),
+                )
+                locations.append(int(cursor.lastrowid))
+            location_a, location_a_other, location_a2, location_b = locations
+            conversations = []
+            for tenant_id, organization_id, location_id in (
+                (tenant_a, org_a, location_a),
+                (tenant_a, org_a, location_a_other),
+                (tenant_b, org_b, location_b),
+            ):
+                cursor.execute(
+                    "INSERT INTO conversations "
+                    "(tenant_id,organization_id,location_id,channel,status,next_message_sequence) "
+                    "VALUES (%s,%s,%s,'MOBILE_APP','ACTIVE',1)",
+                    (tenant_id, organization_id, location_id),
+                )
+                conversations.append(int(cursor.lastrowid))
+            conversation_a, conversation_a_other, conversation_b = conversations
+            products = []
+            for tenant_id, organization_id, name in (
+                (tenant_a, org_a, 'Parent A'),
+                (tenant_a, org_a, 'Option A'),
+                (tenant_a, org_a, 'Parent Other'),
+                (tenant_a, org_a, 'Option Other'),
+                (tenant_a, org_a2, 'Product A2'),
+                (tenant_b, org_b, 'Product B'),
+            ):
+                cursor.execute(
+                    "INSERT INTO products (tenant_id,organization_id,name,status,source) "
+                    "VALUES (%s,%s,%s,'ACTIVE','PLATFORM')",
+                    (tenant_id, organization_id, name),
+                )
+                products.append(int(cursor.lastrowid))
+            parent_a, option_a_product, parent_other, option_other_product, product_a2, product_b = products
+            composition_ids = []
+            for product_id in (parent_a, parent_other):
+                cursor.execute(
+                    "INSERT INTO product_compositions "
+                    "(tenant_id,organization_id,product_id,status) VALUES (%s,%s,%s,'ACTIVE')",
+                    (tenant_a, org_a, product_id),
+                )
+                composition_ids.append(int(cursor.lastrowid))
+            composition_a, composition_other = composition_ids
+            groups = []
+            for composition_id, name in ((composition_a, 'Group A'), (composition_other, 'Other')):
+                cursor.execute(
+                    "INSERT INTO product_choice_groups "
+                    "(tenant_id,organization_id,composition_id,name,min_selections,max_selections,display_order,status) "
+                    "VALUES (%s,%s,%s,%s,0,1,0,'ACTIVE')",
+                    (tenant_a, org_a, composition_id, name),
+                )
+                groups.append(int(cursor.lastrowid))
+            group_a, group_other = groups
+            options = []
+            for group_id, product_id in ((group_a, option_a_product), (group_other, option_other_product)):
+                cursor.execute(
+                    "INSERT INTO product_choice_options "
+                    "(tenant_id,organization_id,group_id,option_product_id,quantity,display_order,status) "
+                    "VALUES (%s,%s,%s,%s,1,0,'ACTIVE')",
+                    (tenant_a, org_a, group_id, product_id),
+                )
+                options.append(int(cursor.lastrowid))
+            option_a, option_other = options
+            cursor.execute(
+                "INSERT INTO order_drafts "
+                "(tenant_id,organization_id,location_id,conversation_id,version) "
+                "VALUES (%s,%s,%s,%s,1)",
+                (tenant_a, org_a, location_a, conversation_a),
+            )
+            draft_a = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO order_drafts "
+                "(tenant_id,organization_id,location_id,conversation_id,version) "
+                "VALUES (%s,%s,%s,%s,1)",
+                (tenant_a, org_a, location_a_other, conversation_a_other),
+            )
+            draft_other = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO order_draft_items "
+                "(tenant_id,organization_id,draft_id,product_id,composition_id,quantity,position) "
+                "VALUES (%s,%s,%s,%s,%s,1,0)",
+                (tenant_a, org_a, draft_a, parent_a, composition_a),
+            )
+            item_a = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO order_draft_item_selections "
+                "(tenant_id,organization_id,draft_id,draft_item_id,composition_id,choice_group_id,choice_option_id) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (tenant_a, org_a, draft_a, item_a, composition_a, group_a, option_a),
+            )
+
+        probes = (
+            (
+                "INSERT INTO order_draft_item_selections (tenant_id,organization_id,draft_id,draft_item_id,composition_id,choice_group_id,choice_option_id) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (tenant_a, org_a, draft_a, item_a, composition_a, group_a, option_a),
+            ),
+            (
+                "INSERT INTO order_drafts (tenant_id,organization_id,location_id,conversation_id,version) VALUES (%s,%s,%s,%s,1)",
+                (tenant_a, org_a, location_a, conversation_b),
+            ),
+            (
+                "INSERT INTO order_drafts (tenant_id,organization_id,location_id,conversation_id,version) VALUES (%s,%s,%s,%s,1)",
+                (tenant_a, org_a2, location_a2, conversation_a),
+            ),
+            (
+                "INSERT INTO order_drafts (tenant_id,organization_id,location_id,conversation_id,version) VALUES (%s,%s,%s,%s,1)",
+                (tenant_a, org_a, location_a_other, conversation_a),
+            ),
+            (
+                "INSERT INTO order_draft_items (tenant_id,organization_id,draft_id,product_id,quantity,position) VALUES (%s,%s,%s,%s,1,1)",
+                (tenant_b, org_b, draft_a, product_b),
+            ),
+            (
+                "INSERT INTO order_draft_items (tenant_id,organization_id,draft_id,product_id,quantity,position) VALUES (%s,%s,%s,%s,1,1)",
+                (tenant_a, org_a, draft_a, product_a2),
+            ),
+            (
+                "INSERT INTO order_draft_items (tenant_id,organization_id,draft_id,product_id,composition_id,quantity,position) VALUES (%s,%s,%s,%s,%s,1,1)",
+                (tenant_a, org_a, draft_a, parent_a, composition_other),
+            ),
+            (
+                "INSERT INTO order_draft_item_selections (tenant_id,organization_id,draft_id,draft_item_id,composition_id,choice_group_id,choice_option_id) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (tenant_a, org_a, draft_other, item_a, composition_a, group_a, option_a),
+            ),
+            (
+                "INSERT INTO order_draft_item_selections (tenant_id,organization_id,draft_id,draft_item_id,composition_id,choice_group_id,choice_option_id) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (tenant_a, org_a, draft_a, item_a, composition_a, group_other, option_other),
+            ),
+            (
+                "INSERT INTO order_draft_item_selections (tenant_id,organization_id,draft_id,draft_item_id,composition_id,choice_group_id,choice_option_id) VALUES (%s,%s,%s,%s,%s,%s,%s)",
+                (tenant_a, org_a, draft_a, item_a, composition_a, group_a, option_other),
+            ),
+            (
+                "INSERT INTO order_draft_items (tenant_id,organization_id,draft_id,product_id,quantity,position) VALUES (%s,%s,%s,%s,0,2)",
+                (tenant_a, org_a, draft_a, parent_a),
+            ),
+            (
+                "INSERT INTO order_draft_items (tenant_id,organization_id,draft_id,product_id,quantity,position) VALUES (%s,%s,%s,%s,1,-1)",
+                (tenant_a, org_a, draft_a, parent_a),
+            ),
+            ('UPDATE order_drafts SET version=0 WHERE id=%s', (draft_a,)),
+        )
+        for statement, parameters in probes:
+            with pytest.raises((pymysql.err.IntegrityError, pymysql.err.OperationalError)):
+                with connection.cursor() as cursor:
+                    cursor.execute(statement, parameters)
+    finally:
+        connection.rollback()
+        connection.autocommit(True)
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM tenants WHERE slug LIKE %s',
+            (f'{prefix}-draft-%',),
+        )
+        assert cursor.fetchone()['count'] == 0
+
+
 def test_fresh_install_reaches_portable_database_contract(
     isolated_database,
     integration_settings: Settings,
@@ -970,6 +1199,79 @@ def test_fresh_install_reaches_portable_database_contract(
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         _assert_database_contract(connection)
+    finally:
+        connection.close()
+
+
+def test_upgrade_from_0012_reaches_order_draft_contract_and_grants_permissions(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0012_product_resolution_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES ('WS14','upgrade-0012','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO roles (tenant_id,name,description,status) "
+                "VALUES (%s,'TENANT_ADMIN','Existing administrator','ACTIVE')",
+                (tenant_id,),
+            )
+            role_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) "
+                "VALUES (%s,'ORG','Preserved Organization','ACTIVE')",
+                (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO locations (tenant_id,organization_id,code,name,timezone,status) "
+                "VALUES (%s,%s,'LOC','Preserved Location','America/Mexico_City','ACTIVE')",
+                (tenant_id, organization_id),
+            )
+            location_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO conversations "
+                "(tenant_id,organization_id,location_id,channel,status,next_message_sequence) "
+                "VALUES (%s,%s,%s,'MOBILE_APP','ACTIVE',1)",
+                (tenant_id, organization_id, location_id),
+            )
+            conversation_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT status FROM conversations WHERE id=%s', (conversation_id,))
+            assert cursor.fetchone()['status'] == 'ACTIVE'
+            cursor.execute(
+                "INSERT INTO order_drafts "
+                "(tenant_id,organization_id,location_id,conversation_id,version) "
+                "VALUES (%s,%s,%s,%s,1)",
+                (tenant_id, organization_id, location_id, conversation_id),
+            )
+            cursor.execute(
+                '''
+                SELECT P.code, COUNT(*) AS assignment_count
+                FROM role_permissions AS RP
+                JOIN permissions AS P ON P.id = RP.permission_id
+                WHERE RP.role_id = %s
+                  AND P.code IN ('order_draft.read', 'order_draft.manage')
+                GROUP BY P.code
+                ''',
+                (role_id,),
+            )
+            assert {row['code']: row['assignment_count'] for row in cursor.fetchall()} == {
+                'order_draft.manage': 1,
+                'order_draft.read': 1,
+            }
     finally:
         connection.close()
 
