@@ -19,6 +19,7 @@ from app.models import (
     DinerSession,
     Location,
     Organization,
+    OrderDraft,
     Resource,
     RestaurantServiceSession,
 )
@@ -433,6 +434,84 @@ async def validate_diner_authority(
     return diner
 
 
+async def lock_diner_write_context(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    diner_session_id: int,
+    conversation_id: int,
+) -> tuple[RestaurantServiceSession, DinerSession, Conversation]:
+    """Lock the canonical diner commercial-write chain in one portable order."""
+    service_session_id = await db.scalar(
+        select(DinerSession.service_session_id).where(
+            DinerSession.id == diner_session_id,
+            DinerSession.tenant_id == tenant_id,
+            DinerSession.conversation_id == conversation_id,
+        )
+    )
+    if service_session_id is None:
+        raise errors.DinerAuthorizationError('Diner is not authorized for this Conversation')
+    session = await db.scalar(
+        select(RestaurantServiceSession)
+        .where(
+            RestaurantServiceSession.id == service_session_id,
+            RestaurantServiceSession.tenant_id == tenant_id,
+        )
+        .with_for_update()
+    )
+    diner = await db.scalar(
+        select(DinerSession)
+        .where(
+            DinerSession.id == diner_session_id,
+            DinerSession.tenant_id == tenant_id,
+            DinerSession.service_session_id == service_session_id,
+            DinerSession.conversation_id == conversation_id,
+        )
+        .with_for_update()
+    )
+    conversation = await db.scalar(
+        select(Conversation)
+        .where(Conversation.id == conversation_id, Conversation.tenant_id == tenant_id)
+        .with_for_update()
+    )
+    if (
+        session is None
+        or diner is None
+        or conversation is None
+        or session.status != 'OPEN'
+        or session.open_slot != 1
+        or diner.status != 'ACTIVE'
+        or diner.active_slot != 1
+        or conversation.status != 'ACTIVE'
+        or (session.organization_id, session.location_id, session.resource_id)
+        != (diner.organization_id, diner.location_id, diner.resource_id)
+        or (conversation.organization_id, conversation.location_id, conversation.resource_id)
+        != (diner.organization_id, diner.location_id, diner.resource_id)
+    ):
+        raise errors.DinerAuthorizationError('Diner commercial context is not active')
+    return session, diner, conversation
+
+
+async def _abandon_current_draft(
+    db: AsyncSession, *, tenant_id: int, conversation_id: int, terminal_at: datetime
+) -> OrderDraft | None:
+    draft = await db.scalar(
+        select(OrderDraft)
+        .where(
+            OrderDraft.tenant_id == tenant_id,
+            OrderDraft.conversation_id == conversation_id,
+            OrderDraft.status == 'OPEN',
+            OrderDraft.current_slot == 1,
+        )
+        .with_for_update()
+    )
+    if draft is not None:
+        draft.status = 'ABANDONED'
+        draft.current_slot = None
+        draft.terminal_at = terminal_at
+    return draft
+
+
 async def end_diner_session(
     db: AsyncSession,
     *,
@@ -450,6 +529,9 @@ async def end_diner_session(
             raise errors.DinerAuthorizationError('Diner session is not active')
         conversation = await db.scalar(select(Conversation).where(Conversation.id == diner.conversation_id, Conversation.tenant_id == tenant_id).with_for_update())
         now = _now()
+        await _abandon_current_draft(
+            db, tenant_id=tenant_id, conversation_id=diner.conversation_id, terminal_at=now
+        )
         diner.status = 'ENDED'
         diner.active_slot = None
         diner.ended_at = now
@@ -487,6 +569,10 @@ async def close_service_session(
         conversation_ids = tuple(sorted(diner.conversation_id for diner in diners))
         conversations = tuple((await db.execute(select(Conversation).where(Conversation.id.in_(conversation_ids or (-1,)), Conversation.tenant_id == tenant_id).order_by(Conversation.id).with_for_update())).scalars().all())
         now = _now()
+        for conversation in conversations:
+            await _abandon_current_draft(
+                db, tenant_id=tenant_id, conversation_id=conversation.id, terminal_at=now
+            )
         for diner in diners:
             diner.status = 'ENDED'
             diner.active_slot = None

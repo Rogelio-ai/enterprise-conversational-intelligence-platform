@@ -327,12 +327,17 @@ traffic requires HTTPS, and discarding or expiring a bearer token does not end a
 A successful join atomically creates one ACTIVE DinerSession, one personal `IN_PERSON_DIGITAL`
 Conversation, a CUSTOMER participant, and a DIGITAL_WAITER participant. The dedicated
 `diner_access` JWT is database-lifecycle validated and grants ownership only of that diner's
-Conversation, lazily created OrderDraft, and transient Checkout Preview. Diner authority does not
+Conversation, lazily created OrderDraft, transient Checkout Preview, and explicit commercial
+acceptance into immutable RestaurantOrder snapshots. Diner authority does not
 create a User, TenantMembership, Role, or Permission grant, and multiple diners at one table never
 share or merge Drafts.
 
-Final Order, commercial acceptance, combined or split table billing, payment, and POS submission
-remain deferred.
+Each Conversation may retain many terminal ACCEPTED/ABANDONED Drafts while a portable nullable-slot
+unique constraint permits at most one current OPEN Draft. Confirmation requires the reviewed Draft
+version, a versioned commercial/configuration fingerprint, and a case-sensitive idempotency key.
+Pure presentation-name edits are excluded from commercial freshness but are captured from server
+state in the accepted historical snapshot. Combined or split table billing, payment, POS submission,
+POS recovery, and external POS lifecycle synchronization remain deferred to later workstreams.
 
 ---
 
@@ -354,7 +359,22 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
-The current application migration head is `0015_restaurant_service_diner_access_foundation`.
+The current application migration head is `0016_canonical_order_commercial_acceptance`.
+
+Restaurant commercial acceptance exposes:
+
+```text
+POST /diner/order/confirm
+GET  /diner/orders
+GET  /diner/orders/{order_id}
+GET  /restaurant-orders
+GET  /restaurant-orders/{order_id}
+```
+
+The diner confirmation endpoint derives all ownership scope from the diner token and accepts only
+`expected_draft_version`, `expected_commercial_fingerprint`, and the `Idempotency-Key` header.
+Staff reads require `restaurant_order.read`; WS-17 intentionally provides no staff confirmation,
+Order mutation/deletion, payment, cancellation, or POS endpoint.
 
 The bounded Restaurant conversational-intelligence foundation records provider-neutral,
 append-only derivation provenance and versioned Restaurant message intents without changing the
@@ -465,6 +485,9 @@ Run backend tests in an isolated container:
 ```bash
 docker compose run --rm api pytest
 ```
+
+The WS-17 certified regression baseline is `251 passed, 0 failed, 0 skipped, 0 xfailed` on
+MySQL 8.4.8 and MariaDB 10.6.28.
 
 Run the same migration and integration suite against an isolated MariaDB 10.6 service with:
 

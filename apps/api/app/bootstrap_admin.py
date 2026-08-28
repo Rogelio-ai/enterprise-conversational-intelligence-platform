@@ -46,6 +46,7 @@ CORE_PERMISSIONS = {
     'order_draft.manage': 'Manage canonical Restaurant Order Drafts.',
     'restaurant_service.read': 'Read Restaurant service sessions.',
     'restaurant_service.manage': 'Manage Restaurant service sessions.',
+    'restaurant_order.read': 'Read immutable accepted Restaurant Orders.',
 }
 _SLUG_PATTERN = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 

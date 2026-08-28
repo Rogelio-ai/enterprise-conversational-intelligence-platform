@@ -136,6 +136,10 @@ class DinerSession(TimestampMixin, Base):
         UniqueConstraint('service_session_id', 'normalized_email', 'active_slot', name='uq_diner_sessions_active_email'),
         UniqueConstraint('conversation_id', name='uq_diner_sessions_conversation'),
         UniqueConstraint('conversation_participant_id', name='uq_diner_sessions_participant'),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id', 'resource_id',
+            'service_session_id', 'conversation_id', name='uq_diner_sessions_full_scope',
+        ),
         CheckConstraint("status IN ('ACTIVE', 'ENDED')", name='ck_diner_sessions_status'),
         CheckConstraint('active_slot IS NULL OR active_slot = 1', name='ck_diner_sessions_active_slot'),
         CheckConstraint("CHAR_LENGTH(display_name) BETWEEN 1 AND 200 AND TRIM(display_name) <> ''", name='ck_diner_sessions_display_name'),

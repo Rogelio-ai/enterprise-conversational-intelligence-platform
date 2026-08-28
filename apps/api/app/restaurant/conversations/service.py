@@ -13,6 +13,7 @@ from app.models import (
     Customer,
     Location,
     Organization,
+    OrderDraft,
     Resource,
     TenantMembership,
 )
@@ -177,8 +178,23 @@ async def update_conversation(
         conversation.default_language = updates['default_language']
 
     if updates.get('status') == 'CLOSED':
+        now = datetime.now(UTC).replace(tzinfo=None)
+        draft = await db.scalar(
+            select(OrderDraft)
+            .where(
+                OrderDraft.tenant_id == tenant_id,
+                OrderDraft.conversation_id == conversation.id,
+                OrderDraft.status == 'OPEN',
+                OrderDraft.current_slot == 1,
+            )
+            .with_for_update()
+        )
+        if draft is not None:
+            draft.status = 'ABANDONED'
+            draft.current_slot = None
+            draft.terminal_at = now
         conversation.status = 'CLOSED'
-        conversation.closed_at = datetime.now(UTC).replace(tzinfo=None)
+        conversation.closed_at = now
 
     await db.commit()
     await db.refresh(conversation)

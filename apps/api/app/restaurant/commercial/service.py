@@ -9,6 +9,7 @@ from decimal import ROUND_HALF_DOWN, Decimal, localcontext
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Promotion
+from app.restaurant.catalog import structure
 from app.restaurant.commercial.contracts import (
     AppliedPromotion,
     CheckoutPreview,
@@ -30,6 +31,8 @@ from app.restaurant.pricing import service as pricing_service
 logger = logging.getLogger('ecip.commercial')
 _WHOLE_UNIT = Decimal('1')
 _DISPLAY_SCALE = Decimal('0.01')
+FINGERPRINT_SCHEMA_VERSION = 1
+ROUNDING_POLICY = 'WHOLE_UNIT_HALF_DOWN'
 
 
 def round_payable_total(value: Decimal) -> Decimal:
@@ -172,13 +175,54 @@ async def resolve_checkout_preview(
                 commercial_amount=commercial_amount,
             )
             lines.append(line)
+            composition_facts: dict[str, object] | None = None
+            if item.composition_id is not None:
+                graph = await structure.load_composition_graph(
+                    db, tenant_id=draft.tenant_id, product_id=item.product_id, active_only=True
+                )
+                if graph is None or graph.composition.id != item.composition_id:
+                    raise DraftNotCommerciallyReadyError(
+                        f'Product {item.product_id} composition is no longer confirmable'
+                    )
+                selected_ids = {value.choice_option_id for value in item.selections}
+                composition_facts = {
+                    'id': graph.composition.id,
+                    'fixed_components': [
+                        {
+                            'component_id': value.component.id,
+                            'product_id': value.product.id,
+                            'quantity': _decimal(value.component.quantity),
+                            'position': value.component.display_order,
+                        }
+                        for value in graph.components
+                    ],
+                    'choice_groups': [
+                        {
+                            'group_id': group.group.id,
+                            'min': group.group.min_selections,
+                            'max': group.group.max_selections,
+                            'position': group.group.display_order,
+                            'selected_options': [
+                                {
+                                    'option_id': option.option.id,
+                                    'product_id': option.product.id,
+                                    'quantity': _decimal(option.option.quantity),
+                                    'position': option.option.display_order,
+                                }
+                                for option in group.options
+                                if option.option.id in selected_ids
+                            ],
+                        }
+                        for group in graph.groups
+                    ],
+                }
             fingerprint_lines.append(
                 {
                     'draft_item_id': item.item_id,
                     'product_id': item.product_id,
                     'composition_id': item.composition_id,
                     'quantity': _decimal(item.quantity),
-                    'choice_option_ids': [value.choice_option_id for value in item.selections],
+                    'composition': composition_facts,
                     'price_id': price.id,
                     'price_source': price.source,
                     'unit_price': _decimal(price.amount),
@@ -209,6 +253,7 @@ async def resolve_checkout_preview(
 
     currency = next(iter(currencies))
     fingerprint_values: dict[str, object] = {
+        'fingerprint_schema_version': FINGERPRINT_SCHEMA_VERSION,
         'draft_id': draft.draft_id,
         'draft_version': draft.version,
         'tenant_id': draft.tenant_id,
@@ -216,6 +261,7 @@ async def resolve_checkout_preview(
         'location_id': draft.location_id,
         'currency': currency,
         'tax_mode': TaxMode.INCLUDED.value,
+        'rounding_policy': ROUNDING_POLICY,
         'lines': fingerprint_lines,
         'subtotal': _decimal(subtotal),
         'total_discount': _decimal(total_discount),
@@ -233,6 +279,8 @@ async def resolve_checkout_preview(
         resolved_at=resolved_at,
         currency=currency,
         tax_mode=TaxMode.INCLUDED,
+        rounding_policy=ROUNDING_POLICY,
+        fingerprint_schema_version=FINGERPRINT_SCHEMA_VERSION,
         lines=tuple(lines),
         subtotal=subtotal,
         total_discount=total_discount,

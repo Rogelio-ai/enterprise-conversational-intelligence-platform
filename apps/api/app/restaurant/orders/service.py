@@ -5,7 +5,6 @@ from collections import defaultdict
 from decimal import Decimal
 
 from sqlalchemy import delete, func, select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
@@ -128,18 +127,21 @@ async def get_or_create_draft(
     owned_conversation_id: int | None = None,
 ) -> DraftProjection:
     try:
+        if owner_diner_session_id is not None:
+            if owned_conversation_id != conversation_id:
+                raise DraftNotFoundError('Conversation not found')
+            await diner_authority_service.lock_diner_write_context(
+                db,
+                tenant_id=tenant_id,
+                diner_session_id=owner_diner_session_id,
+                conversation_id=conversation_id,
+            )
         conversation = await _conversation(
             db, tenant_id=tenant_id, conversation_id=conversation_id, lock=True
         )
         if owner_diner_session_id is not None:
             if owned_conversation_id != conversation.id:
                 raise DraftNotFoundError('Conversation not found')
-            await diner_authority_service.validate_diner_authority(
-                db,
-                tenant_id=tenant_id,
-                diner_session_id=owner_diner_session_id,
-                conversation_id=conversation.id,
-            )
         if conversation.status != 'ACTIVE':
             raise DraftNotMutableError('Conversation is closed')
         await _valid_location(db, conversation)
@@ -148,6 +150,8 @@ async def get_or_create_draft(
             .where(
                 OrderDraft.tenant_id == tenant_id,
                 OrderDraft.conversation_id == conversation.id,
+                OrderDraft.status == 'OPEN',
+                OrderDraft.current_slot == 1,
             )
             .with_for_update()
         )
@@ -159,23 +163,15 @@ async def get_or_create_draft(
                 location_id=conversation.location_id,
                 conversation_id=conversation.id,
                 version=1,
+                status='OPEN',
+                current_slot=1,
+                terminal_at=None,
             )
             db.add(draft)
             await db.flush()
             created = True
         await db.commit()
         await db.refresh(draft)
-    except IntegrityError:
-        await db.rollback()
-        draft = await db.scalar(
-            select(OrderDraft).where(
-                OrderDraft.tenant_id == tenant_id,
-                OrderDraft.conversation_id == conversation_id,
-            )
-        )
-        if draft is None:
-            raise
-        created = False
     except Exception:
         await db.rollback()
         raise
@@ -210,21 +206,21 @@ async def _locked_mutable_draft(
     )
     if conversation_id is None:
         raise DraftNotFoundError('Order Draft not found')
+    if owner_diner_session_id is not None:
+        if owned_conversation_id != conversation_id:
+            raise DraftNotFoundError('Order Draft not found')
+        await diner_authority_service.lock_diner_write_context(
+            db,
+            tenant_id=tenant_id,
+            diner_session_id=owner_diner_session_id,
+            conversation_id=conversation_id,
+        )
     conversation = await _conversation(
         db,
         tenant_id=tenant_id,
         conversation_id=conversation_id,
         lock=True,
     )
-    if owner_diner_session_id is not None:
-        if owned_conversation_id != conversation.id:
-            raise DraftNotFoundError('Order Draft not found')
-        await diner_authority_service.validate_diner_authority(
-            db,
-            tenant_id=tenant_id,
-            diner_session_id=owner_diner_session_id,
-            conversation_id=conversation.id,
-        )
     draft = await db.scalar(
         select(OrderDraft)
         .where(OrderDraft.id == draft_id, OrderDraft.tenant_id == tenant_id)
@@ -239,6 +235,8 @@ async def _locked_mutable_draft(
         raise DraftContextError('Draft no longer matches its Conversation scope')
     if conversation.status != 'ACTIVE':
         raise DraftNotMutableError('Conversation is closed')
+    if draft.status != 'OPEN' or draft.current_slot != 1 or draft.terminal_at is not None:
+        raise DraftNotMutableError('Order Draft is terminal and cannot be mutated')
     if draft.version != expected_version:
         _event(
             'order_draft_concurrency_conflict',
@@ -299,6 +297,8 @@ async def get_draft_for_conversation(
         select(OrderDraft).where(
             OrderDraft.tenant_id == tenant_id,
             OrderDraft.conversation_id == conversation_id,
+            OrderDraft.status == 'OPEN',
+            OrderDraft.current_slot == 1,
         )
     )
     if draft is None:
@@ -551,6 +551,7 @@ async def evaluate_draft(
         location_id=draft.location_id,
         conversation_id=draft.conversation_id,
         version=draft.version,
+        status=draft.status,
         readiness=readiness,
         items=projected,
     )

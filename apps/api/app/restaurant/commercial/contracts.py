@@ -53,6 +53,8 @@ class CheckoutPreview:
     resolved_at: datetime
     currency: str
     tax_mode: TaxMode
+    rounding_policy: str
+    fingerprint_schema_version: int
     lines: tuple[CheckoutPreviewLine, ...]
     subtotal: Decimal
     total_discount: Decimal

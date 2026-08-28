@@ -68,5 +68,6 @@ class DraftProjection:
     location_id: int
     conversation_id: int
     version: int
+    status: str
     readiness: DraftReadiness
     items: tuple[DraftItemProjection, ...]

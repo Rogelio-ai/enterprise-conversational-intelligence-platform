@@ -31,6 +31,12 @@ from app.models.product_structure import (
 from app.models.product_resolution import ProductAlias
 from app.models.resource import Resource
 from app.models.restaurant_service import DinerSession, RestaurantServiceSession
+from app.models.restaurant_order import (
+    RestaurantOrder,
+    RestaurantOrderItem,
+    RestaurantOrderItemComponent,
+    RestaurantOrderPromotion,
+)
 
 __all__ = [
     'Customer',
@@ -66,6 +72,10 @@ __all__ = [
     'RolePermission',
     'Resource',
     'RestaurantServiceSession',
+    'RestaurantOrder',
+    'RestaurantOrderItem',
+    'RestaurantOrderItemComponent',
+    'RestaurantOrderPromotion',
     'DinerSession',
     'RestaurantMessageIntent',
     'Tenant',

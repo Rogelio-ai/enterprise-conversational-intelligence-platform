@@ -181,6 +181,8 @@ class CheckoutPreviewResponse(BaseModel):
     resolved_at: datetime
     currency: str
     tax_mode: str
+    rounding_policy: str
+    fingerprint_schema_version: int
     lines: tuple[CheckoutPreviewLineResponse, ...]
     subtotal: Decimal
     total_discount: Decimal

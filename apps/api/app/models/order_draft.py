@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -9,6 +10,9 @@ from sqlalchemy import (
     Index,
     Integer,
     Numeric,
+    SmallInteger,
+    String,
+    DateTime,
     UniqueConstraint,
     text,
 )
@@ -48,12 +52,24 @@ class OrderDraft(TimestampMixin, Base):
             ondelete='RESTRICT',
         ),
         UniqueConstraint(
-            'tenant_id', 'conversation_id', name='uq_order_drafts_tenant_conversation'
+            'tenant_id', 'conversation_id', 'current_slot',
+            name='uq_order_drafts_tenant_conversation_current'
         ),
         UniqueConstraint(
             'id', 'tenant_id', 'organization_id', name='uq_order_drafts_id_tenant_org'
         ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id', 'conversation_id',
+            name='uq_order_drafts_full_scope',
+        ),
         CheckConstraint('version >= 1', name='ck_order_drafts_version'),
+        CheckConstraint("status IN ('OPEN', 'ACCEPTED', 'ABANDONED')", name='ck_order_drafts_status'),
+        CheckConstraint('current_slot IS NULL OR current_slot = 1', name='ck_order_drafts_current_slot'),
+        CheckConstraint(
+            "(status = 'OPEN' AND current_slot = 1 AND terminal_at IS NULL) OR "
+            "(status IN ('ACCEPTED', 'ABANDONED') AND current_slot IS NULL AND terminal_at IS NOT NULL)",
+            name='ck_order_drafts_lifecycle',
+        ),
         Index(
             'ix_order_drafts_tenant_org_location',
             'tenant_id',
@@ -71,6 +87,13 @@ class OrderDraft(TimestampMixin, Base):
     version: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=1, server_default=text('1')
     )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='OPEN', server_default=text("'OPEN'")
+    )
+    current_slot: Mapped[int | None] = mapped_column(
+        SmallInteger, nullable=True, default=1, server_default=text('1')
+    )
+    terminal_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
 
 
 class OrderDraftItem(TimestampMixin, Base):

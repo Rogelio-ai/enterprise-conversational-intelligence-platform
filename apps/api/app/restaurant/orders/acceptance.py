@@ -1,0 +1,405 @@
+from __future__ import annotations
+
+import hmac
+import logging
+from datetime import UTC, datetime
+
+from sqlalchemy import select
+from sqlalchemy.ext.asyncio import AsyncSession
+
+from app.models import (
+    OrderDraft,
+    RestaurantOrder,
+    RestaurantOrderItem,
+    RestaurantOrderItemComponent,
+    RestaurantOrderPromotion,
+)
+from app.restaurant.catalog import structure
+from app.restaurant.commercial import service as commercial_service
+from app.restaurant.orders import acceptance_errors as errors
+from app.restaurant.orders import service as draft_service
+from app.restaurant.orders.acceptance_contracts import (
+    AcceptedComponent,
+    AcceptedOrderItem,
+    AcceptedPromotion,
+    ConfirmationResult,
+    RestaurantOrderProjection,
+)
+from app.restaurant.service_sessions import service as service_session_service
+
+
+logger = logging.getLogger('ecip.restaurant_orders')
+
+
+def _event(name: str, *, correlation_id: str | None, **values: object) -> None:
+    logger.info(
+        name.replace('_', ' ').capitalize(),
+        extra={'event': name, 'correlation_id': correlation_id, **values},
+    )
+
+
+async def _projection(db: AsyncSession, order: RestaurantOrder) -> RestaurantOrderProjection:
+    item_rows = tuple(
+        (
+            await db.execute(
+                select(RestaurantOrderItem)
+                .where(
+                    RestaurantOrderItem.tenant_id == order.tenant_id,
+                    RestaurantOrderItem.order_id == order.id,
+                )
+                .order_by(RestaurantOrderItem.position, RestaurantOrderItem.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    projected_items: list[AcceptedOrderItem] = []
+    for item in item_rows:
+        component_rows = tuple(
+            (
+                await db.execute(
+                    select(RestaurantOrderItemComponent)
+                    .where(
+                        RestaurantOrderItemComponent.tenant_id == order.tenant_id,
+                        RestaurantOrderItemComponent.order_id == order.id,
+                        RestaurantOrderItemComponent.order_item_id == item.id,
+                    )
+                    .order_by(RestaurantOrderItemComponent.position, RestaurantOrderItemComponent.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        promotion_rows = tuple(
+            (
+                await db.execute(
+                    select(RestaurantOrderPromotion)
+                    .where(
+                        RestaurantOrderPromotion.tenant_id == order.tenant_id,
+                        RestaurantOrderPromotion.order_id == order.id,
+                        RestaurantOrderPromotion.order_item_id == item.id,
+                    )
+                    .order_by(RestaurantOrderPromotion.application_order, RestaurantOrderPromotion.id)
+                )
+            )
+            .scalars()
+            .all()
+        )
+        projected_items.append(
+            AcceptedOrderItem(
+                id=item.id,
+                source_order_draft_item_id=item.source_order_draft_item_id,
+                product_id=item.product_id,
+                product_name=item.product_name,
+                composition_id=item.composition_id,
+                quantity=item.quantity,
+                position=item.position,
+                source_product_price_id=item.source_product_price_id,
+                price_source=item.price_source,
+                unit_price=item.unit_price,
+                base_amount=item.base_amount,
+                discount_amount=item.discount_amount,
+                commercial_amount=item.commercial_amount,
+                components=tuple(
+                    AcceptedComponent(
+                        kind=value.kind,
+                        position=value.position,
+                        source_component_id=value.source_component_id,
+                        source_choice_group_id=value.source_choice_group_id,
+                        source_choice_option_id=value.source_choice_option_id,
+                        choice_group_name=value.choice_group_name,
+                        product_id=value.product_id,
+                        product_name=value.product_name,
+                        quantity=value.quantity,
+                    )
+                    for value in component_rows
+                ),
+                promotions=tuple(
+                    AcceptedPromotion(
+                        promotion_id=value.promotion_id,
+                        application_order=value.application_order,
+                        promotion_name=value.promotion_name,
+                        promotion_type=value.promotion_type,
+                        promotion_value=value.promotion_value,
+                        promotion_currency=value.promotion_currency,
+                        priority=value.priority,
+                        is_combinable=value.is_combinable,
+                        calculated_discount=value.calculated_discount,
+                    )
+                    for value in promotion_rows
+                ),
+            )
+        )
+    return RestaurantOrderProjection(
+        id=order.id,
+        status=order.status,
+        accepted_at=order.accepted_at,
+        source_order_draft_id=order.source_order_draft_id,
+        accepted_draft_version=order.accepted_draft_version,
+        currency=order.currency,
+        tax_mode=order.tax_mode,
+        rounding_policy=order.rounding_policy,
+        subtotal=order.subtotal,
+        total_discount=order.total_discount,
+        pre_round_total=order.pre_round_total,
+        rounding_adjustment=order.rounding_adjustment,
+        payable_total=order.payable_total,
+        items=tuple(projected_items),
+    )
+
+
+async def _order_by_key(
+    db: AsyncSession, *, tenant_id: int, diner_session_id: int, idempotency_key: str
+) -> RestaurantOrder | None:
+    return await db.scalar(
+        select(RestaurantOrder)
+        .where(
+            RestaurantOrder.tenant_id == tenant_id,
+            RestaurantOrder.diner_session_id == diner_session_id,
+            RestaurantOrder.confirmation_idempotency_key == idempotency_key,
+        )
+        .with_for_update()
+    )
+
+
+async def confirm_current_order(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    diner_session_id: int,
+    conversation_id: int,
+    expected_draft_version: int,
+    expected_commercial_fingerprint: str,
+    idempotency_key: str,
+    correlation_id: str | None = None,
+) -> ConfirmationResult:
+    _event('order_confirmation_requested', correlation_id=correlation_id, tenant_id=tenant_id, diner_session_id=diner_session_id, conversation_id=conversation_id)
+    try:
+        session, diner, conversation = await service_session_service.lock_diner_write_context(
+            db,
+            tenant_id=tenant_id,
+            diner_session_id=diner_session_id,
+            conversation_id=conversation_id,
+        )
+        draft = await db.scalar(
+            select(OrderDraft)
+            .where(
+                OrderDraft.tenant_id == tenant_id,
+                OrderDraft.conversation_id == conversation_id,
+                OrderDraft.status == 'OPEN',
+                OrderDraft.current_slot == 1,
+            )
+            .with_for_update()
+        )
+        replay = await _order_by_key(
+            db,
+            tenant_id=tenant_id,
+            diner_session_id=diner_session_id,
+            idempotency_key=idempotency_key,
+        )
+        if replay is not None:
+            if draft is not None and replay.source_order_draft_id != draft.id:
+                raise errors.ConfirmationConflictError(
+                    'Idempotency key was already used for a different Order Draft'
+                )
+            await db.commit()
+            _event('order_confirmation_idempotent_replay', correlation_id=correlation_id, tenant_id=tenant_id, diner_session_id=diner_session_id, conversation_id=conversation_id, restaurant_order_id=replay.id, outcome='replayed')
+            return ConfirmationResult(await _projection(db, replay), True)
+        if draft is None:
+            raise errors.DraftNotConfirmableError('No current Order Draft is available to confirm')
+        if draft.version != expected_draft_version:
+            raise errors.ConfirmationStaleError(
+                f'Expected Draft version {expected_draft_version}, current version is {draft.version}'
+            )
+        preview = await commercial_service.resolve_checkout_preview(
+            db,
+            tenant_id=tenant_id,
+            draft_id=draft.id,
+            correlation_id=correlation_id,
+        )
+        if not hmac.compare_digest(
+            preview.commercial_fingerprint, expected_commercial_fingerprint
+        ):
+            raise errors.ConfirmationStaleError('Commercial confirmation expectation is stale')
+
+        accepted_at = datetime.now(UTC).replace(tzinfo=None)
+        order = RestaurantOrder(
+            tenant_id=tenant_id,
+            organization_id=diner.organization_id,
+            location_id=diner.location_id,
+            resource_id=diner.resource_id,
+            service_session_id=session.id,
+            diner_session_id=diner.id,
+            customer_id=diner.customer_id,
+            conversation_id=conversation.id,
+            source_order_draft_id=draft.id,
+            source_channel=conversation.channel,
+            status='ACCEPTED',
+            accepted_draft_version=draft.version,
+            confirmation_idempotency_key=idempotency_key,
+            commercial_fingerprint=preview.commercial_fingerprint,
+            fingerprint_schema_version=preview.fingerprint_schema_version,
+            currency=preview.currency,
+            tax_mode=preview.tax_mode.value,
+            rounding_policy=preview.rounding_policy,
+            subtotal=preview.subtotal,
+            total_discount=preview.total_discount,
+            pre_round_total=preview.pre_round_total,
+            rounding_adjustment=preview.rounding_adjustment,
+            payable_total=preview.payable_total,
+            accepted_at=accepted_at,
+        )
+        db.add(order)
+        await db.flush()
+        draft_projection = await draft_service.evaluate_draft(
+            db, tenant_id=tenant_id, draft_id=draft.id, correlation_id=correlation_id
+        )
+        draft_items = {value.item_id: value for value in draft_projection.items}
+        for line in preview.lines:
+            draft_item = draft_items[line.draft_item_id]
+            order_item = RestaurantOrderItem(
+                tenant_id=tenant_id,
+                organization_id=diner.organization_id,
+                order_id=order.id,
+                source_order_draft_item_id=line.draft_item_id,
+                product_id=line.product_id,
+                product_name=line.product_name,
+                composition_id=line.composition_id,
+                quantity=line.quantity,
+                position=draft_item.position,
+                source_product_price_id=line.price_id,
+                price_source=line.price_source,
+                unit_price=line.unit_price,
+                base_amount=line.base_amount,
+                discount_amount=line.discount_amount,
+                commercial_amount=line.commercial_amount,
+            )
+            db.add(order_item)
+            await db.flush()
+            component_position = 0
+            if line.composition_id is not None:
+                graph = await structure.load_composition_graph(
+                    db, tenant_id=tenant_id, product_id=line.product_id, active_only=True
+                )
+                if graph is None or graph.composition.id != line.composition_id:
+                    raise errors.DraftNotConfirmableError('Product composition is no longer valid')
+                for component in graph.components:
+                    db.add(RestaurantOrderItemComponent(
+                        tenant_id=tenant_id, organization_id=diner.organization_id,
+                        order_id=order.id, order_item_id=order_item.id, kind='FIXED',
+                        position=component_position, source_component_id=component.component.id,
+                        source_choice_group_id=None, source_choice_option_id=None,
+                        choice_group_name=None, product_id=component.product.id,
+                        product_name=component.product.name, quantity=component.component.quantity,
+                    ))
+                    component_position += 1
+                selections = {value.choice_option_id for value in draft_item.selections}
+                for group in graph.groups:
+                    for option in group.options:
+                        if option.option.id not in selections:
+                            continue
+                        db.add(RestaurantOrderItemComponent(
+                            tenant_id=tenant_id, organization_id=diner.organization_id,
+                            order_id=order.id, order_item_id=order_item.id, kind='CHOICE',
+                            position=component_position, source_component_id=None,
+                            source_choice_group_id=group.group.id,
+                            source_choice_option_id=option.option.id,
+                            choice_group_name=group.group.name,
+                            product_id=option.product.id, product_name=option.product.name,
+                            quantity=option.option.quantity,
+                        ))
+                        component_position += 1
+            for application_order, promotion in enumerate(line.applied_promotions):
+                db.add(RestaurantOrderPromotion(
+                    tenant_id=tenant_id, organization_id=diner.organization_id,
+                    order_id=order.id, order_item_id=order_item.id,
+                    promotion_id=promotion.promotion_id,
+                    application_order=application_order,
+                    promotion_name=promotion.name,
+                    promotion_type=promotion.promotion_type,
+                    promotion_value=promotion.promotion_value,
+                    promotion_currency=promotion.currency,
+                    priority=promotion.priority,
+                    is_combinable=promotion.is_combinable,
+                    calculated_discount=promotion.calculated_discount,
+                ))
+        draft.status = 'ACCEPTED'
+        draft.current_slot = None
+        draft.terminal_at = accepted_at
+        await db.flush()
+        await db.commit()
+        await db.refresh(order)
+    except Exception as exc:
+        await db.rollback()
+        if isinstance(exc, errors.ConfirmationStaleError):
+            _event('order_confirmation_stale', correlation_id=correlation_id, tenant_id=tenant_id, diner_session_id=diner_session_id, conversation_id=conversation_id, outcome='rejected')
+        else:
+            _event('order_confirmation_rejected', correlation_id=correlation_id, tenant_id=tenant_id, diner_session_id=diner_session_id, conversation_id=conversation_id, outcome='rejected')
+        raise
+    _event('order_confirmed', correlation_id=correlation_id, tenant_id=tenant_id, organization_id=order.organization_id, location_id=order.location_id, resource_id=order.resource_id, service_session_id=order.service_session_id, diner_session_id=order.diner_session_id, conversation_id=order.conversation_id, order_draft_id=order.source_order_draft_id, restaurant_order_id=order.id, draft_version=order.accepted_draft_version, outcome='accepted')
+    return ConfirmationResult(await _projection(db, order), False)
+
+
+async def list_diner_orders(
+    db: AsyncSession, *, tenant_id: int, diner_session_id: int
+) -> tuple[RestaurantOrderProjection, ...]:
+    orders = tuple(
+        (
+            await db.execute(
+                select(RestaurantOrder)
+                .where(
+                    RestaurantOrder.tenant_id == tenant_id,
+                    RestaurantOrder.diner_session_id == diner_session_id,
+                )
+                .order_by(RestaurantOrder.accepted_at, RestaurantOrder.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return tuple([await _projection(db, value) for value in orders])
+
+
+async def get_diner_order(
+    db: AsyncSession, *, tenant_id: int, diner_session_id: int, order_id: int
+) -> RestaurantOrderProjection:
+    order = await db.scalar(
+        select(RestaurantOrder).where(
+            RestaurantOrder.id == order_id,
+            RestaurantOrder.tenant_id == tenant_id,
+            RestaurantOrder.diner_session_id == diner_session_id,
+        )
+    )
+    if order is None:
+        raise errors.RestaurantOrderNotFoundError('Restaurant Order not found')
+    return await _projection(db, order)
+
+
+async def list_staff_orders(
+    db: AsyncSession, *, tenant_id: int
+) -> tuple[RestaurantOrderProjection, ...]:
+    orders = tuple(
+        (
+            await db.execute(
+                select(RestaurantOrder)
+                .where(RestaurantOrder.tenant_id == tenant_id)
+                .order_by(RestaurantOrder.accepted_at, RestaurantOrder.id)
+            )
+        )
+        .scalars()
+        .all()
+    )
+    return tuple([await _projection(db, value) for value in orders])
+
+
+async def get_staff_order(
+    db: AsyncSession, *, tenant_id: int, order_id: int
+) -> RestaurantOrderProjection:
+    order = await db.scalar(
+        select(RestaurantOrder).where(
+            RestaurantOrder.id == order_id, RestaurantOrder.tenant_id == tenant_id
+        )
+    )
+    if order is None:
+        raise errors.RestaurantOrderNotFoundError('Restaurant Order not found')
+    return await _projection(db, order)
