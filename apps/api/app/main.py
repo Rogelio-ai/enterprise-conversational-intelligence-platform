@@ -9,6 +9,7 @@ from fastapi import FastAPI
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.customers import router as customers_router
+from app.api.routes.diner_sessions import router as diner_sessions_router
 from app.api.routes.conversations import router as conversations_router
 from app.api.routes.health import router as health_router
 from app.api.routes.locations import router as locations_router
@@ -20,6 +21,7 @@ from app.api.routes.product_compositions import router as product_compositions_r
 from app.api.routes.product_aliases import router as product_aliases_router
 from app.api.routes.pricing import router as pricing_router
 from app.api.routes.resources import router as resources_router
+from app.api.routes.restaurant_service_sessions import router as restaurant_service_sessions_router
 from app.api.routes.tenants import router as tenants_router
 from app.core.config import Settings, get_settings
 from app.core.errors import register_error_handlers
@@ -67,6 +69,8 @@ def create_app(
     app.include_router(organizations_router)
     app.include_router(locations_router)
     app.include_router(resources_router)
+    app.include_router(restaurant_service_sessions_router)
+    app.include_router(diner_sessions_router)
     app.include_router(customers_router)
     app.include_router(conversations_router)
     app.include_router(order_drafts_router)

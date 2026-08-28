@@ -102,12 +102,16 @@ async def resolve_checkout_preview(
     tenant_id: int,
     draft_id: int,
     correlation_id: str | None = None,
+    owner_diner_session_id: int | None = None,
+    owned_conversation_id: int | None = None,
 ) -> CheckoutPreview:
     draft = await order_draft_service.get_draft(
         db,
         tenant_id=tenant_id,
         draft_id=draft_id,
         correlation_id=correlation_id,
+        owner_diner_session_id=owner_diner_session_id,
+        owned_conversation_id=owned_conversation_id,
     )
     if draft.readiness is not DraftReadiness.READY:
         raise DraftNotCommerciallyReadyError(

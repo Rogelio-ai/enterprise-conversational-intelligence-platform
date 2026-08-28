@@ -41,6 +41,7 @@ from app.restaurant.orders.errors import (
     InvalidDraftSelectionError,
     ProductNotOrderableError,
 )
+from app.restaurant.service_sessions import service as diner_authority_service
 
 
 logger = logging.getLogger('ecip.order_drafts')
@@ -123,11 +124,22 @@ async def get_or_create_draft(
     tenant_id: int,
     conversation_id: int,
     correlation_id: str | None = None,
+    owner_diner_session_id: int | None = None,
+    owned_conversation_id: int | None = None,
 ) -> DraftProjection:
     try:
         conversation = await _conversation(
             db, tenant_id=tenant_id, conversation_id=conversation_id, lock=True
         )
+        if owner_diner_session_id is not None:
+            if owned_conversation_id != conversation.id:
+                raise DraftNotFoundError('Conversation not found')
+            await diner_authority_service.validate_diner_authority(
+                db,
+                tenant_id=tenant_id,
+                diner_session_id=owner_diner_session_id,
+                conversation_id=conversation.id,
+            )
         if conversation.status != 'ACTIVE':
             raise DraftNotMutableError('Conversation is closed')
         await _valid_location(db, conversation)
@@ -188,6 +200,8 @@ async def _locked_mutable_draft(
     draft_id: int,
     expected_version: int,
     correlation_id: str | None,
+    owner_diner_session_id: int | None = None,
+    owned_conversation_id: int | None = None,
 ) -> OrderDraft:
     conversation_id = await db.scalar(
         select(OrderDraft.conversation_id).where(
@@ -202,6 +216,15 @@ async def _locked_mutable_draft(
         conversation_id=conversation_id,
         lock=True,
     )
+    if owner_diner_session_id is not None:
+        if owned_conversation_id != conversation.id:
+            raise DraftNotFoundError('Order Draft not found')
+        await diner_authority_service.validate_diner_authority(
+            db,
+            tenant_id=tenant_id,
+            diner_session_id=owner_diner_session_id,
+            conversation_id=conversation.id,
+        )
     draft = await db.scalar(
         select(OrderDraft)
         .where(OrderDraft.id == draft_id, OrderDraft.tenant_id == tenant_id)
@@ -236,8 +259,19 @@ async def get_draft(
     tenant_id: int,
     draft_id: int,
     correlation_id: str | None = None,
+    owner_diner_session_id: int | None = None,
+    owned_conversation_id: int | None = None,
 ) -> DraftProjection:
-    await _draft(db, tenant_id=tenant_id, draft_id=draft_id)
+    draft = await _draft(db, tenant_id=tenant_id, draft_id=draft_id)
+    if owner_diner_session_id is not None:
+        if owned_conversation_id != draft.conversation_id:
+            raise DraftNotFoundError('Order Draft not found')
+        await diner_authority_service.validate_diner_authority(
+            db,
+            tenant_id=tenant_id,
+            diner_session_id=owner_diner_session_id,
+            conversation_id=draft.conversation_id,
+        )
     return await evaluate_draft(
         db, tenant_id=tenant_id, draft_id=draft_id, correlation_id=correlation_id
     )
@@ -249,7 +283,18 @@ async def get_draft_for_conversation(
     tenant_id: int,
     conversation_id: int,
     correlation_id: str | None = None,
+    owner_diner_session_id: int | None = None,
+    owned_conversation_id: int | None = None,
 ) -> DraftProjection:
+    if owner_diner_session_id is not None:
+        if owned_conversation_id != conversation_id:
+            raise DraftNotFoundError('Order Draft not found')
+        await diner_authority_service.validate_diner_authority(
+            db,
+            tenant_id=tenant_id,
+            diner_session_id=owner_diner_session_id,
+            conversation_id=conversation_id,
+        )
     draft = await db.scalar(
         select(OrderDraft).where(
             OrderDraft.tenant_id == tenant_id,
@@ -520,6 +565,8 @@ async def add_item(
     quantity: Decimal,
     expected_version: int,
     correlation_id: str | None = None,
+    owner_diner_session_id: int | None = None,
+    owned_conversation_id: int | None = None,
 ) -> DraftProjection:
     quantity = validate_quantity(quantity)
     try:
@@ -529,6 +576,8 @@ async def add_item(
             draft_id=draft_id,
             expected_version=expected_version,
             correlation_id=correlation_id,
+            owner_diner_session_id=owner_diner_session_id,
+            owned_conversation_id=owned_conversation_id,
         )
         if not await resolution.is_product_orderable(
             db,
@@ -631,6 +680,8 @@ async def set_item_quantity(
     quantity: Decimal,
     expected_version: int,
     correlation_id: str | None = None,
+    owner_diner_session_id: int | None = None,
+    owned_conversation_id: int | None = None,
 ) -> DraftProjection:
     quantity = validate_quantity(quantity)
     try:
@@ -640,6 +691,8 @@ async def set_item_quantity(
             draft_id=draft_id,
             expected_version=expected_version,
             correlation_id=correlation_id,
+            owner_diner_session_id=owner_diner_session_id,
+            owned_conversation_id=owned_conversation_id,
         )
         item = await _item(db, draft=draft, item_id=item_id)
         item.quantity = quantity
@@ -668,6 +721,8 @@ async def remove_item(
     item_id: int,
     expected_version: int,
     correlation_id: str | None = None,
+    owner_diner_session_id: int | None = None,
+    owned_conversation_id: int | None = None,
 ) -> DraftProjection:
     try:
         draft = await _locked_mutable_draft(
@@ -676,6 +731,8 @@ async def remove_item(
             draft_id=draft_id,
             expected_version=expected_version,
             correlation_id=correlation_id,
+            owner_diner_session_id=owner_diner_session_id,
+            owned_conversation_id=owned_conversation_id,
         )
         item = await _item(db, draft=draft, item_id=item_id)
         product_id = item.product_id
@@ -714,6 +771,8 @@ async def replace_group_selections(
     option_ids: tuple[int, ...],
     expected_version: int,
     correlation_id: str | None = None,
+    owner_diner_session_id: int | None = None,
+    owned_conversation_id: int | None = None,
 ) -> DraftProjection:
     if len(option_ids) != len(set(option_ids)):
         raise InvalidDraftSelectionError('Choice option IDs must be distinct')
@@ -726,6 +785,8 @@ async def replace_group_selections(
             draft_id=draft_id,
             expected_version=expected_version,
             correlation_id=correlation_id,
+            owner_diner_session_id=owner_diner_session_id,
+            owned_conversation_id=owned_conversation_id,
         )
         item = await _item(db, draft=draft, item_id=item_id)
         if item.composition_id is None:

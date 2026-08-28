@@ -41,6 +41,12 @@ class Settings(BaseSettings):
     auth_access_token_ttl_minutes: int = Field(
         default=60, alias='AUTH_ACCESS_TOKEN_TTL_MINUTES', ge=1, le=1440
     )
+    restaurant_access_code_secret: SecretStr = Field(
+        alias='RESTAURANT_ACCESS_CODE_SECRET', min_length=32
+    )
+    diner_access_token_ttl_minutes: int = Field(
+        default=720, alias='DINER_ACCESS_TOKEN_TTL_MINUTES', ge=1, le=720
+    )
     password_min_length: int = Field(default=12, alias='PASSWORD_MIN_LENGTH', ge=8, le=128)
 
     @field_validator('app_env', mode='before')
@@ -65,6 +71,13 @@ class Settings(BaseSettings):
     def require_auth_secret(cls, value: SecretStr) -> SecretStr:
         if not value.get_secret_value().strip():
             raise ValueError('AUTH_JWT_SECRET must not be empty')
+        return value
+
+    @field_validator('restaurant_access_code_secret')
+    @classmethod
+    def require_restaurant_access_code_secret(cls, value: SecretStr) -> SecretStr:
+        if not value.get_secret_value().strip():
+            raise ValueError('RESTAURANT_ACCESS_CODE_SECRET must not be empty')
         return value
 
     @property

@@ -30,6 +30,7 @@ from app.models.product_structure import (
 )
 from app.models.product_resolution import ProductAlias
 from app.models.resource import Resource
+from app.models.restaurant_service import DinerSession, RestaurantServiceSession
 
 __all__ = [
     'Customer',
@@ -64,6 +65,8 @@ __all__ = [
     'Role',
     'RolePermission',
     'Resource',
+    'RestaurantServiceSession',
+    'DinerSession',
     'RestaurantMessageIntent',
     'Tenant',
     'TenantMembership',

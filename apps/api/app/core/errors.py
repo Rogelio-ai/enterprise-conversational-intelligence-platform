@@ -36,6 +36,7 @@ def register_error_handlers(app: FastAPI) -> None:
     async def http_exception_handler(_: Request, exc: HTTPException) -> JSONResponse:
         return JSONResponse(
             status_code=exc.status_code,
+            headers=exc.headers,
             content={
                 'error': {
                     'code': 'http_error',

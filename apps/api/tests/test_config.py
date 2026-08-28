@@ -31,6 +31,7 @@ def test_database_url_safely_encodes_credentials() -> None:
         MYSQL_DATABASE='ecip',
         MYSQL_USER='user@name',
         MYSQL_PASSWORD='p@ss:/word',
+        RESTAURANT_ACCESS_CODE_SECRET='test-only-independent-access-code-secret-32-chars',
     )
 
     rendered = settings.async_database_url.render_as_string(hide_password=False)

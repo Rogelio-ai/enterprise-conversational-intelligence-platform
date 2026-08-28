@@ -16,6 +16,7 @@ from app.models import (
     Resource,
     TenantMembership,
 )
+from app.restaurant.service_sessions import service as diner_authority_service
 
 
 class ConversationNotFoundError(LookupError):
@@ -40,6 +41,7 @@ async def get_conversation(
     tenant_id: int,
     conversation_id: int,
     lock: bool = False,
+    owner_diner_session_id: int | None = None,
 ) -> Conversation:
     query = select(Conversation).where(
         Conversation.id == conversation_id,
@@ -50,6 +52,13 @@ async def get_conversation(
     conversation = await db.scalar(query)
     if conversation is None:
         raise ConversationNotFoundError
+    if owner_diner_session_id is not None:
+        await diner_authority_service.validate_diner_authority(
+            db,
+            tenant_id=tenant_id,
+            diner_session_id=owner_diner_session_id,
+            conversation_id=conversation.id,
+        )
     return conversation
 
 
@@ -284,10 +293,21 @@ async def append_message(
     content_text: str,
     language: str | None,
     language_source: str | None,
+    owner_diner_session_id: int | None = None,
 ) -> ConversationMessage:
     conversation = await get_conversation(
         db, tenant_id=tenant_id, conversation_id=conversation_id, lock=True
+        , owner_diner_session_id=owner_diner_session_id
     )
+    if owner_diner_session_id is not None:
+        diner = await diner_authority_service.validate_diner_authority(
+            db,
+            tenant_id=tenant_id,
+            diner_session_id=owner_diner_session_id,
+            conversation_id=conversation_id,
+        )
+        if diner.conversation_participant_id != participant_id:
+            raise ConversationContextError('Participant not found in Conversation')
     if conversation.status == 'CLOSED':
         raise ConversationClosedError('Conversation is closed')
     participant = await db.scalar(

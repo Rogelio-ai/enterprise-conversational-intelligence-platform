@@ -28,6 +28,8 @@ def settings() -> Settings:
         MYSQL_MAX_OVERFLOW=0,
         AUTH_JWT_SECRET='test-only-secret-that-is-at-least-32-characters',
         AUTH_ACCESS_TOKEN_TTL_MINUTES=60,
+        RESTAURANT_ACCESS_CODE_SECRET='test-only-independent-access-code-secret-32-chars',
+        DINER_ACCESS_TOKEN_TTL_MINUTES=720,
         PASSWORD_MIN_LENGTH=12,
     )
 
@@ -70,6 +72,8 @@ def integration_settings() -> Settings:
         MYSQL_MAX_OVERFLOW=1,
         AUTH_JWT_SECRET='integration-test-secret-that-is-at-least-32-characters',
         AUTH_ACCESS_TOKEN_TTL_MINUTES=60,
+        RESTAURANT_ACCESS_CODE_SECRET='integration-independent-access-code-secret-32-chars',
+        DINER_ACCESS_TOKEN_TTL_MINUTES=720,
         PASSWORD_MIN_LENGTH=12,
     )
 
@@ -90,6 +94,11 @@ def sql_connection(integration_settings: Settings):
         yield connection, prefix
     finally:
         with connection.cursor() as cursor:
+            cursor.execute(
+                'DELETE FROM diner_sessions WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
             for table in (
                 'order_draft_item_selections',
                 'order_draft_items',
@@ -112,6 +121,11 @@ def sql_connection(integration_settings: Settings):
                     '(SELECT id FROM tenants WHERE slug LIKE %s)',
                     (f'{prefix}%',),
                 )
+            cursor.execute(
+                'DELETE FROM restaurant_service_sessions WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
             for table in ('promotion_locations', 'promotion_products', 'promotions', 'product_prices'):
                 cursor.execute(
                     f'DELETE FROM {table} WHERE tenant_id IN '

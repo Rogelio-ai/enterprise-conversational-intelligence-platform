@@ -52,6 +52,14 @@ class Conversation(TimestampMixin, Base):
             'location_id',
             name='uq_conversations_id_tenant_org_location',
         ),
+        UniqueConstraint(
+            'id',
+            'tenant_id',
+            'organization_id',
+            'location_id',
+            'resource_id',
+            name='uq_conversations_id_full_scope',
+        ),
         CheckConstraint(
             "channel IN ('IN_PERSON_DIGITAL', 'PHONE', 'WHATSAPP', 'WEB_CHAT', 'MOBILE_APP')",
             name='ck_conversations_channel',

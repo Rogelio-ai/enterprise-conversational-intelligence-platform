@@ -291,8 +291,8 @@ Location/Menu orderability rules.
 Every item or selection mutation requires the current Draft version and executes under a row lock;
 one successful command increments the version exactly once. Conversation closure makes the Draft
 immutable but leaves it readable. Access uses `order_draft.read` and `order_draft.manage` and is
-currently limited to authenticated staff or trusted orchestration. Customer-session authorization,
-final Order, commercial acceptance, POS submission, Recipe and
+available to authenticated staff, trusted orchestration, and the owning WS-16 DinerSession.
+Final Order, commercial acceptance, POS submission, Recipe and
 Ingredient semantics, free-form modifiers, and Buffet entitlement remain deferred.
 
 ## Commercial Resolution and Checkout Preview Foundation
@@ -306,16 +306,41 @@ order. Prices are tax-inclusive (`tax_mode = INCLUDED`), all arithmetic remains 
 whole-unit `HALF_DOWN` rounding occurs once at the final payable boundary with its adjustment exposed.
 
 `GET /order-drafts/{draft_id}/checkout-preview` uses `order_draft.read` and returns a transient
-preview—not an Order, quote, receipt, payment, or POS submission. Customer-session authorization,
-commercial acceptance, order-wide Promotions, tax engines, FX conversion, final Order, and POS
+preview—not an Order, quote, receipt, payment, or POS submission. Diner access is limited to the
+Preview derived from the diner's own Conversation and Draft. Commercial acceptance,
+order-wide Promotions, tax engines, FX conversion, final Order, and POS
 submission remain deferred.
+
+## Restaurant Service Session and Diner Access Foundation
+
+Restaurant table occupancy is derived from an `OPEN` Restaurant-owned Service Session; the Core
+`Resource` remains administratively `ACTIVE` or `INACTIVE`. A TABLE has at most one open session,
+with a party size from 1 to 999 and transactionally serialized capacity. Staff use
+`restaurant_service.read` and `restaurant_service.manage` to open, read, resize, regenerate the
+temporary credential, and close service.
+
+Each open session exposes a high-entropy join context and a server-generated four-digit access code.
+Only a keyed HMAC digest is stored; five invalid attempts within five minutes lock joining for five
+minutes. External per-IP throttling remains a deployment responsibility. Production customer-device
+traffic requires HTTPS, and discarding or expiring a bearer token does not end a DinerSession.
+
+A successful join atomically creates one ACTIVE DinerSession, one personal `IN_PERSON_DIGITAL`
+Conversation, a CUSTOMER participant, and a DIGITAL_WAITER participant. The dedicated
+`diner_access` JWT is database-lifecycle validated and grants ownership only of that diner's
+Conversation, lazily created OrderDraft, and transient Checkout Preview. Diner authority does not
+create a User, TenantMembership, Role, or Permission grant, and multiple diners at one table never
+share or merge Drafts.
+
+Final Order, commercial acceptance, combined or split table billing, payment, and POS submission
+remain deferred.
 
 ---
 
 # Development Runtime
 
 The executable baseline contains the FastAPI service and an isolated local MySQL service. Copy the
-example environment and replace `AUTH_JWT_SECRET` with a random value of at least 32 characters.
+example environment and replace both `AUTH_JWT_SECRET` and `RESTAURANT_ACCESS_CODE_SECRET` with
+independent random values of at least 32 characters.
 
 ```bash
 cp .env.example .env
@@ -329,7 +354,7 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
-The current application migration head is `0014_commercial_resolution_foundation`.
+The current application migration head is `0015_restaurant_service_diner_access_foundation`.
 
 The bounded Restaurant conversational-intelligence foundation records provider-neutral,
 append-only derivation provenance and versioned Restaurant message intents without changing the
@@ -366,7 +391,9 @@ selection, stacking, and calculation. PromotionPort canonicalization remains def
 
 Authentication uses an Argon2 password hash and a signed access token. The relevant settings are
 `AUTH_JWT_SECRET`, `AUTH_JWT_ALGORITHM`, `AUTH_ACCESS_TOKEN_TTL_MINUTES`, and
-`PASSWORD_MIN_LENGTH`.
+`PASSWORD_MIN_LENGTH`. Restaurant joining additionally requires an independent
+`RESTAURANT_ACCESS_CODE_SECRET`; diner token lifetime is bounded by
+`DINER_ACCESS_TOKEN_TTL_MINUTES` (maximum 12 hours).
 
 Bootstrap the first development or staging Tenant administrator with explicit environment values:
 

@@ -83,3 +83,61 @@ def decode_access_token(token: str, *, settings: Settings) -> dict[str, Any]:
     except (TypeError, ValueError) as exc:
         raise TokenValidationError('Invalid token') from exc
     return payload
+
+
+def create_diner_access_token(
+    *,
+    settings: Settings,
+    diner_session_id: int,
+    tenant_id: int,
+    service_session_id: int,
+    issued_at: datetime | None = None,
+    expires_delta: timedelta | None = None,
+) -> tuple[str, datetime]:
+    now = issued_at or datetime.now(timezone.utc)
+    expires_at = now + (
+        expires_delta or timedelta(minutes=settings.diner_access_token_ttl_minutes)
+    )
+    payload: dict[str, Any] = {
+        'sub': str(diner_session_id),
+        'tenant_id': tenant_id,
+        'service_session_id': service_session_id,
+        'type': 'diner_access',
+        'aud': 'restaurant-diner',
+        'iat': now,
+        'exp': expires_at,
+    }
+    return (
+        jwt.encode(
+            payload,
+            settings.auth_jwt_secret.get_secret_value(),
+            algorithm=settings.auth_jwt_algorithm,
+        ),
+        expires_at,
+    )
+
+
+def decode_diner_access_token(token: str, *, settings: Settings) -> dict[str, Any]:
+    try:
+        payload = jwt.decode(
+            token,
+            settings.auth_jwt_secret.get_secret_value(),
+            algorithms=[settings.auth_jwt_algorithm],
+            audience='restaurant-diner',
+            options={
+                'require': [
+                    'sub', 'tenant_id', 'service_session_id', 'type', 'aud', 'iat', 'exp'
+                ]
+            },
+        )
+    except jwt.PyJWTError as exc:
+        raise TokenValidationError('Invalid token') from exc
+    if payload.get('type') != 'diner_access' or payload.get('aud') != 'restaurant-diner':
+        raise TokenValidationError('Invalid token')
+    try:
+        int(payload['sub'])
+        int(payload['tenant_id'])
+        int(payload['service_session_id'])
+    except (TypeError, ValueError) as exc:
+        raise TokenValidationError('Invalid token') from exc
+    return payload

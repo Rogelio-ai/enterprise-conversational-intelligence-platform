@@ -50,6 +50,8 @@ APPLICATION_TABLES = {
     'order_drafts',
     'order_draft_items',
     'order_draft_item_selections',
+    'restaurant_service_sessions',
+    'diner_sessions',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -82,6 +84,8 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'order_drafts',
     'order_draft_items',
     'order_draft_item_selections',
+    'restaurant_service_sessions',
+    'diner_sessions',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -386,6 +390,16 @@ EXPECTED_INDEX_COLUMNS = {
 EXPECTED_DOMAIN_CHECKS = {
     ('resources', 'ck_resources_status'),
     ('resources', 'ck_resources_type'),
+    ('restaurant_service_sessions', 'ck_restaurant_service_sessions_status'),
+    ('restaurant_service_sessions', 'ck_restaurant_service_sessions_party_size'),
+    ('restaurant_service_sessions', 'ck_restaurant_service_sessions_code_version'),
+    ('restaurant_service_sessions', 'ck_restaurant_service_sessions_failed_attempts'),
+    ('restaurant_service_sessions', 'ck_restaurant_service_sessions_open_slot'),
+    ('restaurant_service_sessions', 'ck_restaurant_service_sessions_lifecycle'),
+    ('diner_sessions', 'ck_diner_sessions_status'),
+    ('diner_sessions', 'ck_diner_sessions_active_slot'),
+    ('diner_sessions', 'ck_diner_sessions_display_name'),
+    ('diner_sessions', 'ck_diner_sessions_lifecycle'),
     ('customers', 'ck_customers_status'),
     ('customers', 'ck_customers_source'),
     ('product_categories', 'ck_product_categories_status'),
@@ -538,6 +552,16 @@ _index('order_draft_items', 'ix_order_draft_items_tenant_org_product', ('tenant_
 _index('order_draft_item_selections', 'uq_order_draft_selections_item_option', ('draft_item_id', 'choice_option_id'), 0)
 _index('order_draft_item_selections', 'ix_order_draft_selections_tenant_item_group', ('tenant_id', 'draft_item_id', 'choice_group_id', 'choice_option_id'), 1)
 _index('order_draft_item_selections', 'ix_order_draft_selections_tenant_choice', ('tenant_id', 'organization_id', 'choice_group_id', 'choice_option_id', 'id'), 1)
+_index('restaurant_service_sessions', 'uq_restaurant_service_sessions_resource_open', ('resource_id', 'open_slot'), 0)
+_index('restaurant_service_sessions', 'uq_restaurant_service_sessions_join_context', ('join_context_key',), 0)
+_index('restaurant_service_sessions', 'uq_restaurant_service_sessions_scope', ('id', 'tenant_id', 'organization_id', 'location_id', 'resource_id'), 0)
+_index('restaurant_service_sessions', 'ix_restaurant_service_sessions_resource_history', ('resource_id', 'id'), 1)
+_index('restaurant_service_sessions', 'ix_restaurant_service_sessions_tenant_location_status', ('tenant_id', 'location_id', 'status', 'id'), 1)
+_index('diner_sessions', 'uq_diner_sessions_active_email', ('service_session_id', 'normalized_email', 'active_slot'), 0)
+_index('diner_sessions', 'uq_diner_sessions_conversation', ('conversation_id',), 0)
+_index('diner_sessions', 'uq_diner_sessions_participant', ('conversation_participant_id',), 0)
+_index('diner_sessions', 'ix_diner_sessions_service_active', ('service_session_id', 'active_slot', 'id'), 1)
+_index('diner_sessions', 'ix_diner_sessions_customer', ('tenant_id', 'customer_id', 'id'), 1)
 
 for constraint, table, local_columns, target_table, target_columns in (
     ('fk_product_categories_parent_tenant_org', 'product_categories', ('parent_id', 'tenant_id', 'organization_id'), 'product_categories', ('id', 'tenant_id', 'organization_id')),
@@ -586,6 +610,17 @@ for constraint, table, local_columns, target_table, target_columns in (
     ('fk_order_draft_selections_item_scope', 'order_draft_item_selections', ('draft_item_id', 'tenant_id', 'organization_id', 'draft_id', 'composition_id'), 'order_draft_items', ('id', 'tenant_id', 'organization_id', 'draft_id', 'composition_id')),
     ('fk_order_draft_selections_group_scope', 'order_draft_item_selections', ('choice_group_id', 'tenant_id', 'organization_id', 'composition_id'), 'product_choice_groups', ('id', 'tenant_id', 'organization_id', 'composition_id')),
     ('fk_order_draft_selections_option_scope', 'order_draft_item_selections', ('choice_option_id', 'tenant_id', 'organization_id', 'choice_group_id'), 'product_choice_options', ('id', 'tenant_id', 'organization_id', 'group_id')),
+    ('fk_restaurant_service_sessions_tenant', 'restaurant_service_sessions', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_restaurant_service_sessions_organization_tenant', 'restaurant_service_sessions', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
+    ('fk_restaurant_service_sessions_location_scope', 'restaurant_service_sessions', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_restaurant_service_sessions_resource_scope', 'restaurant_service_sessions', ('resource_id', 'tenant_id', 'location_id'), 'resources', ('id', 'tenant_id', 'location_id')),
+    ('fk_restaurant_service_sessions_opened_membership', 'restaurant_service_sessions', ('opened_by_membership_id', 'tenant_id'), 'tenant_memberships', ('id', 'tenant_id')),
+    ('fk_restaurant_service_sessions_closed_membership', 'restaurant_service_sessions', ('closed_by_membership_id', 'tenant_id'), 'tenant_memberships', ('id', 'tenant_id')),
+    ('fk_diner_sessions_tenant', 'diner_sessions', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_diner_sessions_service_scope', 'diner_sessions', ('service_session_id', 'tenant_id', 'organization_id', 'location_id', 'resource_id'), 'restaurant_service_sessions', ('id', 'tenant_id', 'organization_id', 'location_id', 'resource_id')),
+    ('fk_diner_sessions_customer_tenant', 'diner_sessions', ('customer_id', 'tenant_id'), 'customers', ('id', 'tenant_id')),
+    ('fk_diner_sessions_conversation_scope', 'diner_sessions', ('conversation_id', 'tenant_id', 'organization_id', 'location_id', 'resource_id'), 'conversations', ('id', 'tenant_id', 'organization_id', 'location_id', 'resource_id')),
+    ('fk_diner_sessions_participant_scope', 'diner_sessions', ('conversation_participant_id', 'tenant_id', 'conversation_id'), 'conversation_participants', ('id', 'tenant_id', 'conversation_id')),
 ):
     EXPECTED_FOREIGN_KEY_COLUMNS.update(
         (constraint, table, local, target_table, target, position)
@@ -688,6 +723,7 @@ def _assert_database_contract(connection) -> None:
                   'product_compositions', 'product_components',
                   'product_choice_groups', 'product_choice_options', 'product_aliases'
                   , 'order_drafts', 'order_draft_items', 'order_draft_item_selections'
+                  , 'restaurant_service_sessions', 'diner_sessions'
               )
             '''
         )
@@ -708,6 +744,9 @@ def _assert_database_contract(connection) -> None:
                   OR
                   (TABLE_NAME = 'product_aliases'
                    AND COLUMN_NAME IN ('normalized_alias', 'language'))
+                  OR
+                  (TABLE_NAME = 'restaurant_service_sessions'
+                   AND COLUMN_NAME = 'join_context_key')
               )
             '''
         )
@@ -719,6 +758,7 @@ def _assert_database_contract(connection) -> None:
             ('product_external_mappings', 'external_product_id', 'utf8mb4_bin'),
             ('product_aliases', 'normalized_alias', 'utf8mb4_bin'),
             ('product_aliases', 'language', 'utf8mb4_bin'),
+            ('restaurant_service_sessions', 'join_context_key', 'utf8mb4_bin'),
         }
 
 
@@ -815,6 +855,7 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
                   'product_compositions', 'product_components',
                   'product_choice_groups', 'product_choice_options', 'product_aliases'
                   , 'order_drafts', 'order_draft_items', 'order_draft_item_selections'
+                  , 'restaurant_service_sessions', 'diner_sessions'
               )
             '''
         )
@@ -835,6 +876,9 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
                   OR
                   (TABLE_NAME = 'product_aliases'
                    AND COLUMN_NAME IN ('normalized_alias', 'language'))
+                  OR
+                  (TABLE_NAME = 'restaurant_service_sessions'
+                   AND COLUMN_NAME = 'join_context_key')
               )
             '''
         )
@@ -846,6 +890,7 @@ def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
             ('product_external_mappings', 'external_product_id', 'utf8mb4_bin'),
             ('product_aliases', 'normalized_alias', 'utf8mb4_bin'),
             ('product_aliases', 'language', 'utf8mb4_bin'),
+            ('restaurant_service_sessions', 'join_context_key', 'utf8mb4_bin'),
         }
 
 
@@ -1201,6 +1246,40 @@ def test_fresh_install_reaches_portable_database_contract(
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         _assert_database_contract(connection)
+    finally:
+        connection.close()
+
+
+def test_upgrade_from_0014_adds_restaurant_service_contract_and_grants_permissions(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0014_commercial_resolution_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("INSERT INTO tenants (name,slug,status) VALUES ('WS16','upgrade-0014','ACTIVE')")
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO roles (tenant_id,name,description,status) VALUES (%s,'TENANT_ADMIN','Existing administrator','ACTIVE')", (tenant_id,))
+            role_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT P.code,COUNT(*) AS assignment_count FROM role_permissions RP "
+                "JOIN permissions P ON P.id=RP.permission_id WHERE RP.role_id=%s "
+                "AND P.code IN ('restaurant_service.read','restaurant_service.manage') GROUP BY P.code",
+                (role_id,),
+            )
+            assert {row['code']: row['assignment_count'] for row in cursor.fetchall()} == {
+                'restaurant_service.manage': 1,
+                'restaurant_service.read': 1,
+            }
     finally:
         connection.close()
 
