@@ -50,6 +50,7 @@ class RestaurantOrder(TimestampMixin, Base):
         UniqueConstraint('source_order_draft_id', name='uq_restaurant_orders_source_draft'),
         UniqueConstraint('tenant_id', 'diner_session_id', 'confirmation_idempotency_key', name='uq_restaurant_orders_diner_idempotency'),
         UniqueConstraint('id', 'tenant_id', name='uq_restaurant_orders_id_tenant'),
+        UniqueConstraint('id', 'tenant_id', 'organization_id', 'location_id', name='uq_restaurant_orders_pos_scope'),
         CheckConstraint("status = 'ACCEPTED'", name='ck_restaurant_orders_status'),
         CheckConstraint('accepted_draft_version >= 1', name='ck_restaurant_orders_draft_version'),
         CheckConstraint('fingerprint_schema_version >= 1', name='ck_restaurant_orders_fingerprint_version'),
@@ -135,6 +136,10 @@ class RestaurantOrderItemComponent(TimestampMixin, Base):
         ForeignKeyConstraint(['source_choice_group_id'], ['product_choice_groups.id'], name='fk_restaurant_order_components_source_group', ondelete='RESTRICT'),
         ForeignKeyConstraint(['source_choice_option_id'], ['product_choice_options.id'], name='fk_restaurant_order_components_source_option', ondelete='RESTRICT'),
         UniqueConstraint('order_item_id', 'position', name='uq_restaurant_order_components_position'),
+        UniqueConstraint(
+            'id', 'tenant_id', 'order_id', 'order_item_id',
+            name='uq_restaurant_order_components_scope',
+        ),
         CheckConstraint("kind IN ('FIXED', 'CHOICE')", name='ck_restaurant_order_components_kind'),
         CheckConstraint('position >= 0 AND quantity > 0', name='ck_restaurant_order_components_values'),
         CheckConstraint("(kind = 'FIXED' AND source_component_id IS NOT NULL AND source_choice_group_id IS NULL AND source_choice_option_id IS NULL AND choice_group_name IS NULL) OR (kind = 'CHOICE' AND source_component_id IS NULL AND source_choice_group_id IS NOT NULL AND source_choice_option_id IS NOT NULL AND choice_group_name IS NOT NULL)", name='ck_restaurant_order_components_source'),

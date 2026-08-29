@@ -47,6 +47,10 @@ CORE_PERMISSIONS = {
     'restaurant_service.read': 'Read Restaurant service sessions.',
     'restaurant_service.manage': 'Manage Restaurant service sessions.',
     'restaurant_order.read': 'Read immutable accepted Restaurant Orders.',
+    'pos_submission.read': 'Read POS order submission state and history.',
+    'pos_submission.submit': 'Submit accepted Restaurant Orders to a POS.',
+    'pos_submission.retry': 'Retry safely retryable POS order submissions.',
+    'pos_submission.recover': 'Recover uncertain POS order submissions.',
 }
 _SLUG_PATTERN = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 

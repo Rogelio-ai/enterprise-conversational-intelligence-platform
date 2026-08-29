@@ -13,7 +13,8 @@ from app.restaurant.integrations.pos import (
     CatalogPort,
     CustomerPort,
     ExternalEntityStatus,
-    ExternalOrderItem,
+    CreateOrderItem,
+    CreateOrderRequest,
     LocationPort,
     LocationScopedPosRequestContext,
     MockPosAdapter,
@@ -87,12 +88,16 @@ def order_item(
     quantity: str = '1',
     unit_price: str = '99.90',
     line_total: str = '99.90',
-) -> ExternalOrderItem:
-    return ExternalOrderItem(
+) -> CreateOrderItem:
+    return CreateOrderItem(
+        accepted_item_reference='accepted-item-1',
+        external_line_reference='external-line-1',
         product_external_id=product_external_id,
         name='Order Product',
         quantity=Decimal(quantity),
         unit_price=Decimal(unit_price),
+        base_amount=Decimal(line_total),
+        discount_amount=Decimal('0'),
         line_total=Decimal(line_total),
     )
 
@@ -101,16 +106,23 @@ def create_order(
     adapter: MockPosAdapter,
     *,
     idempotency_key: str = 'create-001',
-    item: ExternalOrderItem | None = None,
+    item: CreateOrderItem | None = None,
     currency: str = 'MXN',
     location_id: int = FIRST_LOCATION_ID,
 ):
     return adapter.create_order(
         location_context(location_id),
-        items=(item or order_item(),),
-        currency=currency,
+        request=CreateOrderRequest(
+            canonical_order_reference='canonical-order-1',
+            items=(item or order_item(),),
+            currency=currency,
+            subtotal=(item or order_item()).line_total,
+            total_discount=Decimal('0'),
+            payable_total=(item or order_item()).line_total,
+            external_customer_id='customer-001',
+        ),
         idempotency_key=idempotency_key,
-        external_customer_id='customer-001',
+        request_fingerprint=f'fingerprint:{currency.upper()}:{(item or order_item()).model_dump_json()}',
     )
 
 
@@ -345,18 +357,24 @@ def test_order_creation_rejects_invalid_product_and_currency(adapter: MockPosAda
         run(
             adapter.create_order(
                 location_context(),
-                items=(),
-                currency='MXN',
+                request=CreateOrderRequest.model_construct(
+                    canonical_order_reference='order', items=(), currency='MXN',
+                    subtotal=Decimal('0'), total_discount=Decimal('0'), payable_total=Decimal('0')
+                ),
                 idempotency_key='empty-order',
+                request_fingerprint='empty-order',
             )
         )
     with pytest.raises(PosInvalidDataError):
         run(
             adapter.create_order(
                 location_context(),
-                items=(order_item(),),
-                currency='MXN',
+                request=CreateOrderRequest(
+                    canonical_order_reference='order', items=(order_item(),), currency='MXN',
+                    subtotal=Decimal('99.90'), total_discount=Decimal('0'), payable_total=Decimal('99.90')
+                ),
                 idempotency_key=' ',
+                request_fingerprint='blank-key',
             )
         )
     with pytest.raises(PosRejectedError):

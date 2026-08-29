@@ -9,6 +9,7 @@ from typing import get_type_hints
 from pydantic import ValidationError
 import pytest
 
+from app.core.execution import ActorType, ExecutionContext
 from app.restaurant.integrations import pos
 from app.restaurant.integrations.pos import (
     CanonicalOrderStatus,
@@ -18,6 +19,10 @@ from app.restaurant.integrations.pos import (
     ExternalEntityStatus,
     ExternalLocation,
     ExternalOrder,
+    CreateOrderItem,
+    CreateOrderRequest,
+    CreateOrderRecovery,
+    CreateRecoveryOutcome,
     ExternalOrderItem,
     ExternalOrderStatus,
     ExternalPrice,
@@ -26,6 +31,7 @@ from app.restaurant.integrations.pos import (
     LocationScopedPosRequestContext,
     LocationPort,
     OrderPort,
+    OrderRecoveryPort,
     OrderStatusPort,
     PosErrorKind,
     PosInvalidDataError,
@@ -44,6 +50,25 @@ from app.restaurant.integrations.pos import (
 NOW = datetime(2026, 8, 19, 12, 0, tzinfo=UTC)
 
 
+def test_execution_context_is_minimal_immutable_and_actor_safe() -> None:
+    employee = ExecutionContext(
+        actor_type=ActorType.EMPLOYEE,
+        tenant_id=11,
+        principal_id=17,
+        principal_reference=None,
+        correlation_id='correlation-123',
+    )
+    assert employee.principal_id == 17
+    with pytest.raises((AttributeError, TypeError)):
+        employee.tenant_id = 12  # type: ignore[misc]
+    with pytest.raises(ValueError):
+        ExecutionContext(ActorType.EMPLOYEE, 11, None, None, None)
+    with pytest.raises(ValueError):
+        ExecutionContext(ActorType.SYSTEM, 11, None, None, None)
+    system = ExecutionContext(ActorType.SYSTEM, 11, None, 'scheduler', None)
+    assert system.principal_reference == 'scheduler'
+
+
 def _context(*, location_id: int | None = 17) -> PosRequestContext:
     context_type = LocationScopedPosRequestContext if location_id is not None else PosRequestContext
     return context_type(
@@ -54,13 +79,28 @@ def _context(*, location_id: int | None = 17) -> PosRequestContext:
     )
 
 
-def _item() -> ExternalOrderItem:
-    return ExternalOrderItem(
+def _item() -> CreateOrderItem:
+    return CreateOrderItem(
+        accepted_item_reference='accepted-item-1',
+        external_line_reference='line-1',
         product_external_id='product-1',
         name='Hamburger',
         quantity=Decimal('2'),
         unit_price=Decimal('10.10'),
+        base_amount=Decimal('20.20'),
+        discount_amount=Decimal('0'),
         line_total=Decimal('20.20'),
+    )
+
+
+def _request() -> CreateOrderRequest:
+    return CreateOrderRequest(
+        canonical_order_reference='accepted-order-1',
+        items=(_item(),),
+        subtotal=Decimal('20.20'),
+        total_discount=Decimal('0'),
+        payable_total=Decimal('20.20'),
+        currency='MXN',
     )
 
 
@@ -68,7 +108,10 @@ def _order(*, status: CanonicalOrderStatus = CanonicalOrderStatus.SUBMITTED) -> 
     return ExternalOrder(
         external_id='order-1',
         status=status,
-        items=(_item(),),
+        items=(ExternalOrderItem(
+            product_external_id='product-1', name='Hamburger', quantity='2',
+            unit_price='10.10', line_total='20.20',
+        ),),
         subtotal=Decimal('20.20'),
         total=Decimal('20.20'),
         currency='mxn',
@@ -163,14 +206,27 @@ class ContractFake:
         self,
         context: PosRequestContext,
         *,
-        items: tuple[ExternalOrderItem, ...],
-        currency: str,
+        request: CreateOrderRequest,
         idempotency_key: str,
-        external_customer_id: str | None = None,
+        request_fingerprint: str,
     ) -> ExternalOrder:
         self._record(context)
-        assert items and currency and idempotency_key
+        assert request.items and idempotency_key and request_fingerprint
         return _order()
+
+    async def recover_create_order(
+        self,
+        context: LocationScopedPosRequestContext,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> CreateOrderRecovery:
+        self._record(context)
+        assert idempotency_key and request_fingerprint
+        return CreateOrderRecovery(
+            outcome=CreateRecoveryOutcome.RECOVERED_SUCCESS,
+            order=_order(),
+        )
 
     async def get_order(
         self, context: PosRequestContext, *, external_order_id: str
@@ -208,6 +264,7 @@ PORTS = (
     PricingPort,
     PromotionPort,
     OrderPort,
+    OrderRecoveryPort,
     OrderStatusPort,
 )
 
@@ -255,9 +312,9 @@ def test_dtos_travel_across_ports_with_trusted_location_context() -> None:
         assert await fake.list_promotions(context, product_external_id='product-1')
         created = await fake.create_order(
             context,
-            items=(_item(),),
-            currency='MXN',
+            request=_request(),
             idempotency_key='submission-1',
+            request_fingerprint='fingerprint-1',
         )
         status = await fake.get_order_status(context, external_order_id=created.external_id)
         return fake, status
@@ -312,7 +369,7 @@ def test_external_identifiers_are_explicit_and_source_scoped() -> None:
             dict(product_external_id='product-1', amount='1.00', currency=''),
         ),
         (
-            ExternalOrderItem,
+            CreateOrderItem,
             dict(
                 product_external_id='product-1',
                 name='Product',
@@ -418,11 +475,12 @@ def test_order_write_contract_requires_idempotency_keys() -> None:
     create_parameters = inspect.signature(OrderPort.create_order).parameters
     cancel_parameters = inspect.signature(OrderPort.cancel_order).parameters
     assert create_parameters['idempotency_key'].default is inspect.Parameter.empty
+    assert create_parameters['request_fingerprint'].default is inspect.Parameter.empty
     assert cancel_parameters['idempotency_key'].default is inspect.Parameter.empty
 
     fake = ContractFake()
     with pytest.raises(TypeError):
-        fake.create_order(_context(), items=(_item(),), currency='MXN')  # type: ignore[call-arg]
+        fake.create_order(_context(), request=_request())  # type: ignore[call-arg]
     with pytest.raises(TypeError):
         fake.cancel_order(_context(), external_order_id='order-1')  # type: ignore[call-arg]
 
@@ -436,6 +494,8 @@ def test_public_contract_has_no_vendor_specific_fields() -> None:
         ExternalProduct,
         ExternalPrice,
         ExternalPromotion,
+        CreateOrderItem,
+        CreateOrderRequest,
         ExternalOrderItem,
         ExternalOrder,
         ExternalOrderStatus,

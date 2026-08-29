@@ -11,6 +11,7 @@ from pydantic import (
     ConfigDict,
     Field,
     field_validator,
+    model_validator,
 )
 
 
@@ -128,6 +129,47 @@ class ExternalPromotion(PosContractValue):
     status: ExternalEntityStatus
 
 
+class CreateOrderComponent(PosContractValue):
+    accepted_component_reference: RequiredText
+    kind: RequiredText
+    product_external_id: ExternalIdentifier
+    name: RequiredText
+    quantity: PositiveQuantity
+    choice_group_name: RequiredText | None = None
+
+
+class CreateOrderPromotion(PosContractValue):
+    accepted_promotion_reference: RequiredText
+    name: RequiredText
+    promotion_type: RequiredText
+    calculated_discount: ExactAmount
+
+
+class CreateOrderItem(PosContractValue):
+    accepted_item_reference: RequiredText
+    external_line_reference: ExternalIdentifier
+    product_external_id: ExternalIdentifier
+    name: RequiredText
+    quantity: PositiveQuantity
+    unit_price: ExactAmount
+    base_amount: ExactAmount
+    discount_amount: ExactAmount
+    line_total: ExactAmount
+    components: tuple[CreateOrderComponent, ...] = ()
+    promotions: tuple[CreateOrderPromotion, ...] = ()
+
+
+class CreateOrderRequest(CurrencyValue):
+    """Immutable accepted commercial request sent to a POS create boundary."""
+
+    canonical_order_reference: RequiredText
+    items: tuple[CreateOrderItem, ...] = Field(min_length=1)
+    subtotal: ExactAmount
+    total_discount: ExactAmount
+    payable_total: ExactAmount
+    external_customer_id: ExternalIdentifier | None = None
+
+
 class ExternalOrderItem(PosContractValue):
     external_line_id: ExternalIdentifier | None = None
     product_external_id: ExternalIdentifier
@@ -153,3 +195,21 @@ class ExternalOrderStatus(PosContractValue):
     external_order_id: ExternalIdentifier
     status: CanonicalOrderStatus
     observed_at: datetime
+
+
+class CreateRecoveryOutcome(StrEnum):
+    RECOVERED_SUCCESS = 'RECOVERED_SUCCESS'
+    DEFINITE_ABSENCE = 'DEFINITE_ABSENCE'
+    UNCERTAIN = 'UNCERTAIN'
+    UNSUPPORTED = 'UNSUPPORTED'
+
+
+class CreateOrderRecovery(PosContractValue):
+    outcome: CreateRecoveryOutcome
+    order: ExternalOrder | None = None
+
+    @model_validator(mode='after')
+    def validate_order_matches_outcome(self):
+        if (self.outcome is CreateRecoveryOutcome.RECOVERED_SUCCESS) != (self.order is not None):
+            raise ValueError('Only RECOVERED_SUCCESS carries an ExternalOrder')
+        return self

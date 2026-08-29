@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import AsyncIterator
+from collections.abc import Mapping
 from contextlib import asynccontextmanager
 from typing import Protocol
 
@@ -20,6 +21,7 @@ from app.api.routes.products import router as products_router
 from app.api.routes.product_compositions import router as product_compositions_router
 from app.api.routes.product_aliases import router as product_aliases_router
 from app.api.routes.pricing import router as pricing_router
+from app.api.routes.pos_submissions import router as pos_submissions_router
 from app.api.routes.resources import router as resources_router
 from app.api.routes.restaurant_service_sessions import router as restaurant_service_sessions_router
 from app.api.routes.restaurant_orders import router as restaurant_orders_router
@@ -40,6 +42,7 @@ class DatabaseLifecycle(Protocol):
 def create_app(
     settings: Settings | None = None,
     database: DatabaseLifecycle | None = None,
+    pos_adapters: Mapping[str, object] | None = None,
 ) -> FastAPI:
     runtime_settings = settings or get_settings()
     runtime_database = database or DatabaseManager(runtime_settings)
@@ -62,6 +65,7 @@ def create_app(
     )
     app.state.settings = runtime_settings
     app.state.database = runtime_database
+    app.state.pos_adapters = dict(pos_adapters or {})
     app.add_middleware(RuntimeMiddleware)
     register_error_handlers(app)
     app.include_router(health_router)
@@ -73,6 +77,7 @@ def create_app(
     app.include_router(restaurant_service_sessions_router)
     app.include_router(diner_sessions_router)
     app.include_router(restaurant_orders_router)
+    app.include_router(pos_submissions_router)
     app.include_router(customers_router)
     app.include_router(conversations_router)
     app.include_router(order_drafts_router)

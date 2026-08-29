@@ -56,6 +56,11 @@ APPLICATION_TABLES = {
     'restaurant_order_items',
     'restaurant_order_item_components',
     'restaurant_order_promotions',
+    'location_pos_connections',
+    'pos_order_submissions',
+    'pos_order_submission_lines',
+    'pos_order_submission_components',
+    'pos_order_submission_attempts',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -94,6 +99,11 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'restaurant_order_items',
     'restaurant_order_item_components',
     'restaurant_order_promotions',
+    'location_pos_connections',
+    'pos_order_submissions',
+    'pos_order_submission_lines',
+    'pos_order_submission_components',
+    'pos_order_submission_attempts',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -497,6 +507,18 @@ EXPECTED_DOMAIN_CHECKS = {
     ('restaurant_order_item_components', 'ck_restaurant_order_components_source'),
     ('restaurant_order_promotions', 'ck_restaurant_order_promotions_ordering'),
     ('restaurant_order_promotions', 'ck_restaurant_order_promotions_money'),
+    ('location_pos_connections', 'ck_location_pos_connections_active_slot'),
+    ('location_pos_connections', 'ck_location_pos_connections_lifecycle'),
+    ('location_pos_connections', 'ck_location_pos_connections_status'),
+    ('pos_order_submissions', 'ck_pos_order_submissions_actor'),
+    ('pos_order_submissions', 'ck_pos_order_submissions_claim'),
+    ('pos_order_submissions', 'ck_pos_order_submissions_state'),
+    ('pos_order_submissions', 'ck_pos_order_submissions_success'),
+    ('pos_order_submissions', 'ck_pos_order_submissions_versions'),
+    ('pos_order_submission_attempts', 'ck_pos_submission_attempts_actor'),
+    ('pos_order_submission_attempts', 'ck_pos_submission_attempts_lifecycle'),
+    ('pos_order_submission_attempts', 'ck_pos_submission_attempts_result'),
+    ('pos_order_submission_attempts', 'ck_pos_submission_attempts_type'),
 }
 
 for table, prefix, target, target_table in (
@@ -624,6 +646,27 @@ _index('restaurant_order_promotions', 'uq_restaurant_order_promotions_order', ('
 _index('restaurant_order_promotions', 'ix_restaurant_order_promotions_ordered', ('tenant_id', 'order_id', 'order_item_id', 'application_order', 'id'), 1)
 _index('restaurant_order_promotions', 'fk_restaurant_order_promotions_item_scope', ('order_item_id', 'tenant_id', 'order_id'), 1)
 _index('restaurant_order_promotions', 'fk_restaurant_order_promotions_source_scope', ('promotion_id', 'tenant_id', 'organization_id'), 1)
+_index('restaurant_orders', 'uq_restaurant_orders_pos_scope', ('id', 'tenant_id', 'organization_id', 'location_id'), 0)
+_index('restaurant_order_item_components', 'uq_restaurant_order_components_scope', ('id', 'tenant_id', 'order_id', 'order_item_id'), 0)
+_index('location_pos_connections', 'uq_location_pos_connections_active', ('location_id', 'active_slot'), 0)
+_index('location_pos_connections', 'uq_location_pos_connections_scope', ('id', 'tenant_id', 'organization_id', 'location_id'), 0)
+_index('location_pos_connections', 'ix_location_pos_connections_lookup', ('tenant_id', 'location_id', 'status', 'id'), 1)
+_index('pos_order_submissions', 'uq_pos_order_submissions_materialization', ('tenant_id', 'restaurant_order_id', 'connector_key'), 0)
+_index('pos_order_submissions', 'uq_pos_order_submissions_external_operation', ('tenant_id', 'connector_key', 'external_location_id', 'idempotency_key'), 0)
+_index('pos_order_submissions', 'uq_pos_order_submissions_id_tenant', ('id', 'tenant_id'), 0)
+_index('pos_order_submissions', 'uq_pos_order_submissions_scope', ('id', 'tenant_id', 'restaurant_order_id'), 0)
+_index('pos_order_submissions', 'ix_pos_order_submissions_state_claim', ('tenant_id', 'state', 'claim_expires_at', 'id'), 1)
+_index('pos_order_submissions', 'ix_pos_order_submissions_location', ('tenant_id', 'location_id', 'connector_key', 'id'), 1)
+_index('pos_order_submissions', 'ix_pos_order_submissions_external', ('tenant_id', 'connector_key', 'external_order_id', 'id'), 1)
+_index('pos_order_submission_lines', 'uq_pos_submission_lines_order_item', ('submission_id', 'restaurant_order_item_id'), 0)
+_index('pos_order_submission_lines', 'uq_pos_submission_lines_external_ref', ('submission_id', 'external_line_reference'), 0)
+_index('pos_order_submission_lines', 'uq_pos_submission_lines_scope', ('id', 'tenant_id', 'submission_id', 'restaurant_order_id', 'restaurant_order_item_id'), 0)
+_index('pos_order_submission_lines', 'ix_pos_submission_lines_ordered', ('tenant_id', 'submission_id', 'position', 'id'), 1)
+_index('pos_order_submission_components', 'uq_pos_submission_components_source', ('submission_id', 'restaurant_order_item_component_id'), 0)
+_index('pos_order_submission_components', 'ix_pos_submission_components_ordered', ('tenant_id', 'submission_line_id', 'position', 'id'), 1)
+_index('pos_order_submission_attempts', 'uq_pos_submission_attempts_sequence', ('submission_id', 'attempt_sequence'), 0)
+_index('pos_order_submission_attempts', 'uq_pos_submission_attempts_claim', ('claim_token',), 0)
+_index('pos_order_submission_attempts', 'ix_pos_submission_attempts_ordered', ('tenant_id', 'submission_id', 'attempt_sequence', 'id'), 1)
 
 for constraint, table, local_columns, target_table, target_columns in (
     ('fk_product_categories_parent_tenant_org', 'product_categories', ('parent_id', 'tenant_id', 'organization_id'), 'product_categories', ('id', 'tenant_id', 'organization_id')),
@@ -701,6 +744,18 @@ for constraint, table, local_columns, target_table, target_columns in (
     ('fk_restaurant_order_components_source_option', 'restaurant_order_item_components', ('source_choice_option_id',), 'product_choice_options', ('id',)),
     ('fk_restaurant_order_promotions_item_scope', 'restaurant_order_promotions', ('order_item_id', 'tenant_id', 'order_id'), 'restaurant_order_items', ('id', 'tenant_id', 'order_id')),
     ('fk_restaurant_order_promotions_source_scope', 'restaurant_order_promotions', ('promotion_id', 'tenant_id', 'organization_id'), 'promotions', ('id', 'tenant_id', 'organization_id')),
+    ('fk_location_pos_connections_tenant', 'location_pos_connections', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_location_pos_connections_location_scope', 'location_pos_connections', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_pos_order_submissions_tenant', 'pos_order_submissions', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_pos_order_submissions_order_scope', 'pos_order_submissions', ('restaurant_order_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_orders', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_pos_order_submissions_connection_scope', 'pos_order_submissions', ('connection_id', 'tenant_id', 'organization_id', 'location_id'), 'location_pos_connections', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_pos_order_submissions_membership', 'pos_order_submissions', ('initiated_membership_id', 'tenant_id'), 'tenant_memberships', ('id', 'tenant_id')),
+    ('fk_pos_submission_lines_submission_scope', 'pos_order_submission_lines', ('submission_id', 'tenant_id', 'restaurant_order_id'), 'pos_order_submissions', ('id', 'tenant_id', 'restaurant_order_id')),
+    ('fk_pos_submission_lines_order_item_scope', 'pos_order_submission_lines', ('restaurant_order_item_id', 'tenant_id', 'restaurant_order_id'), 'restaurant_order_items', ('id', 'tenant_id', 'order_id')),
+    ('fk_pos_submission_components_line_scope', 'pos_order_submission_components', ('submission_line_id', 'tenant_id', 'submission_id', 'restaurant_order_id', 'restaurant_order_item_id'), 'pos_order_submission_lines', ('id', 'tenant_id', 'submission_id', 'restaurant_order_id', 'restaurant_order_item_id')),
+    ('fk_pos_submission_components_component_scope', 'pos_order_submission_components', ('restaurant_order_item_component_id', 'tenant_id', 'restaurant_order_id', 'restaurant_order_item_id'), 'restaurant_order_item_components', ('id', 'tenant_id', 'order_id', 'order_item_id')),
+    ('fk_pos_submission_attempts_submission_scope', 'pos_order_submission_attempts', ('submission_id', 'tenant_id'), 'pos_order_submissions', ('id', 'tenant_id')),
+    ('fk_pos_submission_attempts_membership', 'pos_order_submission_attempts', ('actor_membership_id', 'tenant_id'), 'tenant_memberships', ('id', 'tenant_id')),
 ):
     EXPECTED_FOREIGN_KEY_COLUMNS.update(
         (constraint, table, local, target_table, target, position)
@@ -806,6 +861,8 @@ def _assert_database_contract(connection) -> None:
                   , 'restaurant_service_sessions', 'diner_sessions'
                   , 'restaurant_orders', 'restaurant_order_items'
                   , 'restaurant_order_item_components', 'restaurant_order_promotions'
+                  , 'location_pos_connections', 'pos_order_submissions'
+                  , 'pos_order_submission_attempts'
               )
             '''
         )
@@ -832,6 +889,21 @@ def _assert_database_contract(connection) -> None:
                   OR
                   (TABLE_NAME = 'restaurant_orders'
                    AND COLUMN_NAME IN ('confirmation_idempotency_key', 'commercial_fingerprint'))
+                  OR
+                  (TABLE_NAME = 'location_pos_connections'
+                   AND COLUMN_NAME IN ('connector_key', 'external_location_id'))
+                  OR
+                  (TABLE_NAME = 'pos_order_submissions'
+                   AND COLUMN_NAME IN ('connector_key', 'external_location_id', 'idempotency_key', 'request_fingerprint', 'external_order_id', 'claim_token'))
+                  OR
+                  (TABLE_NAME = 'pos_order_submission_lines'
+                   AND COLUMN_NAME IN ('external_product_id', 'external_line_reference'))
+                  OR
+                  (TABLE_NAME = 'pos_order_submission_components'
+                   AND COLUMN_NAME = 'external_product_id')
+                  OR
+                  (TABLE_NAME = 'pos_order_submission_attempts'
+                   AND COLUMN_NAME IN ('claim_token', 'external_order_id'))
               )
             '''
         )
@@ -846,6 +918,19 @@ def _assert_database_contract(connection) -> None:
             ('restaurant_service_sessions', 'join_context_key', 'utf8mb4_bin'),
             ('restaurant_orders', 'confirmation_idempotency_key', 'ascii_bin'),
             ('restaurant_orders', 'commercial_fingerprint', 'ascii_bin'),
+            ('location_pos_connections', 'connector_key', 'utf8mb4_bin'),
+            ('location_pos_connections', 'external_location_id', 'utf8mb4_bin'),
+            ('pos_order_submissions', 'connector_key', 'utf8mb4_bin'),
+            ('pos_order_submissions', 'external_location_id', 'utf8mb4_bin'),
+            ('pos_order_submissions', 'idempotency_key', 'ascii_bin'),
+            ('pos_order_submissions', 'request_fingerprint', 'ascii_bin'),
+            ('pos_order_submissions', 'external_order_id', 'utf8mb4_bin'),
+            ('pos_order_submissions', 'claim_token', 'ascii_bin'),
+            ('pos_order_submission_lines', 'external_product_id', 'utf8mb4_bin'),
+            ('pos_order_submission_lines', 'external_line_reference', 'utf8mb4_bin'),
+            ('pos_order_submission_components', 'external_product_id', 'utf8mb4_bin'),
+            ('pos_order_submission_attempts', 'claim_token', 'ascii_bin'),
+            ('pos_order_submission_attempts', 'external_order_id', 'utf8mb4_bin'),
         }
 
 
@@ -938,69 +1023,7 @@ def test_database_tables_enforce_storage_contract(sql_connection) -> None:
 
 def test_database_has_all_expected_foreign_keys(sql_connection) -> None:
     connection, _ = sql_connection
-    _, foreign_keys, indexes = _database_contract(connection)
-    assert foreign_keys == EXPECTED_FOREIGN_KEY_COLUMNS
-    assert indexes == EXPECTED_INDEX_COLUMNS
-    with connection.cursor() as cursor:
-        cursor.execute(
-            '''
-            SELECT TABLE_NAME, CONSTRAINT_NAME
-            FROM information_schema.TABLE_CONSTRAINTS
-            WHERE CONSTRAINT_SCHEMA = DATABASE()
-              AND CONSTRAINT_TYPE = 'CHECK'
-              AND TABLE_NAME IN (
-                  'resources', 'customers', 'product_categories', 'products', 'menus',
-                  'menu_locations', 'menu_sections', 'menu_items', 'product_prices',
-                  'promotions', 'promotion_products', 'promotion_locations',
-                  'conversations', 'conversation_participants', 'conversation_messages',
-                  'intelligence_derivations', 'restaurant_message_intents',
-                  'product_compositions', 'product_components',
-                  'product_choice_groups', 'product_choice_options', 'product_aliases'
-                  , 'order_drafts', 'order_draft_items', 'order_draft_item_selections'
-                  , 'restaurant_service_sessions', 'diner_sessions'
-                  , 'restaurant_orders', 'restaurant_order_items'
-                  , 'restaurant_order_item_components', 'restaurant_order_promotions'
-              )
-            '''
-        )
-        assert {(row['TABLE_NAME'], row['CONSTRAINT_NAME']) for row in cursor.fetchall()} == (
-            EXPECTED_DOMAIN_CHECKS
-        )
-        cursor.execute(
-            '''
-            SELECT TABLE_NAME, COLUMN_NAME, COLLATION_NAME
-            FROM information_schema.COLUMNS
-            WHERE TABLE_SCHEMA = DATABASE()
-              AND (
-                  (TABLE_NAME = 'customer_external_identities'
-                   AND COLUMN_NAME = 'external_customer_id')
-                  OR
-                  (TABLE_NAME = 'product_external_mappings'
-                   AND COLUMN_NAME = 'external_product_id')
-                  OR
-                  (TABLE_NAME = 'product_aliases'
-                   AND COLUMN_NAME IN ('normalized_alias', 'language'))
-                  OR
-                  (TABLE_NAME = 'restaurant_service_sessions'
-                   AND COLUMN_NAME = 'join_context_key')
-                  OR
-                  (TABLE_NAME = 'restaurant_orders'
-                   AND COLUMN_NAME IN ('confirmation_idempotency_key', 'commercial_fingerprint'))
-              )
-            '''
-        )
-        assert {
-            (row['TABLE_NAME'], row['COLUMN_NAME'], row['COLLATION_NAME'])
-            for row in cursor.fetchall()
-        } == {
-            ('customer_external_identities', 'external_customer_id', 'utf8mb4_bin'),
-            ('product_external_mappings', 'external_product_id', 'utf8mb4_bin'),
-            ('product_aliases', 'normalized_alias', 'utf8mb4_bin'),
-            ('product_aliases', 'language', 'utf8mb4_bin'),
-            ('restaurant_service_sessions', 'join_context_key', 'utf8mb4_bin'),
-            ('restaurant_orders', 'confirmation_idempotency_key', 'ascii_bin'),
-            ('restaurant_orders', 'commercial_fingerprint', 'ascii_bin'),
-        }
+    _assert_database_contract(connection)
 
 
 def test_foreign_key_is_actually_enforced(sql_connection) -> None:
@@ -1352,6 +1375,45 @@ def test_fresh_install_reaches_portable_database_contract(
     database_name, _ = isolated_database
     _run_alembic(database_name, 'head')
 
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+    finally:
+        connection.close()
+
+
+def test_0017_upgrade_downgrade_and_reupgrade_preserve_permission_provenance(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0016_canonical_order_commercial_acceptance')
+    _run_alembic(database_name, '0017_pos_order_submission_recovery')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0017_pos_order_submission_recovery'
+            cursor.execute("SELECT code FROM permissions WHERE code LIKE 'pos_submission.%' ORDER BY code")
+            assert [row['code'] for row in cursor.fetchall()] == [
+                'pos_submission.read',
+                'pos_submission.recover',
+                'pos_submission.retry',
+                'pos_submission.submit',
+            ]
+    finally:
+        connection.close()
+    _run_alembic_downgrade(database_name, '0016_canonical_order_commercial_acceptance')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0016_canonical_order_commercial_acceptance'
+            cursor.execute("SELECT COUNT(*) AS count FROM permissions WHERE code LIKE 'pos_submission.%'")
+            assert cursor.fetchone()['count'] == 4
+    finally:
+        connection.close()
+    _run_alembic(database_name, 'head')
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         _assert_database_contract(connection)

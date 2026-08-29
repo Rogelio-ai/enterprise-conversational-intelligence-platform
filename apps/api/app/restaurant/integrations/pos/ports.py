@@ -3,6 +3,8 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from app.restaurant.integrations.pos.contracts import (
+    CreateOrderRecovery,
+    CreateOrderRequest,
     ExternalCustomer,
     ExternalLocation,
     ExternalOrder,
@@ -76,10 +78,9 @@ class OrderPort(Protocol):
         self,
         context: LocationScopedPosRequestContext,
         *,
-        items: tuple[ExternalOrderItem, ...],
-        currency: str,
+        request: CreateOrderRequest,
         idempotency_key: str,
-        external_customer_id: str | None = None,
+        request_fingerprint: str,
     ) -> ExternalOrder: ...
 
     async def get_order(
@@ -100,3 +101,14 @@ class OrderStatusPort(Protocol):
     async def get_order_status(
         self, context: LocationScopedPosRequestContext, *, external_order_id: str
     ) -> ExternalOrderStatus: ...
+
+
+@runtime_checkable
+class OrderRecoveryPort(Protocol):
+    async def recover_create_order(
+        self,
+        context: LocationScopedPosRequestContext,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> CreateOrderRecovery: ...

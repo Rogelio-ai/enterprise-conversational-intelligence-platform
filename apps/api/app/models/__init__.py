@@ -37,6 +37,13 @@ from app.models.restaurant_order import (
     RestaurantOrderItemComponent,
     RestaurantOrderPromotion,
 )
+from app.models.pos_submission import (
+    LocationPosConnection,
+    PosOrderSubmission,
+    PosOrderSubmissionAttempt,
+    PosOrderSubmissionComponent,
+    PosOrderSubmissionLine,
+)
 
 __all__ = [
     'Customer',
@@ -76,6 +83,11 @@ __all__ = [
     'RestaurantOrderItem',
     'RestaurantOrderItemComponent',
     'RestaurantOrderPromotion',
+    'LocationPosConnection',
+    'PosOrderSubmission',
+    'PosOrderSubmissionAttempt',
+    'PosOrderSubmissionComponent',
+    'PosOrderSubmissionLine',
     'DinerSession',
     'RestaurantMessageIntent',
     'Tenant',

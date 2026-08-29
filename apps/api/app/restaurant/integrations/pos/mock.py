@@ -8,6 +8,9 @@ from typing import TypeVar
 
 from app.restaurant.integrations.pos.contracts import (
     CanonicalOrderStatus,
+    CreateOrderRecovery,
+    CreateOrderRequest,
+    CreateRecoveryOutcome,
     ExternalCustomer,
     ExternalEntityStatus,
     ExternalLocation,
@@ -41,6 +44,8 @@ class MockPosFailureMode(StrEnum):
     PROMOTIONS_UNSUPPORTED = 'PROMOTIONS_UNSUPPORTED'
     ORDER_REJECTED = 'ORDER_REJECTED'
     ORDER_UNCERTAIN_ONCE = 'ORDER_UNCERTAIN_ONCE'
+    RECOVERY_UNSUPPORTED = 'RECOVERY_UNSUPPORTED'
+    RECOVERY_DEFINITE_ABSENCE = 'RECOVERY_DEFINITE_ABSENCE'
     ORDER_STATUS_MAPPING_FAILURE = 'ORDER_STATUS_MAPPING_FAILURE'
 
 
@@ -249,7 +254,7 @@ def build_mock_pos_dataset(
 
 @dataclass(frozen=True)
 class _IdempotencyRecord:
-    fingerprint: tuple[object, ...]
+    fingerprint: str
     result: ExternalOrder
 
 
@@ -318,6 +323,8 @@ class MockPosAdapter:
         self._order_counter = 1
         self._line_counter = 1
         self._uncertain_result_raised = False
+        self.create_history: list[CreateOrderRequest] = []
+        self.recovery_calls = 0
 
     def _error(
         self,
@@ -581,31 +588,11 @@ class MockPosAdapter:
         )
         return tuple(sorted(promotions, key=lambda item: item.external_id))
 
-    def _create_fingerprint(
-        self,
-        *,
-        items: tuple[ExternalOrderItem, ...],
-        currency: str,
-        external_customer_id: str | None,
-    ) -> tuple[object, ...]:
-        item_values = tuple(
-            (
-                item.external_line_id,
-                item.product_external_id,
-                item.name,
-                item.quantity,
-                item.unit_price,
-                item.line_total,
-            )
-            for item in items
-        )
-        return (item_values, currency, external_customer_id)
-
     def _idempotent_result(
         self,
         *,
         key: tuple[int, str, str],
-        fingerprint: tuple[object, ...],
+        fingerprint: str,
         context: LocationScopedPosRequestContext,
         operation: str,
     ) -> ExternalOrder | None:
@@ -626,10 +613,9 @@ class MockPosAdapter:
         self,
         context: LocationScopedPosRequestContext,
         *,
-        items: tuple[ExternalOrderItem, ...],
-        currency: str,
+        request: CreateOrderRequest,
         idempotency_key: str,
-        external_customer_id: str | None = None,
+        request_fingerprint: str,
     ) -> ExternalOrder:
         operation = 'create_order'
         self._location(context, operation=operation)
@@ -639,21 +625,22 @@ class MockPosAdapter:
             context=context,
             operation=operation,
         )
-        currency = self._require_text(
-            currency,
-            field='currency',
+        request_fingerprint = self._require_text(
+            request_fingerprint,
+            field='request_fingerprint',
             context=context,
             operation=operation,
-        ).upper()
-        if len(currency) != 3 or not currency.isascii() or not currency.isalpha():
+        )
+        if not isinstance(request, CreateOrderRequest):
             raise self._error(
                 PosInvalidDataError,
-                'Currency must be a three-letter ASCII code',
+                'Order request must use the create-order contract value',
                 context=context,
                 operation=operation,
                 external_entity_type='order',
             )
-        if not isinstance(items, tuple) or not items:
+        self.create_history.append(request)
+        if not request.items:
             raise self._error(
                 PosInvalidDataError,
                 'At least one Order Item is required',
@@ -661,15 +648,7 @@ class MockPosAdapter:
                 operation=operation,
                 external_entity_type='order',
             )
-        for item in items:
-            if not isinstance(item, ExternalOrderItem):
-                raise self._error(
-                    PosInvalidDataError,
-                    'Order Items must use the POS contract value',
-                    context=context,
-                    operation=operation,
-                    external_entity_type='order_item',
-                )
+        for item in request.items:
             product = self._products.get(item.product_external_id)
             if product is None:
                 raise self._error(
@@ -696,7 +675,7 @@ class MockPosAdapter:
                     operation=operation,
                     external_entity_type='price',
                 )
-            if price.currency != currency:
+            if price.currency != request.currency:
                 raise self._error(
                     PosInvalidDataError,
                     'Order currency does not match the POS Price currency',
@@ -704,9 +683,9 @@ class MockPosAdapter:
                     operation=operation,
                     external_entity_type='order',
                 )
-        if external_customer_id is not None:
+        if request.external_customer_id is not None:
             external_customer_id = self._require_text(
-                external_customer_id,
+                request.external_customer_id,
                 field='external_customer_id',
                 context=context,
                 operation=operation,
@@ -719,15 +698,10 @@ class MockPosAdapter:
                     operation=operation,
                     external_entity_type='customer',
                 )
-        fingerprint = self._create_fingerprint(
-            items=items,
-            currency=currency,
-            external_customer_id=external_customer_id,
-        )
         idempotency_scope = (context.location_id, operation, idempotency_key)
         existing = self._idempotent_result(
             key=idempotency_scope,
-            fingerprint=fingerprint,
+            fingerprint=request_fingerprint,
             context=context,
             operation=operation,
         )
@@ -743,19 +717,30 @@ class MockPosAdapter:
             )
 
         external_order_id = self._next_order_id()
-        normalized_items = tuple(self._normalize_line(item) for item in items)
-        subtotal = sum((item.line_total for item in normalized_items), start=Decimal('0'))
+        normalized_items = tuple(
+            self._normalize_line(
+                ExternalOrderItem(
+                    external_line_id=None,
+                    product_external_id=item.product_external_id,
+                    name=item.name,
+                    quantity=item.quantity,
+                    unit_price=item.unit_price,
+                    line_total=item.line_total,
+                )
+            )
+            for item in request.items
+        )
         order = ExternalOrder(
             external_id=external_order_id,
             status=CanonicalOrderStatus.SUBMITTED,
             items=normalized_items,
-            subtotal=subtotal,
-            total=subtotal,
-            currency=currency,
+            subtotal=request.subtotal,
+            total=request.payable_total,
+            currency=request.currency,
             created_at=self.dataset.timestamp,
         )
         self._orders[(context.location_id, external_order_id)] = order
-        self._idempotency[idempotency_scope] = _IdempotencyRecord(fingerprint, order)
+        self._idempotency[idempotency_scope] = _IdempotencyRecord(request_fingerprint, order)
         if (
             self.failure_mode is MockPosFailureMode.ORDER_UNCERTAIN_ONCE
             and not self._uncertain_result_raised
@@ -769,6 +754,45 @@ class MockPosAdapter:
                 external_entity_type='order',
             )
         return order
+
+    async def recover_create_order(
+        self,
+        context: LocationScopedPosRequestContext,
+        *,
+        idempotency_key: str,
+        request_fingerprint: str,
+    ) -> CreateOrderRecovery:
+        operation = 'recover_create_order'
+        self.recovery_calls += 1
+        self._location(context, operation=operation)
+        idempotency_key = self._require_text(
+            idempotency_key, field='idempotency_key', context=context, operation=operation
+        )
+        request_fingerprint = self._require_text(
+            request_fingerprint,
+            field='request_fingerprint',
+            context=context,
+            operation=operation,
+        )
+        if self.failure_mode is MockPosFailureMode.RECOVERY_UNSUPPORTED:
+            return CreateOrderRecovery(outcome=CreateRecoveryOutcome.UNSUPPORTED)
+        if self.failure_mode is MockPosFailureMode.RECOVERY_DEFINITE_ABSENCE:
+            return CreateOrderRecovery(outcome=CreateRecoveryOutcome.DEFINITE_ABSENCE)
+        existing = self._idempotency.get((context.location_id, 'create_order', idempotency_key))
+        if existing is None:
+            return CreateOrderRecovery(outcome=CreateRecoveryOutcome.DEFINITE_ABSENCE)
+        if existing.fingerprint != request_fingerprint:
+            raise self._error(
+                PosInvalidDataError,
+                'Create recovery fingerprint does not match the original request',
+                context=context,
+                operation=operation,
+                external_entity_type='order',
+            )
+        return CreateOrderRecovery(
+            outcome=CreateRecoveryOutcome.RECOVERED_SUCCESS,
+            order=existing.result,
+        )
 
     def _next_order_id(self) -> str:
         while True:

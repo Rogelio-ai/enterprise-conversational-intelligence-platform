@@ -359,7 +359,7 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
-The current application migration head is `0016_canonical_order_commercial_acceptance`.
+The current application migration head is `0017_pos_order_submission_recovery`.
 
 Restaurant commercial acceptance exposes:
 
@@ -373,8 +373,10 @@ GET  /restaurant-orders/{order_id}
 
 The diner confirmation endpoint derives all ownership scope from the diner token and accepts only
 `expected_draft_version`, `expected_commercial_fingerprint`, and the `Idempotency-Key` header.
-Staff reads require `restaurant_order.read`; WS-17 intentionally provides no staff confirmation,
-Order mutation/deletion, payment, cancellation, or POS endpoint.
+Staff reads require `restaurant_order.read`; staff POS materialization exposes separately authorized
+submit, read, retry, and recover endpoints under
+`/restaurant-orders/{order_id}/pos-submission`. Restaurant Order mutation/deletion, payment,
+cancellation, Preparation, and POS status synchronization remain outside this scope.
 
 The bounded Restaurant conversational-intelligence foundation records provider-neutral,
 append-only derivation provenance and versioned Restaurant message intents without changing the
@@ -471,10 +473,10 @@ through Tenant- and connector-scoped external mappings. The internal resolver de
 vendor-neutral `CustomerPort`; CRM, preferences, history, addresses, loyalty, automatic contact
 merging, and POS synchronization remain deferred.
 
-The Restaurant Domain Pack includes an internal, vendor-neutral POS integration contract for
-Location, Customer, Catalog, Pricing, Promotion, and Order capabilities. A deterministic,
-in-memory Mock POS Adapter implements that contract for future development without persistence or
-a public API. No real POS integration is implemented yet.
+The Restaurant Domain Pack includes a vendor-neutral POS contract and a deterministic in-memory
+Mock POS Adapter. Accepted Restaurant Orders can be durably materialized through a location POS
+connection with frozen mappings, stable idempotency, retry evidence, claim fencing, and uncertain
+create recovery. No real vendor adapter or credentials are stored by this implementation.
 
 A single active membership is inferred during login. Multiple active memberships require an
 explicit `tenant_id` at login. `X-Tenant-ID` may only confirm the Tenant bound into the signed token;
@@ -486,8 +488,8 @@ Run backend tests in an isolated container:
 docker compose run --rm api pytest
 ```
 
-The WS-17 certified regression baseline is `251 passed, 0 failed, 0 skipped, 0 xfailed` on
-MySQL 8.4.8 and MariaDB 10.6.28.
+The WS-17 pre-implementation certified regression baseline was `251 passed, 0 failed, 0 skipped,
+0 xfailed` on MySQL 8.4.8 and MariaDB 10.6.28.
 
 Run the same migration and integration suite against an isolated MariaDB 10.6 service with:
 
