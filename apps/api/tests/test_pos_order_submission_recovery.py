@@ -51,6 +51,7 @@ def _scope(connection, prefix: str, *, include_pos_permissions: bool = True) -> 
         'restaurant_service.read', 'restaurant_service.manage', 'order_draft.read',
         'order_draft.manage', 'conversation.read', 'conversation.manage',
         'restaurant_order.read',
+        'preparation.read', 'preparation.route', 'preparation.configure',
     ]
     if include_pos_permissions:
         permissions.extend(('pos_submission.read', 'pos_submission.submit', 'pos_submission.retry', 'pos_submission.recover'))
@@ -101,12 +102,15 @@ def _accepted_order(client: TestClient, connection, scope: Scope, *, name='Burge
 
 
 def _configure(connection, scope: Scope, product_id: int, *, recovery=True, stable=True) -> MockPosAdapter:
+    _execute(connection, "INSERT INTO location_preparation_configurations (tenant_id,organization_id,location_id,preparation_owner) VALUES (%s,%s,%s,'EXTERNAL_POS')", (scope.tenant_id, scope.organization_id, scope.location_id))
     _execute(connection, 'INSERT INTO product_external_mappings (tenant_id,product_id,connector_key,external_product_id) VALUES (%s,%s,%s,%s)', (scope.tenant_id, product_id, CONNECTOR, 'product-001'))
     _execute(connection, "INSERT INTO location_pos_connections (tenant_id,organization_id,location_id,connector_key,external_location_id,status,active_slot,stable_replay_supported,recovery_supported) VALUES (%s,%s,%s,%s,'location-001','ACTIVE',1,%s,%s)", (scope.tenant_id, scope.organization_id, scope.location_id, CONNECTOR, stable, recovery))
     return MockPosAdapter(build_mock_pos_dataset(tenant_id=scope.tenant_id, connector_key=CONNECTOR, location_ids=(scope.location_id, scope.location_id + 1_000_000)))
 
 
-def _accepted_complex_order(client: TestClient, connection, scope: Scope):
+def _accepted_complex_order(
+    client: TestClient, connection, scope: Scope, *, parent_quantity='1', fixed_quantity='1'
+):
     staff = _headers(client, scope)
     opened = client.post(f'/resources/{scope.resource_id}/service-sessions', headers=staff, json={'party_size': 2}).json()
     joined = client.post('/diner-sessions/join', json={
@@ -123,13 +127,13 @@ def _accepted_complex_order(client: TestClient, connection, scope: Scope):
     _execute(connection, "INSERT INTO menu_items (tenant_id,organization_id,menu_id,section_id,product_id,status) VALUES (%s,%s,%s,%s,%s,'ACTIVE')", (scope.tenant_id, scope.organization_id, menu, section, parent))
     _execute(connection, "INSERT INTO product_prices (tenant_id,organization_id,product_id,location_id,amount,currency,status,source) VALUES (%s,%s,%s,%s,150,'MXN','ACTIVE','PLATFORM')", (scope.tenant_id, scope.organization_id, parent, scope.location_id))
     composition = _execute(connection, "INSERT INTO product_compositions (tenant_id,organization_id,product_id,status) VALUES (%s,%s,%s,'ACTIVE')", (scope.tenant_id, scope.organization_id, parent))
-    _execute(connection, "INSERT INTO product_components (tenant_id,organization_id,composition_id,component_product_id,quantity,display_order,status) VALUES (%s,%s,%s,%s,1,0,'ACTIVE')", (scope.tenant_id, scope.organization_id, composition, fixed))
+    _execute(connection, "INSERT INTO product_components (tenant_id,organization_id,composition_id,component_product_id,quantity,display_order,status) VALUES (%s,%s,%s,%s,%s,0,'ACTIVE')", (scope.tenant_id, scope.organization_id, composition, fixed, fixed_quantity))
     group = _execute(connection, "INSERT INTO product_choice_groups (tenant_id,organization_id,composition_id,name,min_selections,max_selections,display_order,status) VALUES (%s,%s,%s,'Drink',1,1,0,'ACTIVE')", (scope.tenant_id, scope.organization_id, composition))
     option = _execute(connection, "INSERT INTO product_choice_options (tenant_id,organization_id,group_id,option_product_id,quantity,display_order,status) VALUES (%s,%s,%s,%s,1,0,'ACTIVE')", (scope.tenant_id, scope.organization_id, group, option_product))
     promotion = _execute(connection, "INSERT INTO promotions (tenant_id,organization_id,name,promotion_type,benefit_value,currency,starts_at,ends_at,applies_to_all_locations,is_combinable,priority,status,source) VALUES (%s,%s,'Combo offer','PERCENTAGE_DISCOUNT',10,NULL,CURRENT_TIMESTAMP - INTERVAL 1 HOUR,CURRENT_TIMESTAMP + INTERVAL 1 HOUR,1,0,1,'ACTIVE','PLATFORM')", (scope.tenant_id, scope.organization_id))
     _execute(connection, "INSERT INTO promotion_products (tenant_id,organization_id,promotion_id,product_id,status) VALUES (%s,%s,%s,%s,'ACTIVE')", (scope.tenant_id, scope.organization_id, promotion, parent))
     draft = client.post('/diner/order-draft', headers=diner).json()
-    added = client.post('/diner/order-draft/items', headers=diner, json={'product_id': parent, 'quantity': '1', 'expected_version': draft['version']}).json()
+    added = client.post('/diner/order-draft/items', headers=diner, json={'product_id': parent, 'quantity': parent_quantity, 'expected_version': draft['version']}).json()
     selected = client.put(f"/diner/order-draft/items/{added['items'][0]['item_id']}/choice-groups/{group}", headers=diner, json={'option_ids': [option], 'expected_version': added['version']})
     assert selected.status_code == 200, selected.text
     preview = client.get('/diner/checkout-preview', headers=diner).json()

@@ -95,11 +95,17 @@ def sql_connection(integration_settings: Settings):
     finally:
         with connection.cursor() as cursor:
             for table in (
+                'preparation_work_items',
+                'preparation_works',
+                'preparation_routings',
                 'pos_order_submission_attempts',
                 'pos_order_submission_components',
                 'pos_order_submission_lines',
                 'pos_order_submissions',
                 'location_pos_connections',
+                'product_preparation_routes',
+                'preparation_areas',
+                'location_preparation_configurations',
             ):
                 cursor.execute(
                     f'DELETE FROM {table} WHERE tenant_id IN '

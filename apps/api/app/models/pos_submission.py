@@ -35,6 +35,10 @@ class LocationPosConnection(TimestampMixin, Base):
         CheckConstraint("status IN ('ACTIVE', 'INACTIVE')", name='ck_location_pos_connections_status'),
         CheckConstraint('active_slot IS NULL OR active_slot = 1', name='ck_location_pos_connections_active_slot'),
         CheckConstraint(
+            "external_preparation_behavior IN ('NO_PREPARATION_OUTPUT','MAY_PRODUCE_PREPARATION_OUTPUT')",
+            name='ck_location_pos_connections_preparation_behavior',
+        ),
+        CheckConstraint(
             "(status = 'ACTIVE' AND active_slot = 1 AND (stable_replay_supported = 1 OR recovery_supported = 1)) OR "
             "(status = 'INACTIVE' AND active_slot IS NULL)",
             name='ck_location_pos_connections_lifecycle',
@@ -53,6 +57,10 @@ class LocationPosConnection(TimestampMixin, Base):
     active_slot: Mapped[int | None] = mapped_column(SmallInteger, nullable=True, default=1, server_default=text('1'))
     stable_replay_supported: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True, server_default=text('1'))
     recovery_supported: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False, server_default=text('0'))
+    external_preparation_behavior: Mapped[str] = mapped_column(
+        String(40), nullable=False, default='MAY_PRODUCE_PREPARATION_OUTPUT',
+        server_default=text("'MAY_PRODUCE_PREPARATION_OUTPUT'"),
+    )
 
 
 class PosOrderSubmission(TimestampMixin, Base):

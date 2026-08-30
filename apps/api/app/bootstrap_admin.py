@@ -51,6 +51,9 @@ CORE_PERMISSIONS = {
     'pos_submission.submit': 'Submit accepted Restaurant Orders to a POS.',
     'pos_submission.retry': 'Retry safely retryable POS order submissions.',
     'pos_submission.recover': 'Recover uncertain POS order submissions.',
+    'preparation.read': 'Read preparation configuration, routing, and work.',
+    'preparation.route': 'Route accepted Restaurant Orders to preparation.',
+    'preparation.configure': 'Configure preparation ownership, areas, and product routes.',
 }
 _SLUG_PATTERN = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 

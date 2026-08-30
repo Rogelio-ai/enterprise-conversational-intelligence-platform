@@ -61,6 +61,12 @@ APPLICATION_TABLES = {
     'pos_order_submission_lines',
     'pos_order_submission_components',
     'pos_order_submission_attempts',
+    'location_preparation_configurations',
+    'preparation_areas',
+    'product_preparation_routes',
+    'preparation_routings',
+    'preparation_works',
+    'preparation_work_items',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -104,6 +110,12 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'pos_order_submission_lines',
     'pos_order_submission_components',
     'pos_order_submission_attempts',
+    'location_preparation_configurations',
+    'preparation_areas',
+    'product_preparation_routes',
+    'preparation_routings',
+    'preparation_works',
+    'preparation_work_items',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -510,6 +522,7 @@ EXPECTED_DOMAIN_CHECKS = {
     ('location_pos_connections', 'ck_location_pos_connections_active_slot'),
     ('location_pos_connections', 'ck_location_pos_connections_lifecycle'),
     ('location_pos_connections', 'ck_location_pos_connections_status'),
+    ('location_pos_connections', 'ck_location_pos_connections_preparation_behavior'),
     ('pos_order_submissions', 'ck_pos_order_submissions_actor'),
     ('pos_order_submissions', 'ck_pos_order_submissions_claim'),
     ('pos_order_submissions', 'ck_pos_order_submissions_state'),
@@ -519,6 +532,23 @@ EXPECTED_DOMAIN_CHECKS = {
     ('pos_order_submission_attempts', 'ck_pos_submission_attempts_lifecycle'),
     ('pos_order_submission_attempts', 'ck_pos_submission_attempts_result'),
     ('pos_order_submission_attempts', 'ck_pos_submission_attempts_type'),
+    ('location_preparation_configurations', 'ck_location_preparation_configurations_owner'),
+    ('preparation_areas', 'ck_preparation_areas_status'),
+    ('product_preparation_routes', 'ck_product_preparation_routes_policy'),
+    ('product_preparation_routes', 'ck_product_preparation_routes_status'),
+    ('product_preparation_routes', 'ck_product_preparation_routes_active_slot'),
+    ('product_preparation_routes', 'ck_product_preparation_routes_lifecycle'),
+    ('product_preparation_routes', 'ck_product_preparation_routes_area'),
+    ('preparation_routings', 'ck_preparation_routings_owner'),
+    ('preparation_routings', 'ck_preparation_routings_state'),
+    ('preparation_routings', 'ck_preparation_routings_version'),
+    ('preparation_routings', 'ck_preparation_routings_actor'),
+    ('preparation_routings', 'ck_preparation_routings_lifecycle'),
+    ('preparation_works', 'ck_preparation_works_owner'),
+    ('preparation_works', 'ck_preparation_works_version'),
+    ('preparation_work_items', 'ck_preparation_work_items_quantity'),
+    ('preparation_work_items', 'ck_preparation_work_items_policy'),
+    ('preparation_work_items', 'ck_preparation_work_items_source_xor'),
 }
 
 for table, prefix, target, target_table in (
@@ -667,6 +697,24 @@ _index('pos_order_submission_components', 'ix_pos_submission_components_ordered'
 _index('pos_order_submission_attempts', 'uq_pos_submission_attempts_sequence', ('submission_id', 'attempt_sequence'), 0)
 _index('pos_order_submission_attempts', 'uq_pos_submission_attempts_claim', ('claim_token',), 0)
 _index('pos_order_submission_attempts', 'ix_pos_submission_attempts_ordered', ('tenant_id', 'submission_id', 'attempt_sequence', 'id'), 1)
+_index('location_preparation_configurations', 'uq_location_preparation_configurations_location', ('location_id',), 0)
+_index('location_preparation_configurations', 'uq_location_preparation_configurations_scope', ('id', 'tenant_id', 'organization_id', 'location_id'), 0)
+_index('location_preparation_configurations', 'ix_location_preparation_configurations_lookup', ('tenant_id', 'location_id', 'id'), 1)
+_index('preparation_areas', 'uq_preparation_areas_location_code', ('location_id', 'code'), 0)
+_index('preparation_areas', 'uq_preparation_areas_scope', ('id', 'tenant_id', 'organization_id', 'location_id'), 0)
+_index('preparation_areas', 'ix_preparation_areas_lookup', ('tenant_id', 'location_id', 'status', 'code', 'id'), 1)
+_index('product_preparation_routes', 'uq_product_preparation_routes_current', ('location_id', 'product_id', 'active_slot'), 0)
+_index('product_preparation_routes', 'uq_product_preparation_routes_scope', ('id', 'tenant_id', 'organization_id', 'location_id'), 0)
+_index('product_preparation_routes', 'ix_product_preparation_routes_lookup', ('tenant_id', 'location_id', 'product_id', 'status', 'id'), 1)
+_index('preparation_routings', 'uq_preparation_routings_order', ('tenant_id', 'restaurant_order_id'), 0)
+_index('preparation_routings', 'uq_preparation_routings_scope', ('id', 'tenant_id', 'restaurant_order_id'), 0)
+_index('preparation_routings', 'ix_preparation_routings_state', ('tenant_id', 'state', 'location_id', 'id'), 1)
+_index('preparation_works', 'uq_preparation_works_order_area', ('tenant_id', 'restaurant_order_id', 'preparation_area_id'), 0)
+_index('preparation_works', 'uq_preparation_works_scope', ('id', 'tenant_id', 'restaurant_order_id'), 0)
+_index('preparation_works', 'ix_preparation_works_area', ('tenant_id', 'location_id', 'preparation_area_id', 'id'), 1)
+_index('preparation_work_items', 'uq_preparation_work_items_source_item', ('tenant_id', 'restaurant_order_id', 'source_restaurant_order_item_id'), 0)
+_index('preparation_work_items', 'uq_preparation_work_items_source_component', ('tenant_id', 'restaurant_order_id', 'source_restaurant_order_item_component_id'), 0)
+_index('preparation_work_items', 'ix_preparation_work_items_ordered', ('tenant_id', 'preparation_work_id', 'id'), 1)
 
 for constraint, table, local_columns, target_table, target_columns in (
     ('fk_product_categories_parent_tenant_org', 'product_categories', ('parent_id', 'tenant_id', 'organization_id'), 'product_categories', ('id', 'tenant_id', 'organization_id')),
@@ -756,6 +804,25 @@ for constraint, table, local_columns, target_table, target_columns in (
     ('fk_pos_submission_components_component_scope', 'pos_order_submission_components', ('restaurant_order_item_component_id', 'tenant_id', 'restaurant_order_id', 'restaurant_order_item_id'), 'restaurant_order_item_components', ('id', 'tenant_id', 'order_id', 'order_item_id')),
     ('fk_pos_submission_attempts_submission_scope', 'pos_order_submission_attempts', ('submission_id', 'tenant_id'), 'pos_order_submissions', ('id', 'tenant_id')),
     ('fk_pos_submission_attempts_membership', 'pos_order_submission_attempts', ('actor_membership_id', 'tenant_id'), 'tenant_memberships', ('id', 'tenant_id')),
+    ('fk_location_preparation_configurations_tenant', 'location_preparation_configurations', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_location_preparation_configurations_location_scope', 'location_preparation_configurations', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_preparation_areas_tenant', 'preparation_areas', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_preparation_areas_location_scope', 'preparation_areas', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_preparation_areas_resource_scope', 'preparation_areas', ('resource_id', 'tenant_id', 'location_id'), 'resources', ('id', 'tenant_id', 'location_id')),
+    ('fk_product_preparation_routes_tenant', 'product_preparation_routes', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_product_preparation_routes_location_scope', 'product_preparation_routes', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_product_preparation_routes_product_scope', 'product_preparation_routes', ('product_id', 'tenant_id', 'organization_id'), 'products', ('id', 'tenant_id', 'organization_id')),
+    ('fk_product_preparation_routes_area_scope', 'product_preparation_routes', ('preparation_area_id', 'tenant_id', 'organization_id', 'location_id'), 'preparation_areas', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_preparation_routings_tenant', 'preparation_routings', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_preparation_routings_order_scope', 'preparation_routings', ('restaurant_order_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_orders', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_preparation_routings_membership', 'preparation_routings', ('initiating_membership_id', 'tenant_id'), 'tenant_memberships', ('id', 'tenant_id')),
+    ('fk_preparation_works_tenant', 'preparation_works', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_preparation_works_routing_scope', 'preparation_works', ('routing_id', 'tenant_id', 'restaurant_order_id'), 'preparation_routings', ('id', 'tenant_id', 'restaurant_order_id')),
+    ('fk_preparation_works_area_scope', 'preparation_works', ('preparation_area_id', 'tenant_id', 'organization_id', 'location_id'), 'preparation_areas', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_preparation_work_items_work_scope', 'preparation_work_items', ('preparation_work_id', 'tenant_id', 'restaurant_order_id'), 'preparation_works', ('id', 'tenant_id', 'restaurant_order_id')),
+    ('fk_preparation_work_items_source_item_scope', 'preparation_work_items', ('source_restaurant_order_item_id', 'tenant_id', 'restaurant_order_id'), 'restaurant_order_items', ('id', 'tenant_id', 'order_id')),
+    ('fk_preparation_work_items_source_component_scope', 'preparation_work_items', ('source_restaurant_order_item_component_id', 'tenant_id', 'restaurant_order_id', 'source_restaurant_order_item_id_for_component'), 'restaurant_order_item_components', ('id', 'tenant_id', 'order_id', 'order_item_id')),
+    ('fk_preparation_work_items_route_scope', 'preparation_work_items', ('route_id', 'tenant_id', 'organization_id', 'location_id'), 'product_preparation_routes', ('id', 'tenant_id', 'organization_id', 'location_id')),
 ):
     EXPECTED_FOREIGN_KEY_COLUMNS.update(
         (constraint, table, local, target_table, target, position)
@@ -863,6 +930,9 @@ def _assert_database_contract(connection) -> None:
                   , 'restaurant_order_item_components', 'restaurant_order_promotions'
                   , 'location_pos_connections', 'pos_order_submissions'
                   , 'pos_order_submission_attempts'
+                  , 'location_preparation_configurations', 'preparation_areas'
+                  , 'product_preparation_routes', 'preparation_routings'
+                  , 'preparation_works', 'preparation_work_items'
               )
             '''
         )
@@ -904,6 +974,15 @@ def _assert_database_contract(connection) -> None:
                   OR
                   (TABLE_NAME = 'pos_order_submission_attempts'
                    AND COLUMN_NAME IN ('claim_token', 'external_order_id'))
+                  OR
+                  (TABLE_NAME = 'preparation_areas'
+                   AND COLUMN_NAME = 'code')
+                  OR
+                  (TABLE_NAME = 'preparation_routings'
+                   AND COLUMN_NAME IN ('routing_fingerprint', 'error_code'))
+                  OR
+                  (TABLE_NAME = 'preparation_works'
+                   AND COLUMN_NAME IN ('area_code_snapshot', 'routing_fingerprint'))
               )
             '''
         )
@@ -931,6 +1010,11 @@ def _assert_database_contract(connection) -> None:
             ('pos_order_submission_components', 'external_product_id', 'utf8mb4_bin'),
             ('pos_order_submission_attempts', 'claim_token', 'ascii_bin'),
             ('pos_order_submission_attempts', 'external_order_id', 'utf8mb4_bin'),
+            ('preparation_areas', 'code', 'utf8mb4_bin'),
+            ('preparation_routings', 'routing_fingerprint', 'ascii_bin'),
+            ('preparation_routings', 'error_code', 'ascii_bin'),
+            ('preparation_works', 'area_code_snapshot', 'utf8mb4_bin'),
+            ('preparation_works', 'routing_fingerprint', 'ascii_bin'),
         }
 
 
@@ -1411,6 +1495,48 @@ def test_0017_upgrade_downgrade_and_reupgrade_preserve_permission_provenance(
             assert cursor.fetchone()['version_num'] == '0016_canonical_order_commercial_acceptance'
             cursor.execute("SELECT COUNT(*) AS count FROM permissions WHERE code LIKE 'pos_submission.%'")
             assert cursor.fetchone()['count'] == 4
+    finally:
+        connection.close()
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+    finally:
+        connection.close()
+
+
+def test_0018_upgrade_downgrade_and_reupgrade_preserve_permission_provenance(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0017_pos_order_submission_recovery')
+    _run_alembic(database_name, '0018_preparation_routing_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0018_preparation_routing_foundation'
+            cursor.execute("SELECT code FROM permissions WHERE code LIKE 'preparation.%' ORDER BY code")
+            assert [row['code'] for row in cursor.fetchall()] == [
+                'preparation.configure',
+                'preparation.read',
+                'preparation.route',
+            ]
+            cursor.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='location_pos_connections' AND COLUMN_NAME='external_preparation_behavior'")
+            assert cursor.fetchone() is not None
+    finally:
+        connection.close()
+    _run_alembic_downgrade(database_name, '0017_pos_order_submission_recovery')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0017_pos_order_submission_recovery'
+            cursor.execute("SELECT COUNT(*) AS count FROM permissions WHERE code LIKE 'preparation.%'")
+            assert cursor.fetchone()['count'] == 3
+            cursor.execute("SELECT COUNT(*) AS count FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='preparation_routings'")
+            assert cursor.fetchone()['count'] == 0
     finally:
         connection.close()
     _run_alembic(database_name, 'head')

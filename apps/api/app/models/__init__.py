@@ -44,6 +44,14 @@ from app.models.pos_submission import (
     PosOrderSubmissionComponent,
     PosOrderSubmissionLine,
 )
+from app.models.preparation import (
+    LocationPreparationConfiguration,
+    PreparationArea,
+    PreparationRouting,
+    PreparationWork,
+    PreparationWorkItem,
+    ProductPreparationRoute,
+)
 
 __all__ = [
     'Customer',
@@ -88,6 +96,12 @@ __all__ = [
     'PosOrderSubmissionAttempt',
     'PosOrderSubmissionComponent',
     'PosOrderSubmissionLine',
+    'LocationPreparationConfiguration',
+    'PreparationArea',
+    'PreparationRouting',
+    'PreparationWork',
+    'PreparationWorkItem',
+    'ProductPreparationRoute',
     'DinerSession',
     'RestaurantMessageIntent',
     'Tenant',

@@ -359,7 +359,19 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
-The current application migration head is `0017_pos_order_submission_recovery`.
+The current application migration head is `0018_preparation_routing_foundation`.
+
+Restaurant operations are native-first and integration-optional. Every Location explicitly chooses
+`PLATFORM` or `EXTERNAL_POS` preparation ownership; the first post-acceptance dispatch freezes that
+choice for the immutable Restaurant Order. Platform-owned orders route accepted item/component
+snapshots through explicit `AREA`, `COMPONENTS`, or `NO_PREPARATION` policies into one durable work
+aggregate per Preparation Area. This native path requires no POS connection.
+
+The POS connection capability `external_preparation_behavior` enforces one preparation authority.
+Platform preparation can coexist with POS sales/accounting submission only when the connection is
+explicitly `NO_PREPARATION_OUTPUT`; the conservative `MAY_PRODUCE_PREPARATION_OUTPUT` value blocks
+native materialization. External-POS ownership creates no native Preparation Work and never falls
+back silently when the integration is unavailable.
 
 Restaurant commercial acceptance exposes:
 

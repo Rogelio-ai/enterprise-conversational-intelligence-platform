@@ -39,6 +39,8 @@ from app.restaurant.pos_submissions.contracts import (
     PosSubmissionAttemptProjection,
     PosSubmissionProjection,
 )
+from app.restaurant.preparation import errors as preparation_errors
+from app.restaurant.preparation import service as preparation_service
 
 
 logger = logging.getLogger('ecip.pos_submissions')
@@ -79,18 +81,19 @@ def _fingerprint(request: CreateOrderRequest) -> str:
 
 
 async def _order_rows(
-    db: AsyncSession, *, tenant_id: int, order_id: int
+    db: AsyncSession, *, tenant_id: int, order_id: int, for_update: bool = False
 ) -> tuple[
     RestaurantOrder,
     tuple[RestaurantOrderItem, ...],
     dict[int, tuple[RestaurantOrderItemComponent, ...]],
     dict[int, tuple[RestaurantOrderPromotion, ...]],
 ]:
-    order = await db.scalar(
-        select(RestaurantOrder).where(
-            RestaurantOrder.id == order_id, RestaurantOrder.tenant_id == tenant_id
-        )
+    statement = select(RestaurantOrder).where(
+        RestaurantOrder.id == order_id, RestaurantOrder.tenant_id == tenant_id
     )
+    if for_update:
+        statement = statement.with_for_update()
+    order = await db.scalar(statement)
     if order is None:
         raise errors.PosSubmissionNotFoundError('Restaurant Order not found')
     if order.status != 'ACCEPTED':
@@ -436,9 +439,24 @@ async def _initialize(
     execution: ExecutionContext,
 ) -> tuple[PosOrderSubmission, CreateOrderRequest | None, bool]:
     order, items, components, promotions = await _order_rows(
-        db, tenant_id=execution.tenant_id, order_id=order_id
+        db, tenant_id=execution.tenant_id, order_id=order_id, for_update=True
     )
+    routing = await preparation_service.freeze_ownership(
+        db, order=order, execution=execution, reject_legacy_submission=False
+    )
+    if routing.preparation_owner is None:
+        await db.commit()
+        raise errors.PosSubmissionConfigurationError(
+            routing.error_code or 'PREPARATION_OWNERSHIP_UNRESOLVED'
+        )
     connection = await _active_connection(db, order=order)
+    try:
+        await preparation_service.validate_pos_dispatch_compatibility(
+            db, order=order, routing=routing, connection=connection
+        )
+    except preparation_errors.PreparationConflictError as exc:
+        await db.commit()
+        raise errors.PosSubmissionConfigurationError(str(exc)) from exc
     existing = await db.scalar(
         select(PosOrderSubmission).where(
             PosOrderSubmission.tenant_id == execution.tenant_id,
