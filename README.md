@@ -359,7 +359,7 @@ docker compose exec api alembic upgrade head
 docker compose exec api alembic current
 ```
 
-The current application migration head is `0018_preparation_routing_foundation`.
+The current application migration head is `0019_preparation_execution_foundation`.
 
 Restaurant operations are native-first and integration-optional. Every Location explicitly chooses
 `PLATFORM` or `EXTERNAL_POS` preparation ownership; the first post-acceptance dispatch freezes that
@@ -372,6 +372,20 @@ Platform preparation can coexist with POS sales/accounting submission only when 
 explicitly `NO_PREPARATION_OUTPUT`; the conservative `MAY_PRODUCE_PREPARATION_OUTPUT` value blocks
 native materialization. External-POS ownership creates no native Preparation Work and never falls
 back silently when the integration is unavailable.
+
+Each platform-owned `PreparationWorkItem` has an observed native execution lifecycle of `NEW` →
+`IN_PROGRESS` → `COMPLETED`. Every change atomically increments its version and appends immutable,
+idempotent transition evidence attributed to the authenticated employee who recorded the system
+transition; that actor is not claimed to be the physical preparer. A Preparation Work's status is
+derived from its item states and is never independently mutated. An item with state `NEW`, version
+zero, and no transitions means only that no execution observation was recorded—it does not invent
+physical start/completion facts. Execution requires `preparation.execute`; queue and history reads
+use `preparation.read`.
+
+Native execution has no POS dependency. External-POS-owned routing has no native work to execute,
+and external systems cannot mutate platform-owned execution state. Printer/KDS dispatch, delivery
+attempts, devices, and internal handoff messaging remain separate future workstreams; execution does
+not require a dispatch record.
 
 Restaurant commercial acceptance exposes:
 

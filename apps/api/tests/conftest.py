@@ -95,6 +95,7 @@ def sql_connection(integration_settings: Settings):
     finally:
         with connection.cursor() as cursor:
             for table in (
+                'preparation_item_transitions',
                 'preparation_work_items',
                 'preparation_works',
                 'preparation_routings',

@@ -51,7 +51,7 @@ def _scope(connection, prefix: str, *, include_pos_permissions: bool = True) -> 
         'restaurant_service.read', 'restaurant_service.manage', 'order_draft.read',
         'order_draft.manage', 'conversation.read', 'conversation.manage',
         'restaurant_order.read',
-        'preparation.read', 'preparation.route', 'preparation.configure',
+        'preparation.read', 'preparation.route', 'preparation.configure', 'preparation.execute',
     ]
     if include_pos_permissions:
         permissions.extend(('pos_submission.read', 'pos_submission.submit', 'pos_submission.retry', 'pos_submission.recover'))

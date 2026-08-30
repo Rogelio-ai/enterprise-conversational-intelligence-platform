@@ -152,10 +152,14 @@ class PreparationWorkItem(Base):
         ForeignKeyConstraint(['route_id', 'tenant_id', 'organization_id', 'location_id'], ['product_preparation_routes.id', 'product_preparation_routes.tenant_id', 'product_preparation_routes.organization_id', 'product_preparation_routes.location_id'], name='fk_preparation_work_items_route_scope', ondelete='RESTRICT'),
         UniqueConstraint('tenant_id', 'restaurant_order_id', 'source_restaurant_order_item_id', name='uq_preparation_work_items_source_item'),
         UniqueConstraint('tenant_id', 'restaurant_order_id', 'source_restaurant_order_item_component_id', name='uq_preparation_work_items_source_component'),
+        UniqueConstraint('id', 'tenant_id', 'organization_id', 'location_id', 'restaurant_order_id', 'preparation_work_id', name='uq_preparation_work_items_execution_scope'),
         CheckConstraint('required_quantity > 0', name='ck_preparation_work_items_quantity'),
         CheckConstraint("route_policy = 'AREA'", name='ck_preparation_work_items_policy'),
         CheckConstraint('(source_restaurant_order_item_id IS NOT NULL AND source_restaurant_order_item_component_id IS NULL AND source_restaurant_order_item_id_for_component IS NULL) OR (source_restaurant_order_item_id IS NULL AND source_restaurant_order_item_component_id IS NOT NULL AND source_restaurant_order_item_id_for_component IS NOT NULL)', name='ck_preparation_work_items_source_xor'),
+        CheckConstraint("execution_state IN ('NEW','IN_PROGRESS','COMPLETED')", name='ck_preparation_work_items_execution_state'),
+        CheckConstraint('execution_version >= 0', name='ck_preparation_work_items_execution_version'),
         Index('ix_preparation_work_items_ordered', 'tenant_id', 'preparation_work_id', 'id'),
+        Index('ix_preparation_work_items_queue', 'tenant_id', 'location_id', 'execution_state', 'preparation_work_id', 'id'),
         OPTIONS,
     )
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -170,4 +174,53 @@ class PreparationWorkItem(Base):
     route_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     route_policy: Mapped[str] = mapped_column(String(24), nullable=False)
     required_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 4), nullable=False)
+    execution_state: Mapped[str] = mapped_column(String(16), nullable=False, default='NEW', server_default=text("'NEW'"))
+    execution_version: Mapped[int] = mapped_column(Integer, nullable=False, default=0, server_default=text('0'))
     created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=text('CURRENT_TIMESTAMP'))
+
+
+class PreparationItemTransition(Base):
+    __tablename__ = 'preparation_item_transitions'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['preparation_work_item_id', 'tenant_id', 'organization_id', 'location_id', 'restaurant_order_id', 'preparation_work_id'],
+            ['preparation_work_items.id', 'preparation_work_items.tenant_id', 'preparation_work_items.organization_id', 'preparation_work_items.location_id', 'preparation_work_items.restaurant_order_id', 'preparation_work_items.preparation_work_id'],
+            name='fk_preparation_item_transitions_item_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['actor_membership_id', 'tenant_id'],
+            ['tenant_memberships.id', 'tenant_memberships.tenant_id'],
+            name='fk_preparation_item_transitions_membership', ondelete='RESTRICT',
+        ),
+        UniqueConstraint('tenant_id', 'preparation_work_item_id', 'sequence', name='uq_preparation_item_transitions_sequence'),
+        UniqueConstraint('tenant_id', 'preparation_work_item_id', 'idempotency_key', name='uq_preparation_item_transitions_idempotency'),
+        CheckConstraint('sequence >= 1', name='ck_preparation_item_transitions_sequence'),
+        CheckConstraint(
+            "(from_state = 'NEW' AND to_state = 'IN_PROGRESS') OR "
+            "(from_state = 'IN_PROGRESS' AND to_state = 'COMPLETED')",
+            name='ck_preparation_item_transitions_edge',
+        ),
+        CheckConstraint(
+            "(actor_type = 'EMPLOYEE' AND actor_membership_id IS NOT NULL AND actor_principal_reference IS NULL) OR "
+            "(actor_type IN ('SYSTEM','AGENT','EXTERNAL_SYSTEM') AND actor_membership_id IS NULL AND actor_principal_reference IS NOT NULL)",
+            name='ck_preparation_item_transitions_actor',
+        ),
+        Index('ix_preparation_item_transitions_ordered', 'tenant_id', 'preparation_work_item_id', 'sequence', 'id'),
+        OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    restaurant_order_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    preparation_work_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    preparation_work_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    from_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    to_state: Mapped[str] = mapped_column(String(16), nullable=False)
+    actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
+    actor_membership_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    actor_principal_reference: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    idempotency_key: Mapped[str] = mapped_column(String(128, collation='ascii_bin'), nullable=False)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)

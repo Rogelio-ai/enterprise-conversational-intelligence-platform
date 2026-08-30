@@ -5,7 +5,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -428,3 +428,160 @@ async def read_restaurant_order_routing(
         return await service.get_routing(db, tenant_id=context.tenant_id, order_id=order_id)
     except Exception as exc:
         raise _routing_error(exc) from exc
+
+
+class PreparationOrderContextResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    restaurant_order_id: int
+    accepted_at: datetime
+    source_channel: str
+    resource_id: int
+    service_session_id: int
+    diner_session_id: int
+    current_resource_code: str | None
+    current_resource_name: str | None
+
+
+class PreparationExecutionItemResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    preparation_work_id: int
+    source_type: str
+    source_restaurant_order_item_id: int | None
+    source_restaurant_order_item_component_id: int | None
+    product_name: str
+    parent_product_name: str | None
+    required_quantity: Decimal
+    execution_state: str
+    execution_version: int
+
+
+class PreparationExecutionWorkResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    preparation_area_id: int
+    area_code: str
+    area_name: str
+    routed_at: datetime
+    execution_state: str
+    order: PreparationOrderContextResponse
+    items: tuple[PreparationExecutionItemResponse, ...]
+
+
+class PreparationTransitionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    sequence: int
+    from_state: str
+    to_state: str
+    actor_type: str
+    actor_membership_id: int | None
+    actor_principal_reference: str | None
+    correlation_id: str | None
+    occurred_at: datetime
+
+
+class PreparationItemDetailResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    item: PreparationExecutionItemResponse
+    transitions: tuple[PreparationTransitionResponse, ...]
+
+
+class PreparationTransitionRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    expected_state: Literal['NEW', 'IN_PROGRESS', 'COMPLETED']
+    expected_version: int = Field(ge=0)
+    to_state: Literal['NEW', 'IN_PROGRESS', 'COMPLETED']
+
+
+class PreparationTransitionResultResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    transition: PreparationTransitionResponse
+    current_execution_state: str
+    current_execution_version: int
+    replayed: bool
+
+
+@router.get('/preparation-works', response_model=tuple[PreparationExecutionWorkResponse, ...])
+async def list_execution_work(
+    context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.read'))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    location_id: int = Query(gt=0),
+    preparation_area_id: int | None = Query(default=None, gt=0),
+    execution_state: Literal['NEW', 'IN_PROGRESS', 'COMPLETED'] | None = Query(default=None),
+    restaurant_order_id: int | None = Query(default=None, gt=0),
+    after_work_id: int | None = Query(default=None, gt=0),
+    limit: int = Query(default=50, ge=1, le=200),
+) -> object:
+    await _location(db, context.tenant_id, location_id)
+    try:
+        return await service.list_preparation_work(
+            db,
+            tenant_id=context.tenant_id,
+            location_id=location_id,
+            preparation_area_id=preparation_area_id,
+            execution_state=execution_state,
+            restaurant_order_id=restaurant_order_id,
+            after_work_id=after_work_id,
+            limit=limit,
+        )
+    except Exception as exc:
+        raise _routing_error(exc) from exc
+
+
+@router.get('/preparation-works/{work_id}', response_model=PreparationExecutionWorkResponse)
+async def read_execution_work(
+    work_id: Annotated[int, Path(gt=0)],
+    context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.read'))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> object:
+    try:
+        return await service.get_preparation_work(db, tenant_id=context.tenant_id, work_id=work_id)
+    except Exception as exc:
+        raise _routing_error(exc) from exc
+
+
+@router.get('/preparation-work-items/{item_id}', response_model=PreparationItemDetailResponse)
+async def read_execution_item(
+    item_id: Annotated[int, Path(gt=0)],
+    context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.read'))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> object:
+    try:
+        return await service.get_preparation_work_item(
+            db, tenant_id=context.tenant_id, item_id=item_id
+        )
+    except Exception as exc:
+        raise _routing_error(exc) from exc
+
+
+@router.post(
+    '/preparation-work-items/{item_id}/transitions',
+    response_model=PreparationTransitionResultResponse,
+    status_code=status.HTTP_201_CREATED,
+)
+async def transition_execution_item(
+    item_id: Annotated[int, Path(gt=0)],
+    payload: PreparationTransitionRequest,
+    response: Response,
+    context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.execute'))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: Annotated[
+        str,
+        Header(alias='Idempotency-Key', min_length=1, max_length=128, pattern=r'^[\x21-\x7e]+$'),
+    ],
+) -> object:
+    try:
+        result = await service.transition_work_item(
+            db,
+            item_id=item_id,
+            expected_state=payload.expected_state,
+            expected_version=payload.expected_version,
+            to_state=payload.to_state,
+            idempotency_key=idempotency_key,
+            execution=_execution(context),
+        )
+    except Exception as exc:
+        raise _routing_error(exc) from exc
+    response.status_code = status.HTTP_200_OK if result.replayed else status.HTTP_201_CREATED
+    return result

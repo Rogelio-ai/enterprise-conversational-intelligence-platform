@@ -67,6 +67,7 @@ APPLICATION_TABLES = {
     'preparation_routings',
     'preparation_works',
     'preparation_work_items',
+    'preparation_item_transitions',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -116,6 +117,7 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'preparation_routings',
     'preparation_works',
     'preparation_work_items',
+    'preparation_item_transitions',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -549,6 +551,11 @@ EXPECTED_DOMAIN_CHECKS = {
     ('preparation_work_items', 'ck_preparation_work_items_quantity'),
     ('preparation_work_items', 'ck_preparation_work_items_policy'),
     ('preparation_work_items', 'ck_preparation_work_items_source_xor'),
+    ('preparation_work_items', 'ck_preparation_work_items_execution_state'),
+    ('preparation_work_items', 'ck_preparation_work_items_execution_version'),
+    ('preparation_item_transitions', 'ck_preparation_item_transitions_sequence'),
+    ('preparation_item_transitions', 'ck_preparation_item_transitions_edge'),
+    ('preparation_item_transitions', 'ck_preparation_item_transitions_actor'),
 }
 
 for table, prefix, target, target_table in (
@@ -715,6 +722,11 @@ _index('preparation_works', 'ix_preparation_works_area', ('tenant_id', 'location
 _index('preparation_work_items', 'uq_preparation_work_items_source_item', ('tenant_id', 'restaurant_order_id', 'source_restaurant_order_item_id'), 0)
 _index('preparation_work_items', 'uq_preparation_work_items_source_component', ('tenant_id', 'restaurant_order_id', 'source_restaurant_order_item_component_id'), 0)
 _index('preparation_work_items', 'ix_preparation_work_items_ordered', ('tenant_id', 'preparation_work_id', 'id'), 1)
+_index('preparation_work_items', 'uq_preparation_work_items_execution_scope', ('id', 'tenant_id', 'organization_id', 'location_id', 'restaurant_order_id', 'preparation_work_id'), 0)
+_index('preparation_work_items', 'ix_preparation_work_items_queue', ('tenant_id', 'location_id', 'execution_state', 'preparation_work_id', 'id'), 1)
+_index('preparation_item_transitions', 'uq_preparation_item_transitions_sequence', ('tenant_id', 'preparation_work_item_id', 'sequence'), 0)
+_index('preparation_item_transitions', 'uq_preparation_item_transitions_idempotency', ('tenant_id', 'preparation_work_item_id', 'idempotency_key'), 0)
+_index('preparation_item_transitions', 'ix_preparation_item_transitions_ordered', ('tenant_id', 'preparation_work_item_id', 'sequence', 'id'), 1)
 
 for constraint, table, local_columns, target_table, target_columns in (
     ('fk_product_categories_parent_tenant_org', 'product_categories', ('parent_id', 'tenant_id', 'organization_id'), 'product_categories', ('id', 'tenant_id', 'organization_id')),
@@ -823,6 +835,8 @@ for constraint, table, local_columns, target_table, target_columns in (
     ('fk_preparation_work_items_source_item_scope', 'preparation_work_items', ('source_restaurant_order_item_id', 'tenant_id', 'restaurant_order_id'), 'restaurant_order_items', ('id', 'tenant_id', 'order_id')),
     ('fk_preparation_work_items_source_component_scope', 'preparation_work_items', ('source_restaurant_order_item_component_id', 'tenant_id', 'restaurant_order_id', 'source_restaurant_order_item_id_for_component'), 'restaurant_order_item_components', ('id', 'tenant_id', 'order_id', 'order_item_id')),
     ('fk_preparation_work_items_route_scope', 'preparation_work_items', ('route_id', 'tenant_id', 'organization_id', 'location_id'), 'product_preparation_routes', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_preparation_item_transitions_item_scope', 'preparation_item_transitions', ('preparation_work_item_id', 'tenant_id', 'organization_id', 'location_id', 'restaurant_order_id', 'preparation_work_id'), 'preparation_work_items', ('id', 'tenant_id', 'organization_id', 'location_id', 'restaurant_order_id', 'preparation_work_id')),
+    ('fk_preparation_item_transitions_membership', 'preparation_item_transitions', ('actor_membership_id', 'tenant_id'), 'tenant_memberships', ('id', 'tenant_id')),
 ):
     EXPECTED_FOREIGN_KEY_COLUMNS.update(
         (constraint, table, local, target_table, target, position)
@@ -933,6 +947,7 @@ def _assert_database_contract(connection) -> None:
                   , 'location_preparation_configurations', 'preparation_areas'
                   , 'product_preparation_routes', 'preparation_routings'
                   , 'preparation_works', 'preparation_work_items'
+                  , 'preparation_item_transitions'
               )
             '''
         )
@@ -983,6 +998,9 @@ def _assert_database_contract(connection) -> None:
                   OR
                   (TABLE_NAME = 'preparation_works'
                    AND COLUMN_NAME IN ('area_code_snapshot', 'routing_fingerprint'))
+                  OR
+                  (TABLE_NAME = 'preparation_item_transitions'
+                   AND COLUMN_NAME = 'idempotency_key')
               )
             '''
         )
@@ -1015,6 +1033,7 @@ def _assert_database_contract(connection) -> None:
             ('preparation_routings', 'error_code', 'ascii_bin'),
             ('preparation_works', 'area_code_snapshot', 'utf8mb4_bin'),
             ('preparation_works', 'routing_fingerprint', 'ascii_bin'),
+            ('preparation_item_transitions', 'idempotency_key', 'ascii_bin'),
         }
 
 
@@ -1543,6 +1562,78 @@ def test_0018_upgrade_downgrade_and_reupgrade_preserve_permission_provenance(
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         _assert_database_contract(connection)
+    finally:
+        connection.close()
+
+
+def test_0019_backfills_existing_work_items_and_downgrade_reupgrade(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0018_preparation_routing_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            # Migration mechanics are isolated here: the row represents a valid pre-0019
+            # work item while unrelated parent fixtures are intentionally omitted.
+            cursor.execute('SET FOREIGN_KEY_CHECKS=0')
+            cursor.execute(
+                "INSERT INTO preparation_work_items "
+                '(id,tenant_id,organization_id,location_id,restaurant_order_id,'
+                'preparation_work_id,source_restaurant_order_item_id,'
+                'source_restaurant_order_item_component_id,'
+                'source_restaurant_order_item_id_for_component,route_id,route_policy,'
+                "required_quantity) VALUES (900001,800001,700001,600001,500001,400001,"
+                "300001,NULL,NULL,200001,'AREA',1.0000)"
+            )
+            cursor.execute('SET FOREIGN_KEY_CHECKS=1')
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, '0019_preparation_execution_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0019_preparation_execution_foundation'
+            cursor.execute('SELECT execution_state,execution_version FROM preparation_work_items WHERE id=900001')
+            assert cursor.fetchone() == {'execution_state': 'NEW', 'execution_version': 0}
+            cursor.execute('SELECT COUNT(*) AS count FROM preparation_item_transitions')
+            assert cursor.fetchone()['count'] == 0
+            cursor.execute("SELECT code FROM permissions WHERE code LIKE 'preparation.%' ORDER BY code")
+            assert [row['code'] for row in cursor.fetchall()] == [
+                'preparation.configure',
+                'preparation.execute',
+                'preparation.read',
+                'preparation.route',
+            ]
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0018_preparation_routing_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0018_preparation_routing_foundation'
+            cursor.execute("SELECT COUNT(*) AS count FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='preparation_item_transitions'")
+            assert cursor.fetchone()['count'] == 0
+            cursor.execute("SELECT COUNT(*) AS count FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='preparation_work_items' AND COLUMN_NAME IN ('execution_state','execution_version')")
+            assert cursor.fetchone()['count'] == 0
+            cursor.execute("SELECT COUNT(*) AS count FROM permissions WHERE code='preparation.execute'")
+            assert cursor.fetchone()['count'] == 1
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT execution_state,execution_version FROM preparation_work_items WHERE id=900001')
+            assert cursor.fetchone() == {'execution_state': 'NEW', 'execution_version': 0}
+            cursor.execute('SELECT COUNT(*) AS count FROM preparation_item_transitions')
+            assert cursor.fetchone()['count'] == 0
     finally:
         connection.close()
 

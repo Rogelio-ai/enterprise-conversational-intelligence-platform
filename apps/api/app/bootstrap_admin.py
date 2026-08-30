@@ -54,6 +54,7 @@ CORE_PERMISSIONS = {
     'preparation.read': 'Read preparation configuration, routing, and work.',
     'preparation.route': 'Route accepted Restaurant Orders to preparation.',
     'preparation.configure': 'Configure preparation ownership, areas, and product routes.',
+    'preparation.execute': 'Execute native Preparation Work Items.',
 }
 _SLUG_PATTERN = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 

@@ -47,6 +47,7 @@ from app.models.pos_submission import (
 from app.models.preparation import (
     LocationPreparationConfiguration,
     PreparationArea,
+    PreparationItemTransition,
     PreparationRouting,
     PreparationWork,
     PreparationWorkItem,
@@ -98,6 +99,7 @@ __all__ = [
     'PosOrderSubmissionLine',
     'LocationPreparationConfiguration',
     'PreparationArea',
+    'PreparationItemTransition',
     'PreparationRouting',
     'PreparationWork',
     'PreparationWorkItem',

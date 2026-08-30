@@ -6,7 +6,7 @@ from collections import defaultdict
 from datetime import UTC, datetime
 from decimal import Decimal
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -16,23 +16,32 @@ from app.models import (
     LocationPreparationConfiguration,
     PosOrderSubmission,
     PreparationArea,
+    PreparationItemTransition,
     PreparationRouting,
     PreparationWork,
     PreparationWorkItem,
     ProductPreparationRoute,
+    Resource,
     RestaurantOrder,
     RestaurantOrderItem,
     RestaurantOrderItemComponent,
 )
 from app.restaurant.preparation import errors
 from app.restaurant.preparation.contracts import (
+    PreparationExecutionItemProjection,
+    PreparationExecutionWorkProjection,
+    PreparationItemDetailProjection,
+    PreparationItemTransitionProjection,
+    PreparationOrderContextProjection,
     PreparationRoutingProjection,
+    PreparationTransitionResult,
     PreparationWorkItemProjection,
     PreparationWorkProjection,
 )
 
 
 ROUTING_SCHEMA_VERSION = 1
+EXECUTION_STATES = ('NEW', 'IN_PROGRESS', 'COMPLETED')
 
 
 def _now() -> datetime:
@@ -419,6 +428,319 @@ async def route_order(
             await db.rollback()
             return await route_order(db, order_id=order_id, execution=execution)
         return await _projection(db, winner)
+    except Exception:
+        await db.rollback()
+        raise
+
+
+def _transition_projection(value: PreparationItemTransition) -> PreparationItemTransitionProjection:
+    return PreparationItemTransitionProjection(
+        id=value.id,
+        sequence=value.sequence,
+        from_state=value.from_state,
+        to_state=value.to_state,
+        actor_type=value.actor_type,
+        actor_membership_id=value.actor_membership_id,
+        actor_principal_reference=value.actor_principal_reference,
+        correlation_id=value.correlation_id,
+        occurred_at=value.occurred_at,
+    )
+
+
+async def _execution_item_projection(
+    db: AsyncSession, item: PreparationWorkItem
+) -> PreparationExecutionItemProjection:
+    if item.source_restaurant_order_item_id is not None:
+        source = await db.scalar(select(RestaurantOrderItem).where(
+            RestaurantOrderItem.id == item.source_restaurant_order_item_id,
+            RestaurantOrderItem.tenant_id == item.tenant_id,
+            RestaurantOrderItem.order_id == item.restaurant_order_id,
+        ))
+        if source is None:
+            raise RuntimeError('Preparation Work Item source snapshot is missing')
+        source_type = 'ITEM'
+        product_name = source.product_name
+        parent_product_name = None
+    else:
+        component = await db.scalar(select(RestaurantOrderItemComponent).where(
+            RestaurantOrderItemComponent.id == item.source_restaurant_order_item_component_id,
+            RestaurantOrderItemComponent.tenant_id == item.tenant_id,
+            RestaurantOrderItemComponent.order_id == item.restaurant_order_id,
+        ))
+        parent = await db.scalar(select(RestaurantOrderItem).where(
+            RestaurantOrderItem.id == item.source_restaurant_order_item_id_for_component,
+            RestaurantOrderItem.tenant_id == item.tenant_id,
+            RestaurantOrderItem.order_id == item.restaurant_order_id,
+        ))
+        if component is None or parent is None:
+            raise RuntimeError('Preparation Work Item component snapshot is missing')
+        source_type = 'COMPONENT'
+        product_name = component.product_name
+        parent_product_name = parent.product_name
+    return PreparationExecutionItemProjection(
+        id=item.id,
+        preparation_work_id=item.preparation_work_id,
+        source_type=source_type,
+        source_restaurant_order_item_id=item.source_restaurant_order_item_id,
+        source_restaurant_order_item_component_id=item.source_restaurant_order_item_component_id,
+        product_name=product_name,
+        parent_product_name=parent_product_name,
+        required_quantity=item.required_quantity,
+        execution_state=item.execution_state,
+        execution_version=item.execution_version,
+    )
+
+
+def _derived_work_state(items: tuple[PreparationWorkItem, ...]) -> str:
+    if all(item.execution_state == 'NEW' for item in items):
+        return 'NEW'
+    if items and all(item.execution_state == 'COMPLETED' for item in items):
+        return 'COMPLETED'
+    return 'IN_PROGRESS'
+
+
+async def _execution_work_projection(
+    db: AsyncSession, work: PreparationWork
+) -> PreparationExecutionWorkProjection:
+    item_rows = tuple((await db.execute(select(PreparationWorkItem).where(
+        PreparationWorkItem.tenant_id == work.tenant_id,
+        PreparationWorkItem.preparation_work_id == work.id,
+    ).order_by(PreparationWorkItem.id))).scalars().all())
+    order = await db.scalar(select(RestaurantOrder).where(
+        RestaurantOrder.id == work.restaurant_order_id,
+        RestaurantOrder.tenant_id == work.tenant_id,
+    ))
+    if order is None:
+        raise RuntimeError('Preparation Work Restaurant Order is missing')
+    resource = await db.scalar(select(Resource).where(
+        Resource.id == order.resource_id,
+        Resource.tenant_id == order.tenant_id,
+        Resource.location_id == order.location_id,
+    ))
+    return PreparationExecutionWorkProjection(
+        id=work.id,
+        preparation_area_id=work.preparation_area_id,
+        area_code=work.area_code_snapshot,
+        area_name=work.area_name_snapshot,
+        routed_at=work.routed_at,
+        execution_state=_derived_work_state(item_rows),
+        order=PreparationOrderContextProjection(
+            restaurant_order_id=order.id,
+            accepted_at=order.accepted_at,
+            source_channel=order.source_channel,
+            resource_id=order.resource_id,
+            service_session_id=order.service_session_id,
+            diner_session_id=order.diner_session_id,
+            current_resource_code=resource.code if resource is not None else None,
+            current_resource_name=resource.name if resource is not None else None,
+        ),
+        items=tuple([await _execution_item_projection(db, item) for item in item_rows]),
+    )
+
+
+async def list_preparation_work(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    location_id: int,
+    preparation_area_id: int | None = None,
+    execution_state: str | None = None,
+    restaurant_order_id: int | None = None,
+    after_work_id: int | None = None,
+    limit: int = 50,
+) -> tuple[PreparationExecutionWorkProjection, ...]:
+    has_item_not_new = select(PreparationWorkItem.id).where(
+        PreparationWorkItem.tenant_id == PreparationWork.tenant_id,
+        PreparationWorkItem.preparation_work_id == PreparationWork.id,
+        PreparationWorkItem.execution_state != 'NEW',
+    ).exists()
+    has_item_not_completed = select(PreparationWorkItem.id).where(
+        PreparationWorkItem.tenant_id == PreparationWork.tenant_id,
+        PreparationWorkItem.preparation_work_id == PreparationWork.id,
+        PreparationWorkItem.execution_state != 'COMPLETED',
+    ).exists()
+    statement = (
+        select(PreparationWork)
+        .where(
+            PreparationWork.tenant_id == tenant_id,
+            PreparationWork.location_id == location_id,
+            PreparationWork.preparation_owner == 'PLATFORM',
+        )
+    )
+    if execution_state == 'NEW':
+        statement = statement.where(~has_item_not_new)
+    elif execution_state == 'IN_PROGRESS':
+        statement = statement.where(has_item_not_new, has_item_not_completed)
+    elif execution_state == 'COMPLETED':
+        statement = statement.where(~has_item_not_completed)
+    else:
+        # The operational default includes NEW and IN_PROGRESS derived work states.
+        statement = statement.where(has_item_not_completed)
+    if preparation_area_id is not None:
+        statement = statement.where(PreparationWork.preparation_area_id == preparation_area_id)
+    if restaurant_order_id is not None:
+        statement = statement.where(PreparationWork.restaurant_order_id == restaurant_order_id)
+    if after_work_id is not None:
+        cursor = await db.scalar(select(PreparationWork).where(
+            PreparationWork.id == after_work_id,
+            PreparationWork.tenant_id == tenant_id,
+            PreparationWork.location_id == location_id,
+        ))
+        if cursor is None:
+            raise errors.PreparationNotFoundError('Preparation Work cursor not found')
+        statement = statement.where(or_(
+            PreparationWork.routed_at > cursor.routed_at,
+            and_(PreparationWork.routed_at == cursor.routed_at, PreparationWork.id > cursor.id),
+        ))
+    works = tuple((await db.execute(
+        statement.order_by(PreparationWork.routed_at, PreparationWork.id).limit(limit)
+    )).scalars().all())
+    return tuple([await _execution_work_projection(db, work) for work in works])
+
+
+async def get_preparation_work(
+    db: AsyncSession, *, tenant_id: int, work_id: int
+) -> PreparationExecutionWorkProjection:
+    work = await db.scalar(select(PreparationWork).where(
+        PreparationWork.id == work_id,
+        PreparationWork.tenant_id == tenant_id,
+        PreparationWork.preparation_owner == 'PLATFORM',
+    ))
+    if work is None:
+        raise errors.PreparationNotFoundError('Preparation Work not found')
+    return await _execution_work_projection(db, work)
+
+
+async def get_preparation_work_item(
+    db: AsyncSession, *, tenant_id: int, item_id: int
+) -> PreparationItemDetailProjection:
+    item = await db.scalar(select(PreparationWorkItem).where(
+        PreparationWorkItem.id == item_id,
+        PreparationWorkItem.tenant_id == tenant_id,
+    ))
+    if item is None:
+        raise errors.PreparationNotFoundError('Preparation Work Item not found')
+    transitions = tuple((await db.execute(select(PreparationItemTransition).where(
+        PreparationItemTransition.tenant_id == tenant_id,
+        PreparationItemTransition.preparation_work_item_id == item.id,
+    ).order_by(PreparationItemTransition.sequence, PreparationItemTransition.id))).scalars().all())
+    return PreparationItemDetailProjection(
+        item=await _execution_item_projection(db, item),
+        transitions=tuple(_transition_projection(value) for value in transitions),
+    )
+
+
+async def transition_work_item(
+    db: AsyncSession,
+    *,
+    item_id: int,
+    expected_state: str,
+    expected_version: int,
+    to_state: str,
+    idempotency_key: str,
+    execution: ExecutionContext,
+) -> PreparationTransitionResult:
+    if execution.actor_type is not ActorType.EMPLOYEE:
+        raise errors.PreparationTransitionError('This preparation endpoint requires an employee actor')
+    try:
+        item = await db.scalar(select(PreparationWorkItem).where(
+            PreparationWorkItem.id == item_id,
+            PreparationWorkItem.tenant_id == execution.tenant_id,
+        ).with_for_update())
+        if item is None:
+            raise errors.PreparationNotFoundError('Preparation Work Item not found')
+        work_and_routing = (await db.execute(
+            select(PreparationWork, PreparationRouting)
+            .join(PreparationRouting, and_(
+                PreparationRouting.id == PreparationWork.routing_id,
+                PreparationRouting.tenant_id == PreparationWork.tenant_id,
+                PreparationRouting.restaurant_order_id == PreparationWork.restaurant_order_id,
+            ))
+            .where(
+                PreparationWork.id == item.preparation_work_id,
+                PreparationWork.tenant_id == item.tenant_id,
+                PreparationWork.restaurant_order_id == item.restaurant_order_id,
+            )
+        )).first()
+        if work_and_routing is None:
+            raise errors.PreparationOwnershipError('Preparation Work is not executable')
+        work, routing = work_and_routing
+        if (
+            work.preparation_owner != 'PLATFORM'
+            or routing.preparation_owner != 'PLATFORM'
+            or routing.state != 'ROUTED'
+        ):
+            raise errors.PreparationOwnershipError('Preparation Work is not platform-owned and routed')
+
+        replay = await db.scalar(select(PreparationItemTransition).where(
+            PreparationItemTransition.tenant_id == item.tenant_id,
+            PreparationItemTransition.preparation_work_item_id == item.id,
+            PreparationItemTransition.idempotency_key == idempotency_key,
+        ))
+        if replay is not None:
+            if (
+                replay.from_state != expected_state
+                or replay.sequence - 1 != expected_version
+                or replay.to_state != to_state
+                or replay.actor_type != execution.actor_type.value
+                or replay.actor_membership_id != execution.principal_id
+                or replay.actor_principal_reference != execution.principal_reference
+            ):
+                raise errors.PreparationIdempotencyError('Idempotency key was used for a different preparation transition')
+            await db.commit()
+            return PreparationTransitionResult(
+                transition=_transition_projection(replay),
+                current_execution_state=item.execution_state,
+                current_execution_version=item.execution_version,
+                replayed=True,
+            )
+
+        if item.execution_state != expected_state or item.execution_version != expected_version:
+            raise errors.PreparationStaleError(
+                f'Expected {expected_state}/{expected_version}, current state is '
+                f'{item.execution_state}/{item.execution_version}'
+            )
+        legal = {
+            ('NEW', 'IN_PROGRESS'),
+            ('IN_PROGRESS', 'COMPLETED'),
+        }
+        if (expected_state, to_state) not in legal:
+            raise errors.PreparationTransitionError(
+                f'Invalid preparation transition {expected_state} -> {to_state}'
+            )
+        next_version = item.execution_version + 1
+        actor = {
+            'actor_type': execution.actor_type.value,
+            'actor_membership_id': execution.principal_id,
+            'actor_principal_reference': execution.principal_reference,
+        }
+        transition = PreparationItemTransition(
+            tenant_id=item.tenant_id,
+            organization_id=item.organization_id,
+            location_id=item.location_id,
+            restaurant_order_id=item.restaurant_order_id,
+            preparation_work_id=item.preparation_work_id,
+            preparation_work_item_id=item.id,
+            sequence=next_version,
+            from_state=item.execution_state,
+            to_state=to_state,
+            correlation_id=execution.correlation_id,
+            idempotency_key=idempotency_key,
+            occurred_at=_now(),
+            **actor,
+        )
+        db.add(transition)
+        item.execution_state = to_state
+        item.execution_version = next_version
+        await db.flush()
+        result = PreparationTransitionResult(
+            transition=_transition_projection(transition),
+            current_execution_state=item.execution_state,
+            current_execution_version=item.execution_version,
+            replayed=False,
+        )
+        await db.commit()
+        return result
     except Exception:
         await db.rollback()
         raise
