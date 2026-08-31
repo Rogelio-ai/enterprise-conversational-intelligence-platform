@@ -55,6 +55,7 @@ def _scope(
         'order_draft.manage', 'conversation.read', 'conversation.manage',
         'restaurant_order.read',
         'preparation.read', 'preparation.route', 'preparation.configure', 'preparation.execute',
+        'preparation.connector.manage',
     ]
     if include_dispatch_permission:
         permissions.append('preparation.dispatch')

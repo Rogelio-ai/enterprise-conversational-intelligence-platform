@@ -47,6 +47,18 @@ class Settings(BaseSettings):
     diner_access_token_ttl_minutes: int = Field(
         default=720, alias='DINER_ACCESS_TOKEN_TTL_MINUTES', ge=1, le=720
     )
+    connector_access_token_ttl_minutes: int = Field(
+        default=5, alias='CONNECTOR_ACCESS_TOKEN_TTL_MINUTES', ge=1, le=15
+    )
+    connector_enrollment_ttl_minutes: int = Field(
+        default=15, alias='CONNECTOR_ENROLLMENT_TTL_MINUTES', ge=1, le=60
+    )
+    connector_credential_ttl_days: int = Field(
+        default=365, alias='CONNECTOR_CREDENTIAL_TTL_DAYS', ge=1, le=730
+    )
+    preparation_dispatch_claim_lease_seconds: int = Field(
+        default=120, alias='PREPARATION_DISPATCH_CLAIM_LEASE_SECONDS', ge=30, le=600
+    )
     password_min_length: int = Field(default=12, alias='PASSWORD_MIN_LENGTH', ge=8, le=128)
 
     @field_validator('app_env', mode='before')

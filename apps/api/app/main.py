@@ -9,6 +9,9 @@ from typing import Protocol
 from fastapi import FastAPI
 
 from app.api.routes.auth import router as auth_router
+from app.api.routes.connector_admin import router as connector_admin_router
+from app.api.routes.connector_api import router as connector_api_router
+from app.api.routes.connector_auth import router as connector_auth_router
 from app.api.routes.customers import router as customers_router
 from app.api.routes.diner_sessions import router as diner_sessions_router
 from app.api.routes.conversations import router as conversations_router
@@ -72,6 +75,9 @@ def create_app(
     register_error_handlers(app)
     app.include_router(health_router)
     app.include_router(auth_router)
+    app.include_router(connector_auth_router)
+    app.include_router(connector_api_router)
+    app.include_router(connector_admin_router)
     app.include_router(tenants_router)
     app.include_router(organizations_router)
     app.include_router(locations_router)

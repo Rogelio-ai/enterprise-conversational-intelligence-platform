@@ -251,6 +251,78 @@ class PreparationDeliveryConnector(TimestampMixin, Base):
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     auth_subject: Mapped[str] = mapped_column(String(128, collation='ascii_bin'), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default='ACTIVE', server_default=text("'ACTIVE'"))
+    last_seen_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    connector_version: Mapped[str | None] = mapped_column(String(64, collation='ascii_bin'), nullable=True)
+    protocol_version: Mapped[str | None] = mapped_column(String(64, collation='ascii_bin'), nullable=True)
+
+
+class PreparationDeliveryConnectorEnrollment(TimestampMixin, Base):
+    __tablename__ = 'preparation_delivery_connector_enrollments'
+    __table_args__ = (
+        ForeignKeyConstraint(['tenant_id'], ['tenants.id'], name='fk_connector_enrollments_tenant', ondelete='RESTRICT'),
+        ForeignKeyConstraint(
+            ['connector_id', 'tenant_id', 'organization_id', 'location_id'],
+            ['preparation_delivery_connectors.id', 'preparation_delivery_connectors.tenant_id', 'preparation_delivery_connectors.organization_id', 'preparation_delivery_connectors.location_id'],
+            name='fk_connector_enrollments_connector_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['created_by_membership_id', 'tenant_id'],
+            ['tenant_memberships.id', 'tenant_memberships.tenant_id'],
+            name='fk_connector_enrollments_membership', ondelete='RESTRICT',
+        ),
+        UniqueConstraint('enrollment_id', name='uq_connector_enrollments_public_id'),
+        UniqueConstraint('connector_id', 'active_slot', name='uq_connector_enrollments_active_slot'),
+        CheckConstraint('active_slot IS NULL OR active_slot = 1', name='ck_connector_enrollments_active_slot'),
+        Index('ix_connector_enrollments_lookup', 'enrollment_id', 'connector_id', 'expires_at'),
+        OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    connector_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    enrollment_id: Mapped[str] = mapped_column(String(36, collation='ascii_bin'), nullable=False)
+    secret_digest: Mapped[str] = mapped_column(String(64, collation='ascii_bin'), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    created_by_membership_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    active_slot: Mapped[int | None] = mapped_column(SmallInteger, nullable=True, default=1, server_default=text('1'))
+
+
+class PreparationDeliveryConnectorCredential(TimestampMixin, Base):
+    __tablename__ = 'preparation_delivery_connector_credentials'
+    __table_args__ = (
+        ForeignKeyConstraint(['tenant_id'], ['tenants.id'], name='fk_connector_credentials_tenant', ondelete='RESTRICT'),
+        ForeignKeyConstraint(
+            ['connector_id', 'tenant_id', 'organization_id', 'location_id'],
+            ['preparation_delivery_connectors.id', 'preparation_delivery_connectors.tenant_id', 'preparation_delivery_connectors.organization_id', 'preparation_delivery_connectors.location_id'],
+            name='fk_connector_credentials_connector_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['replaces_credential_id', 'connector_id'],
+            ['preparation_delivery_connector_credentials.id', 'preparation_delivery_connector_credentials.connector_id'],
+            name='fk_connector_credentials_replacement', ondelete='RESTRICT',
+        ),
+        UniqueConstraint('client_id', name='uq_connector_credentials_client_id'),
+        UniqueConstraint('id', 'connector_id', name='uq_connector_credentials_connector'),
+        CheckConstraint("status IN ('ACTIVE','REVOKED')", name='ck_connector_credentials_status'),
+        Index('ix_connector_credentials_auth', 'client_id', 'status', 'expires_at'),
+        Index('ix_connector_credentials_connector', 'tenant_id', 'connector_id', 'status', 'id'),
+        OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    connector_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    client_id: Mapped[str] = mapped_column(String(36, collation='ascii_bin'), nullable=False)
+    secret_digest: Mapped[str] = mapped_column(String(64, collation='ascii_bin'), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default='ACTIVE', server_default=text("'ACTIVE'"))
+    expires_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    last_authenticated_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    replaces_credential_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
 
 
 class PreparationDeliveryDestination(TimestampMixin, Base):
@@ -393,6 +465,7 @@ class PreparationDispatchAttempt(TimestampMixin, Base):
         ),
         UniqueConstraint('dispatch_id', 'attempt_sequence', name='uq_preparation_dispatch_attempts_sequence'),
         UniqueConstraint('claim_token', name='uq_preparation_dispatch_attempts_claim'),
+        UniqueConstraint('tenant_id', 'connector_id', 'claim_request_id', name='uq_dispatch_attempts_claim_request'),
         CheckConstraint("attempt_type IN ('DELIVER','RETRY','RECOVERY')", name='ck_preparation_dispatch_attempts_type'),
         CheckConstraint("result IN ('IN_PROGRESS','DESTINATION_SUBMISSION_ACCEPTED','RETRYABLE_FAILURE','UNCERTAIN','ACTION_REQUIRED')", name='ck_preparation_dispatch_attempts_result'),
         CheckConstraint("(result = 'IN_PROGRESS' AND ended_at IS NULL AND result_fingerprint IS NULL) OR (result <> 'IN_PROGRESS' AND ended_at IS NOT NULL AND result_fingerprint IS NOT NULL)", name='ck_preparation_dispatch_attempts_lifecycle'),
@@ -409,6 +482,7 @@ class PreparationDispatchAttempt(TimestampMixin, Base):
     attempt_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
     attempt_type: Mapped[str] = mapped_column(String(16), nullable=False)
     claim_token: Mapped[str] = mapped_column(String(36, collation='ascii_bin'), nullable=False)
+    claim_request_id: Mapped[str | None] = mapped_column(String(128, collation='ascii_bin'), nullable=True)
     actor_type: Mapped[str] = mapped_column(String(32), nullable=False)
     actor_membership_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     actor_principal_reference: Mapped[str | None] = mapped_column(String(128), nullable=True)

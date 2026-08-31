@@ -1,0 +1,13 @@
+Source: pryecip-restaurant-local-connector
+Section: utils
+Priority: optional
+Maintainer: Pryecip Operations <operations@pryecip.invalid>
+Build-Depends: debhelper-compat (= 13), dh-python, pybuild-plugin-pyproject, python3-all
+Standards-Version: 4.6.2
+Rules-Requires-Root: no
+
+Package: pryecip-restaurant-local-connector
+Architecture: all
+Depends: ${python3:Depends}, ${misc:Depends}, python3-httpx, python3-cups
+Description: Pryecip local CUPS preparation delivery connector
+ Durable restaurant-local worker for frozen preparation dispatch operations.

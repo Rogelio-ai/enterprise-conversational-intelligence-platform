@@ -69,6 +69,8 @@ APPLICATION_TABLES = {
     'preparation_work_items',
     'preparation_item_transitions',
     'preparation_delivery_connectors',
+    'preparation_delivery_connector_enrollments',
+    'preparation_delivery_connector_credentials',
     'preparation_delivery_destinations',
     'preparation_dispatches',
     'preparation_dispatch_attempts',
@@ -123,6 +125,8 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'preparation_work_items',
     'preparation_item_transitions',
     'preparation_delivery_connectors',
+    'preparation_delivery_connector_enrollments',
+    'preparation_delivery_connector_credentials',
     'preparation_delivery_destinations',
     'preparation_dispatches',
     'preparation_dispatch_attempts',
@@ -428,6 +432,8 @@ EXPECTED_INDEX_COLUMNS = {
 }
 
 EXPECTED_DOMAIN_CHECKS = {
+    ('preparation_delivery_connector_enrollments', 'ck_connector_enrollments_active_slot'),
+    ('preparation_delivery_connector_credentials', 'ck_connector_credentials_status'),
     ('resources', 'ck_resources_status'),
     ('resources', 'ck_resources_type'),
     ('restaurant_service_sessions', 'ck_restaurant_service_sessions_status'),
@@ -756,6 +762,13 @@ _index('preparation_delivery_connectors', 'uq_preparation_delivery_connectors_lo
 _index('preparation_delivery_connectors', 'uq_preparation_delivery_connectors_auth_subject', ('auth_subject',), 0)
 _index('preparation_delivery_connectors', 'uq_preparation_delivery_connectors_scope', ('id', 'tenant_id', 'organization_id', 'location_id'), 0)
 _index('preparation_delivery_connectors', 'ix_preparation_delivery_connectors_lookup', ('tenant_id', 'location_id', 'status', 'code', 'id'), 1)
+_index('preparation_delivery_connector_enrollments', 'uq_connector_enrollments_public_id', ('enrollment_id',), 0)
+_index('preparation_delivery_connector_enrollments', 'uq_connector_enrollments_active_slot', ('connector_id', 'active_slot'), 0)
+_index('preparation_delivery_connector_enrollments', 'ix_connector_enrollments_lookup', ('enrollment_id', 'connector_id', 'expires_at'), 1)
+_index('preparation_delivery_connector_credentials', 'uq_connector_credentials_client_id', ('client_id',), 0)
+_index('preparation_delivery_connector_credentials', 'uq_connector_credentials_connector', ('id', 'connector_id'), 0)
+_index('preparation_delivery_connector_credentials', 'ix_connector_credentials_auth', ('client_id', 'status', 'expires_at'), 1)
+_index('preparation_delivery_connector_credentials', 'ix_connector_credentials_connector', ('tenant_id', 'connector_id', 'status', 'id'), 1)
 _index('preparation_delivery_destinations', 'uq_preparation_delivery_destinations_location_code', ('location_id', 'code'), 0)
 _index('preparation_delivery_destinations', 'uq_preparation_delivery_destinations_active_target', ('connector_id', 'local_target_key', 'active_slot'), 0)
 _index('preparation_delivery_destinations', 'uq_preparation_delivery_destinations_scope', ('id', 'tenant_id', 'organization_id', 'location_id', 'preparation_area_id'), 0)
@@ -767,8 +780,10 @@ _index('preparation_dispatches', 'uq_preparation_dispatches_reprint_scope', ('id
 _index('preparation_dispatches', 'ix_preparation_dispatches_eligibility', ('tenant_id', 'location_id', 'state', 'available_at', 'id'), 1)
 _index('preparation_dispatches', 'ix_preparation_dispatches_work', ('tenant_id', 'preparation_work_id', 'generation', 'id'), 1)
 _index('preparation_dispatches', 'ix_preparation_dispatches_destination', ('tenant_id', 'destination_id', 'state', 'id'), 1)
+_index('preparation_dispatches', 'ix_preparation_dispatches_connector_eligibility', ('tenant_id', 'connector_id_snapshot', 'state', 'available_at', 'id'), 1)
 _index('preparation_dispatch_attempts', 'uq_preparation_dispatch_attempts_sequence', ('dispatch_id', 'attempt_sequence'), 0)
 _index('preparation_dispatch_attempts', 'uq_preparation_dispatch_attempts_claim', ('claim_token',), 0)
+_index('preparation_dispatch_attempts', 'uq_dispatch_attempts_claim_request', ('tenant_id', 'connector_id', 'claim_request_id'), 0)
 _index('preparation_dispatch_attempts', 'ix_preparation_dispatch_attempts_ordered', ('tenant_id', 'dispatch_id', 'attempt_sequence', 'id'), 1)
 
 for constraint, table, local_columns, target_table, target_columns in (
@@ -882,6 +897,12 @@ for constraint, table, local_columns, target_table, target_columns in (
     ('fk_preparation_item_transitions_membership', 'preparation_item_transitions', ('actor_membership_id', 'tenant_id'), 'tenant_memberships', ('id', 'tenant_id')),
     ('fk_preparation_delivery_connectors_tenant', 'preparation_delivery_connectors', ('tenant_id',), 'tenants', ('id',)),
     ('fk_preparation_delivery_connectors_location_scope', 'preparation_delivery_connectors', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_connector_enrollments_tenant', 'preparation_delivery_connector_enrollments', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_connector_enrollments_connector_scope', 'preparation_delivery_connector_enrollments', ('connector_id', 'tenant_id', 'organization_id', 'location_id'), 'preparation_delivery_connectors', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_connector_enrollments_membership', 'preparation_delivery_connector_enrollments', ('created_by_membership_id', 'tenant_id'), 'tenant_memberships', ('id', 'tenant_id')),
+    ('fk_connector_credentials_tenant', 'preparation_delivery_connector_credentials', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_connector_credentials_connector_scope', 'preparation_delivery_connector_credentials', ('connector_id', 'tenant_id', 'organization_id', 'location_id'), 'preparation_delivery_connectors', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_connector_credentials_replacement', 'preparation_delivery_connector_credentials', ('replaces_credential_id', 'connector_id'), 'preparation_delivery_connector_credentials', ('id', 'connector_id')),
     ('fk_preparation_delivery_destinations_tenant', 'preparation_delivery_destinations', ('tenant_id',), 'tenants', ('id',)),
     ('fk_preparation_delivery_destinations_area_scope', 'preparation_delivery_destinations', ('preparation_area_id', 'tenant_id', 'organization_id', 'location_id'), 'preparation_areas', ('id', 'tenant_id', 'organization_id', 'location_id')),
     ('fk_preparation_delivery_destinations_connector_scope', 'preparation_delivery_destinations', ('connector_id', 'tenant_id', 'organization_id', 'location_id'), 'preparation_delivery_connectors', ('id', 'tenant_id', 'organization_id', 'location_id')),
@@ -1006,6 +1027,8 @@ def _assert_database_contract(connection) -> None:
                   , 'preparation_works', 'preparation_work_items'
                   , 'preparation_item_transitions'
                   , 'preparation_delivery_connectors'
+                  , 'preparation_delivery_connector_enrollments'
+                  , 'preparation_delivery_connector_credentials'
                   , 'preparation_delivery_destinations'
                   , 'preparation_dispatches', 'preparation_dispatch_attempts'
               )
@@ -1063,7 +1086,13 @@ def _assert_database_contract(connection) -> None:
                    AND COLUMN_NAME = 'idempotency_key')
                   OR
                   (TABLE_NAME = 'preparation_delivery_connectors'
-                   AND COLUMN_NAME IN ('code', 'auth_subject'))
+                   AND COLUMN_NAME IN ('code', 'auth_subject', 'connector_version', 'protocol_version'))
+                  OR
+                  (TABLE_NAME = 'preparation_delivery_connector_enrollments'
+                   AND COLUMN_NAME IN ('enrollment_id', 'secret_digest'))
+                  OR
+                  (TABLE_NAME = 'preparation_delivery_connector_credentials'
+                   AND COLUMN_NAME IN ('client_id', 'secret_digest'))
                   OR
                   (TABLE_NAME = 'preparation_delivery_destinations'
                    AND COLUMN_NAME IN ('code', 'local_target_key'))
@@ -1078,7 +1107,7 @@ def _assert_database_contract(connection) -> None:
                   OR
                   (TABLE_NAME = 'preparation_dispatch_attempts'
                    AND COLUMN_NAME IN (
-                       'claim_token', 'result_fingerprint', 'local_job_reference',
+                       'claim_token', 'claim_request_id', 'result_fingerprint', 'local_job_reference',
                        'error_kind'
                    ))
               )
@@ -1116,6 +1145,12 @@ def _assert_database_contract(connection) -> None:
             ('preparation_item_transitions', 'idempotency_key', 'ascii_bin'),
             ('preparation_delivery_connectors', 'code', 'utf8mb4_bin'),
             ('preparation_delivery_connectors', 'auth_subject', 'ascii_bin'),
+            ('preparation_delivery_connectors', 'connector_version', 'ascii_bin'),
+            ('preparation_delivery_connectors', 'protocol_version', 'ascii_bin'),
+            ('preparation_delivery_connector_enrollments', 'enrollment_id', 'ascii_bin'),
+            ('preparation_delivery_connector_enrollments', 'secret_digest', 'ascii_bin'),
+            ('preparation_delivery_connector_credentials', 'client_id', 'ascii_bin'),
+            ('preparation_delivery_connector_credentials', 'secret_digest', 'ascii_bin'),
             ('preparation_delivery_destinations', 'code', 'utf8mb4_bin'),
             ('preparation_delivery_destinations', 'local_target_key', 'utf8mb4_bin'),
             ('preparation_dispatches', 'operation_id', 'ascii_bin'),
@@ -1128,6 +1163,7 @@ def _assert_database_contract(connection) -> None:
             ('preparation_dispatches', 'claim_token', 'ascii_bin'),
             ('preparation_dispatches', 'last_error_kind', 'ascii_bin'),
             ('preparation_dispatch_attempts', 'claim_token', 'ascii_bin'),
+            ('preparation_dispatch_attempts', 'claim_request_id', 'ascii_bin'),
             ('preparation_dispatch_attempts', 'result_fingerprint', 'ascii_bin'),
             ('preparation_dispatch_attempts', 'local_job_reference', 'utf8mb4_bin'),
             ('preparation_dispatch_attempts', 'error_kind', 'ascii_bin'),
@@ -1820,6 +1856,72 @@ def test_0020_creates_dispatch_contract_without_backfill_and_preserves_permissio
         with connection.cursor() as cursor:
             cursor.execute('SELECT COUNT(*) AS count FROM preparation_dispatches')
             assert cursor.fetchone()['count'] == 0
+    finally:
+        connection.close()
+
+
+def test_0021_upgrade_downgrade_reupgrade_preserves_unenrolled_connectors(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0020_preparation_dispatch_operational_delivery')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("INSERT INTO tenants(name,slug,status) VALUES('WS21C','ws21c','ACTIVE')")
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO users(email,password_hash,display_name,status) VALUES('ws21c@example.test','hash','Admin','ACTIVE')")
+            user_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO tenant_memberships(tenant_id,user_id,status) VALUES(%s,%s,'ACTIVE')", (tenant_id, user_id))
+            membership_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO roles(tenant_id,name,description,status) VALUES(%s,'TENANT_ADMIN','Admin','ACTIVE')", (tenant_id,))
+            role_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO organizations(tenant_id,code,name,status) VALUES(%s,'ORG','Org','ACTIVE')", (tenant_id,))
+            organization_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO locations(tenant_id,organization_id,code,name,timezone,status) VALUES(%s,%s,'LOC','Location','America/Mexico_City','ACTIVE')", (tenant_id, organization_id))
+            location_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO preparation_delivery_connectors(tenant_id,organization_id,location_id,code,name,auth_subject,status) VALUES(%s,%s,%s,'LOCAL','Local','preparation-connector:existing','ACTIVE')",
+                (tenant_id, organization_id, location_id),
+            )
+            connector_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, '0021_restaurant_local_connector_machine_delivery')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0021_restaurant_local_connector_machine_delivery'
+            cursor.execute('SELECT last_seen_at,connector_version,protocol_version FROM preparation_delivery_connectors WHERE id=%s', (connector_id,))
+            assert cursor.fetchone() == {'last_seen_at': None, 'connector_version': None, 'protocol_version': None}
+            cursor.execute('SELECT COUNT(*) AS count FROM preparation_delivery_connector_enrollments')
+            assert cursor.fetchone()['count'] == 0
+            cursor.execute('SELECT COUNT(*) AS count FROM preparation_delivery_connector_credentials')
+            assert cursor.fetchone()['count'] == 0
+            cursor.execute("SELECT COUNT(*) AS count FROM role_permissions RP JOIN permissions P ON P.id=RP.permission_id WHERE RP.role_id=%s AND P.code='preparation.connector.manage'", (role_id,))
+            assert cursor.fetchone()['count'] == 1
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0020_preparation_dispatch_operational_delivery')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0020_preparation_dispatch_operational_delivery'
+            cursor.execute("SELECT COUNT(*) AS count FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('preparation_delivery_connector_enrollments','preparation_delivery_connector_credentials')")
+            assert cursor.fetchone()['count'] == 0
+            cursor.execute("SELECT COUNT(*) AS count FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='preparation_delivery_connectors' AND COLUMN_NAME='last_seen_at'")
+            assert cursor.fetchone()['count'] == 0
+    finally:
+        connection.close()
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
     finally:
         connection.close()
 

@@ -56,6 +56,7 @@ CORE_PERMISSIONS = {
     'preparation.configure': 'Configure preparation ownership, areas, and product routes.',
     'preparation.execute': 'Execute native Preparation Work Items.',
     'preparation.dispatch': 'Perform human preparation dispatch interventions.',
+    'preparation.connector.manage': 'Manage Restaurant Local Connector machine credentials.',
 }
 _SLUG_PATTERN = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 

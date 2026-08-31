@@ -95,6 +95,11 @@ def sql_connection(integration_settings: Settings):
     finally:
         with connection.cursor() as cursor:
             cursor.execute(
+                'UPDATE preparation_delivery_connector_credentials SET replaces_credential_id=NULL '
+                'WHERE tenant_id IN (SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
                 'DELETE FROM preparation_dispatch_attempts WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),
@@ -105,6 +110,8 @@ def sql_connection(integration_settings: Settings):
                 (f'{prefix}%',),
             )
             for table in (
+                'preparation_delivery_connector_credentials',
+                'preparation_delivery_connector_enrollments',
                 'preparation_dispatch_attempts',
                 'preparation_dispatches',
                 'preparation_delivery_destinations',

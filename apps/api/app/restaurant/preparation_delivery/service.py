@@ -35,7 +35,6 @@ from app.restaurant.preparation_delivery.contracts import (
 
 
 PAYLOAD_SCHEMA = 'preparation-delivery-v1'
-CLAIM_LEASE = timedelta(minutes=2)
 RESULTS = {
     'DESTINATION_SUBMISSION_ACCEPTED',
     'RETRYABLE_FAILURE',
@@ -361,8 +360,32 @@ async def get_dispatch(
 async def claim_dispatch(
     db: AsyncSession, *, dispatch_id: int, connector_id: int,
     execution: ExecutionContext, recovery: bool = False,
+    claim_request_id: str | None = None, claim_lease_seconds: int = 120,
 ) -> ClaimResult:
     now = _now()
+    if claim_request_id is not None:
+        replay = await db.scalar(select(PreparationDispatchAttempt).where(
+            PreparationDispatchAttempt.tenant_id == execution.tenant_id,
+            PreparationDispatchAttempt.connector_id == connector_id,
+            PreparationDispatchAttempt.claim_request_id == claim_request_id,
+        ))
+        if replay is not None:
+            if replay.dispatch_id != dispatch_id:
+                raise errors.PreparationDeliveryConflictError(
+                    'claim_request_id was already used for a different dispatch'
+                )
+            replay_dispatch = await db.scalar(select(PreparationDispatch).where(
+                PreparationDispatch.id == dispatch_id,
+                PreparationDispatch.tenant_id == execution.tenant_id,
+                PreparationDispatch.connector_id_snapshot == connector_id,
+            ))
+            if replay_dispatch is None:
+                raise errors.PreparationDeliveryNotFoundError('Preparation Dispatch not found')
+            return ClaimResult(
+                dispatch=await _projection(db, replay_dispatch),
+                attempt=_attempt_projection(replay),
+                claim_token=replay.claim_token,
+            )
     dispatch = await db.scalar(select(PreparationDispatch).where(
         PreparationDispatch.id == dispatch_id,
         PreparationDispatch.tenant_id == execution.tenant_id,
@@ -393,7 +416,7 @@ async def claim_dispatch(
         attempt_type = 'DELIVER' if dispatch.attempt_count == 0 else 'RETRY'
     elif dispatch.state == 'RETRYABLE_FAILURE':
         attempt_type = 'RETRY'
-    elif dispatch.state == 'UNCERTAIN' and recovery:
+    elif dispatch.state in {'UNCERTAIN', 'ACTION_REQUIRED'} and recovery:
         attempt_type = 'RECOVERY'
     else:
         raise errors.PreparationDeliveryConflictError(
@@ -422,6 +445,7 @@ async def claim_dispatch(
         location_id=dispatch.location_id, dispatch_id=dispatch.id,
         connector_id=connector.id, attempt_sequence=dispatch.attempt_count + 1,
         attempt_type=attempt_type, claim_token=token,
+        claim_request_id=claim_request_id,
         actor_type=actor['actor_type'], actor_membership_id=actor['actor_membership_id'],
         actor_principal_reference=actor['actor_principal_reference'],
         correlation_id=execution.correlation_id, started_at=now, ended_at=None,
@@ -430,7 +454,7 @@ async def claim_dispatch(
     db.add(attempt)
     dispatch.state = 'IN_PROGRESS'
     dispatch.claim_token = token
-    dispatch.claim_expires_at = now + CLAIM_LEASE
+    dispatch.claim_expires_at = now + timedelta(seconds=claim_lease_seconds)
     dispatch.attempt_count += 1
     dispatch.last_error_kind = None
     dispatch.last_error_message = None

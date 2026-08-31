@@ -95,6 +95,9 @@ class ConnectorResponse(BaseModel):
     name: str
     auth_subject: str
     status: str
+    last_seen_at: datetime | None
+    connector_version: str | None
+    protocol_version: str | None
     created_at: datetime
     updated_at: datetime
 

@@ -1,0 +1,24 @@
+[Unit]
+Description=Pryecip Restaurant Local Connector
+After=network-online.target cups.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=pryecip-connector
+Group=pryecip-connector
+ExecStart=/usr/bin/pryecip-local-connector --config /etc/pryecip-local-connector/config.toml run
+Restart=on-failure
+RestartSec=5s
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/pryecip-local-connector
+ReadOnlyPaths=/etc/pryecip-local-connector
+RestrictSUIDSGID=true
+LockPersonality=true
+MemoryDenyWriteExecute=true
+
+[Install]
+WantedBy=multi-user.target
