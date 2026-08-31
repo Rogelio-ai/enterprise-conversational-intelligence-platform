@@ -38,6 +38,7 @@ from app.restaurant.preparation.contracts import (
     PreparationWorkItemProjection,
     PreparationWorkProjection,
 )
+from app.restaurant.preparation_delivery import service as delivery_service
 
 
 ROUTING_SCHEMA_VERSION = 1
@@ -409,6 +410,13 @@ async def route_order(
                     source_restaurant_order_item_id_for_component=component.order_item_id if component is not None else None,
                     route_id=route.id, route_policy='AREA', required_quantity=quantity,
                 ))
+            await db.flush()
+            await delivery_service.materialize_initial_dispatches(
+                db,
+                work=work,
+                correlation_id=execution.correlation_id,
+                causation_id=execution.causation_id,
+            )
         routing.state = 'ROUTED'
         routing.routing_fingerprint = fingerprint
         routing.routed_at = now

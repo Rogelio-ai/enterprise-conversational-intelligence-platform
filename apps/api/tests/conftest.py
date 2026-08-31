@@ -94,7 +94,21 @@ def sql_connection(integration_settings: Settings):
         yield connection, prefix
     finally:
         with connection.cursor() as cursor:
+            cursor.execute(
+                'DELETE FROM preparation_dispatch_attempts WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM preparation_dispatches WHERE reprint_of_dispatch_id IS NOT NULL '
+                'AND tenant_id IN (SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
             for table in (
+                'preparation_dispatch_attempts',
+                'preparation_dispatches',
+                'preparation_delivery_destinations',
+                'preparation_delivery_connectors',
                 'preparation_item_transitions',
                 'preparation_work_items',
                 'preparation_works',

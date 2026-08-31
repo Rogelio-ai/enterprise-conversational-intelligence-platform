@@ -68,6 +68,10 @@ APPLICATION_TABLES = {
     'preparation_works',
     'preparation_work_items',
     'preparation_item_transitions',
+    'preparation_delivery_connectors',
+    'preparation_delivery_destinations',
+    'preparation_dispatches',
+    'preparation_dispatch_attempts',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -118,6 +122,10 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'preparation_works',
     'preparation_work_items',
     'preparation_item_transitions',
+    'preparation_delivery_connectors',
+    'preparation_delivery_destinations',
+    'preparation_dispatches',
+    'preparation_dispatch_attempts',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -556,6 +564,22 @@ EXPECTED_DOMAIN_CHECKS = {
     ('preparation_item_transitions', 'ck_preparation_item_transitions_sequence'),
     ('preparation_item_transitions', 'ck_preparation_item_transitions_edge'),
     ('preparation_item_transitions', 'ck_preparation_item_transitions_actor'),
+    ('preparation_delivery_connectors', 'ck_preparation_delivery_connectors_status'),
+    ('preparation_delivery_destinations', 'ck_preparation_delivery_destinations_channel'),
+    ('preparation_delivery_destinations', 'ck_preparation_delivery_destinations_status'),
+    ('preparation_delivery_destinations', 'ck_preparation_delivery_destinations_active_slot'),
+    ('preparation_delivery_destinations', 'ck_preparation_delivery_destinations_lifecycle'),
+    ('preparation_dispatches', 'ck_preparation_dispatches_operation_kind'),
+    ('preparation_dispatches', 'ck_preparation_dispatches_generation'),
+    ('preparation_dispatches', 'ck_preparation_dispatches_operation_semantics'),
+    ('preparation_dispatches', 'ck_preparation_dispatches_state'),
+    ('preparation_dispatches', 'ck_preparation_dispatches_attempt_count'),
+    ('preparation_dispatches', 'ck_preparation_dispatches_claim'),
+    ('preparation_dispatches', 'ck_preparation_dispatches_actor'),
+    ('preparation_dispatch_attempts', 'ck_preparation_dispatch_attempts_type'),
+    ('preparation_dispatch_attempts', 'ck_preparation_dispatch_attempts_result'),
+    ('preparation_dispatch_attempts', 'ck_preparation_dispatch_attempts_lifecycle'),
+    ('preparation_dispatch_attempts', 'ck_preparation_dispatch_attempts_actor'),
 }
 
 for table, prefix, target, target_table in (
@@ -727,6 +751,25 @@ _index('preparation_work_items', 'ix_preparation_work_items_queue', ('tenant_id'
 _index('preparation_item_transitions', 'uq_preparation_item_transitions_sequence', ('tenant_id', 'preparation_work_item_id', 'sequence'), 0)
 _index('preparation_item_transitions', 'uq_preparation_item_transitions_idempotency', ('tenant_id', 'preparation_work_item_id', 'idempotency_key'), 0)
 _index('preparation_item_transitions', 'ix_preparation_item_transitions_ordered', ('tenant_id', 'preparation_work_item_id', 'sequence', 'id'), 1)
+_index('preparation_works', 'uq_preparation_works_dispatch_scope', ('id', 'tenant_id', 'organization_id', 'location_id', 'restaurant_order_id', 'preparation_area_id'), 0)
+_index('preparation_delivery_connectors', 'uq_preparation_delivery_connectors_location_code', ('location_id', 'code'), 0)
+_index('preparation_delivery_connectors', 'uq_preparation_delivery_connectors_auth_subject', ('auth_subject',), 0)
+_index('preparation_delivery_connectors', 'uq_preparation_delivery_connectors_scope', ('id', 'tenant_id', 'organization_id', 'location_id'), 0)
+_index('preparation_delivery_connectors', 'ix_preparation_delivery_connectors_lookup', ('tenant_id', 'location_id', 'status', 'code', 'id'), 1)
+_index('preparation_delivery_destinations', 'uq_preparation_delivery_destinations_location_code', ('location_id', 'code'), 0)
+_index('preparation_delivery_destinations', 'uq_preparation_delivery_destinations_active_target', ('connector_id', 'local_target_key', 'active_slot'), 0)
+_index('preparation_delivery_destinations', 'uq_preparation_delivery_destinations_scope', ('id', 'tenant_id', 'organization_id', 'location_id', 'preparation_area_id'), 0)
+_index('preparation_delivery_destinations', 'ix_preparation_delivery_destinations_lookup', ('tenant_id', 'location_id', 'preparation_area_id', 'status', 'id'), 1)
+_index('preparation_dispatches', 'uq_preparation_dispatches_generation', ('tenant_id', 'preparation_work_id', 'destination_id', 'generation'), 0)
+_index('preparation_dispatches', 'uq_preparation_dispatches_operation', ('tenant_id', 'operation_id'), 0)
+_index('preparation_dispatches', 'uq_preparation_dispatches_id_tenant', ('id', 'tenant_id'), 0)
+_index('preparation_dispatches', 'uq_preparation_dispatches_reprint_scope', ('id', 'tenant_id', 'preparation_work_id', 'destination_id'), 0)
+_index('preparation_dispatches', 'ix_preparation_dispatches_eligibility', ('tenant_id', 'location_id', 'state', 'available_at', 'id'), 1)
+_index('preparation_dispatches', 'ix_preparation_dispatches_work', ('tenant_id', 'preparation_work_id', 'generation', 'id'), 1)
+_index('preparation_dispatches', 'ix_preparation_dispatches_destination', ('tenant_id', 'destination_id', 'state', 'id'), 1)
+_index('preparation_dispatch_attempts', 'uq_preparation_dispatch_attempts_sequence', ('dispatch_id', 'attempt_sequence'), 0)
+_index('preparation_dispatch_attempts', 'uq_preparation_dispatch_attempts_claim', ('claim_token',), 0)
+_index('preparation_dispatch_attempts', 'ix_preparation_dispatch_attempts_ordered', ('tenant_id', 'dispatch_id', 'attempt_sequence', 'id'), 1)
 
 for constraint, table, local_columns, target_table, target_columns in (
     ('fk_product_categories_parent_tenant_org', 'product_categories', ('parent_id', 'tenant_id', 'organization_id'), 'product_categories', ('id', 'tenant_id', 'organization_id')),
@@ -837,6 +880,20 @@ for constraint, table, local_columns, target_table, target_columns in (
     ('fk_preparation_work_items_route_scope', 'preparation_work_items', ('route_id', 'tenant_id', 'organization_id', 'location_id'), 'product_preparation_routes', ('id', 'tenant_id', 'organization_id', 'location_id')),
     ('fk_preparation_item_transitions_item_scope', 'preparation_item_transitions', ('preparation_work_item_id', 'tenant_id', 'organization_id', 'location_id', 'restaurant_order_id', 'preparation_work_id'), 'preparation_work_items', ('id', 'tenant_id', 'organization_id', 'location_id', 'restaurant_order_id', 'preparation_work_id')),
     ('fk_preparation_item_transitions_membership', 'preparation_item_transitions', ('actor_membership_id', 'tenant_id'), 'tenant_memberships', ('id', 'tenant_id')),
+    ('fk_preparation_delivery_connectors_tenant', 'preparation_delivery_connectors', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_preparation_delivery_connectors_location_scope', 'preparation_delivery_connectors', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_preparation_delivery_destinations_tenant', 'preparation_delivery_destinations', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_preparation_delivery_destinations_area_scope', 'preparation_delivery_destinations', ('preparation_area_id', 'tenant_id', 'organization_id', 'location_id'), 'preparation_areas', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_preparation_delivery_destinations_connector_scope', 'preparation_delivery_destinations', ('connector_id', 'tenant_id', 'organization_id', 'location_id'), 'preparation_delivery_connectors', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_preparation_dispatches_tenant', 'preparation_dispatches', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_preparation_dispatches_order_scope', 'preparation_dispatches', ('restaurant_order_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_orders', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_preparation_dispatches_work_scope', 'preparation_dispatches', ('preparation_work_id', 'tenant_id', 'organization_id', 'location_id', 'restaurant_order_id', 'preparation_area_id'), 'preparation_works', ('id', 'tenant_id', 'organization_id', 'location_id', 'restaurant_order_id', 'preparation_area_id')),
+    ('fk_preparation_dispatches_destination_scope', 'preparation_dispatches', ('destination_id', 'tenant_id', 'organization_id', 'location_id', 'preparation_area_id'), 'preparation_delivery_destinations', ('id', 'tenant_id', 'organization_id', 'location_id', 'preparation_area_id')),
+    ('fk_preparation_dispatches_membership', 'preparation_dispatches', ('initiating_membership_id', 'tenant_id'), 'tenant_memberships', ('id', 'tenant_id')),
+    ('fk_preparation_dispatches_reprint_origin', 'preparation_dispatches', ('reprint_of_dispatch_id', 'tenant_id', 'preparation_work_id', 'destination_id'), 'preparation_dispatches', ('id', 'tenant_id', 'preparation_work_id', 'destination_id')),
+    ('fk_preparation_dispatch_attempts_dispatch_scope', 'preparation_dispatch_attempts', ('dispatch_id', 'tenant_id'), 'preparation_dispatches', ('id', 'tenant_id')),
+    ('fk_preparation_dispatch_attempts_connector_scope', 'preparation_dispatch_attempts', ('connector_id', 'tenant_id', 'organization_id', 'location_id'), 'preparation_delivery_connectors', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_preparation_dispatch_attempts_membership', 'preparation_dispatch_attempts', ('actor_membership_id', 'tenant_id'), 'tenant_memberships', ('id', 'tenant_id')),
 ):
     EXPECTED_FOREIGN_KEY_COLUMNS.update(
         (constraint, table, local, target_table, target, position)
@@ -948,6 +1005,9 @@ def _assert_database_contract(connection) -> None:
                   , 'product_preparation_routes', 'preparation_routings'
                   , 'preparation_works', 'preparation_work_items'
                   , 'preparation_item_transitions'
+                  , 'preparation_delivery_connectors'
+                  , 'preparation_delivery_destinations'
+                  , 'preparation_dispatches', 'preparation_dispatch_attempts'
               )
             '''
         )
@@ -1001,6 +1061,26 @@ def _assert_database_contract(connection) -> None:
                   OR
                   (TABLE_NAME = 'preparation_item_transitions'
                    AND COLUMN_NAME = 'idempotency_key')
+                  OR
+                  (TABLE_NAME = 'preparation_delivery_connectors'
+                   AND COLUMN_NAME IN ('code', 'auth_subject'))
+                  OR
+                  (TABLE_NAME = 'preparation_delivery_destinations'
+                   AND COLUMN_NAME IN ('code', 'local_target_key'))
+                  OR
+                  (TABLE_NAME = 'preparation_dispatches'
+                   AND COLUMN_NAME IN (
+                       'operation_id', 'payload_schema', 'payload_text',
+                       'payload_fingerprint', 'destination_code_snapshot',
+                       'connector_code_snapshot', 'local_target_key_snapshot',
+                       'claim_token', 'last_error_kind'
+                   ))
+                  OR
+                  (TABLE_NAME = 'preparation_dispatch_attempts'
+                   AND COLUMN_NAME IN (
+                       'claim_token', 'result_fingerprint', 'local_job_reference',
+                       'error_kind'
+                   ))
               )
             '''
         )
@@ -1034,6 +1114,23 @@ def _assert_database_contract(connection) -> None:
             ('preparation_works', 'area_code_snapshot', 'utf8mb4_bin'),
             ('preparation_works', 'routing_fingerprint', 'ascii_bin'),
             ('preparation_item_transitions', 'idempotency_key', 'ascii_bin'),
+            ('preparation_delivery_connectors', 'code', 'utf8mb4_bin'),
+            ('preparation_delivery_connectors', 'auth_subject', 'ascii_bin'),
+            ('preparation_delivery_destinations', 'code', 'utf8mb4_bin'),
+            ('preparation_delivery_destinations', 'local_target_key', 'utf8mb4_bin'),
+            ('preparation_dispatches', 'operation_id', 'ascii_bin'),
+            ('preparation_dispatches', 'payload_schema', 'ascii_bin'),
+            ('preparation_dispatches', 'payload_text', 'utf8mb4_bin'),
+            ('preparation_dispatches', 'payload_fingerprint', 'ascii_bin'),
+            ('preparation_dispatches', 'destination_code_snapshot', 'utf8mb4_bin'),
+            ('preparation_dispatches', 'connector_code_snapshot', 'utf8mb4_bin'),
+            ('preparation_dispatches', 'local_target_key_snapshot', 'utf8mb4_bin'),
+            ('preparation_dispatches', 'claim_token', 'ascii_bin'),
+            ('preparation_dispatches', 'last_error_kind', 'ascii_bin'),
+            ('preparation_dispatch_attempts', 'claim_token', 'ascii_bin'),
+            ('preparation_dispatch_attempts', 'result_fingerprint', 'ascii_bin'),
+            ('preparation_dispatch_attempts', 'local_job_reference', 'utf8mb4_bin'),
+            ('preparation_dispatch_attempts', 'error_kind', 'ascii_bin'),
         }
 
 
@@ -1633,6 +1730,95 @@ def test_0019_backfills_existing_work_items_and_downgrade_reupgrade(
             cursor.execute('SELECT execution_state,execution_version FROM preparation_work_items WHERE id=900001')
             assert cursor.fetchone() == {'execution_state': 'NEW', 'execution_version': 0}
             cursor.execute('SELECT COUNT(*) AS count FROM preparation_item_transitions')
+            assert cursor.fetchone()['count'] == 0
+    finally:
+        connection.close()
+
+
+def test_0020_creates_dispatch_contract_without_backfill_and_preserves_permission(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0019_preparation_execution_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES ('WS21','ws21','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO roles (tenant_id,name,description,status) "
+                "VALUES (%s,'TENANT_ADMIN','Existing administrator','ACTIVE')",
+                (tenant_id,),
+            )
+            role_id = int(cursor.lastrowid)
+            cursor.execute('SET FOREIGN_KEY_CHECKS=0')
+            cursor.execute(
+                'INSERT INTO preparation_works '
+                '(id,tenant_id,organization_id,location_id,restaurant_order_id,routing_id,'
+                'preparation_area_id,preparation_owner,area_code_snapshot,area_name_snapshot,'
+                'routing_schema_version,routing_fingerprint,routed_at) '
+                "VALUES (910001,%s,920001,930001,940001,950001,960001,'PLATFORM',"
+                "'COCINA','Cocina',1,%s,CURRENT_TIMESTAMP)",
+                (tenant_id, 'a' * 64),
+            )
+            cursor.execute('SET FOREIGN_KEY_CHECKS=1')
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, '0020_preparation_dispatch_operational_delivery')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0020_preparation_dispatch_operational_delivery'
+            cursor.execute(
+                "SELECT TABLE_NAME FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME LIKE 'preparation_dispatch%' "
+                'ORDER BY TABLE_NAME'
+            )
+            assert {row['TABLE_NAME'] for row in cursor.fetchall()} == {
+                'preparation_dispatch_attempts',
+                'preparation_dispatches',
+            }
+            cursor.execute('SELECT COUNT(*) AS count FROM preparation_dispatches')
+            assert cursor.fetchone()['count'] == 0
+            cursor.execute(
+                "SELECT COUNT(*) AS count FROM role_permissions AS RP "
+                "JOIN permissions AS P ON P.id=RP.permission_id "
+                "WHERE RP.role_id=%s AND P.code='preparation.dispatch'",
+                (role_id,),
+            )
+            assert cursor.fetchone()['count'] == 1
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0019_preparation_execution_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "SELECT COUNT(*) AS count FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ("
+                "'preparation_delivery_connectors','preparation_delivery_destinations',"
+                "'preparation_dispatches','preparation_dispatch_attempts')"
+            )
+            assert cursor.fetchone()['count'] == 0
+            cursor.execute(
+                "SELECT COUNT(*) AS count FROM permissions WHERE code='preparation.dispatch'"
+            )
+            assert cursor.fetchone()['count'] == 1
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT COUNT(*) AS count FROM preparation_dispatches')
             assert cursor.fetchone()['count'] == 0
     finally:
         connection.close()

@@ -40,7 +40,10 @@ def _execute(connection, statement: str, parameters=()) -> int:
         return int(cursor.lastrowid)
 
 
-def _scope(connection, prefix: str, *, include_pos_permissions: bool = True) -> Scope:
+def _scope(
+    connection, prefix: str, *, include_pos_permissions: bool = True,
+    include_dispatch_permission: bool = True,
+) -> Scope:
     tenant_id = _execute(connection, "INSERT INTO tenants (name,slug,status) VALUES ('POS Tenant',%s,'ACTIVE')", (prefix,))
     email = f'{prefix}@example.test'
     user_id = _execute(connection, "INSERT INTO users (email,password_hash,display_name,status) VALUES (%s,%s,'Staff','ACTIVE')", (email, hash_password(PASSWORD)))
@@ -53,6 +56,8 @@ def _scope(connection, prefix: str, *, include_pos_permissions: bool = True) -> 
         'restaurant_order.read',
         'preparation.read', 'preparation.route', 'preparation.configure', 'preparation.execute',
     ]
+    if include_dispatch_permission:
+        permissions.append('preparation.dispatch')
     if include_pos_permissions:
         permissions.extend(('pos_submission.read', 'pos_submission.submit', 'pos_submission.retry', 'pos_submission.recover'))
     for code in permissions:
