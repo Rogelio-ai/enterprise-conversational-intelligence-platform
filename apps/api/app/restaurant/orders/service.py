@@ -1,6 +1,9 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import logging
+from datetime import UTC, datetime
 from collections import defaultdict
 from decimal import Decimal
 
@@ -41,6 +44,7 @@ from app.restaurant.orders.errors import (
     ProductNotOrderableError,
 )
 from app.restaurant.service_sessions import service as diner_authority_service
+from app.core.execution import ExecutionContext
 
 
 logger = logging.getLogger('ecip.order_drafts')
@@ -136,9 +140,17 @@ async def get_or_create_draft(
                 diner_session_id=owner_diner_session_id,
                 conversation_id=conversation_id,
             )
-        conversation = await _conversation(
-            db, tenant_id=tenant_id, conversation_id=conversation_id, lock=True
-        )
+        if owner_diner_session_id is None:
+            locked = await diner_authority_service.lock_ordering_context_for_conversation(
+                db, tenant_id=tenant_id, conversation_id=conversation_id
+            )
+            conversation = locked[2] if locked is not None else await _conversation(
+                db, tenant_id=tenant_id, conversation_id=conversation_id, lock=True
+            )
+        else:
+            conversation = await _conversation(
+                db, tenant_id=tenant_id, conversation_id=conversation_id, lock=True
+            )
         if owner_diner_session_id is not None:
             if owned_conversation_id != conversation.id:
                 raise DraftNotFoundError('Conversation not found')
@@ -215,12 +227,17 @@ async def _locked_mutable_draft(
             diner_session_id=owner_diner_session_id,
             conversation_id=conversation_id,
         )
-    conversation = await _conversation(
-        db,
-        tenant_id=tenant_id,
-        conversation_id=conversation_id,
-        lock=True,
-    )
+    if owner_diner_session_id is None:
+        locked = await diner_authority_service.lock_ordering_context_for_conversation(
+            db, tenant_id=tenant_id, conversation_id=conversation_id
+        )
+        conversation = locked[2] if locked is not None else await _conversation(
+            db, tenant_id=tenant_id, conversation_id=conversation_id, lock=True
+        )
+    else:
+        conversation = await _conversation(
+            db, tenant_id=tenant_id, conversation_id=conversation_id, lock=True
+        )
     draft = await db.scalar(
         select(OrderDraft)
         .where(OrderDraft.id == draft_id, OrderDraft.tenant_id == tenant_id)
@@ -248,6 +265,73 @@ async def _locked_mutable_draft(
         raise DraftConcurrencyConflictError(
             f'Expected Draft version {expected_version}, current version is {draft.version}'
         )
+    return draft
+
+
+async def abandon_current_draft(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    conversation_id: int,
+    expected_version: int,
+    idempotency_key: str,
+    context: ExecutionContext,
+    correlation_id: str | None = None,
+    owner_diner_session_id: int | None = None,
+    owned_conversation_id: int | None = None,
+) -> OrderDraft:
+    request_fingerprint = hashlib.sha256(
+        json.dumps(
+            {'conversation_id': conversation_id, 'expected_version': expected_version},
+            sort_keys=True,
+            separators=(',', ':'),
+        ).encode()
+    ).hexdigest()
+    replay = await db.scalar(
+        select(OrderDraft).where(
+            OrderDraft.tenant_id == tenant_id,
+            OrderDraft.conversation_id == conversation_id,
+            OrderDraft.abandon_idempotency_key == idempotency_key,
+        ).with_for_update()
+    )
+    if replay is not None:
+        if replay.abandon_request_fingerprint != request_fingerprint:
+            raise DraftConcurrencyConflictError('Idempotency key was used for a different abandonment request')
+        await db.commit()
+        return replay
+    try:
+        if owner_diner_session_id is not None:
+            if owned_conversation_id != conversation_id:
+                raise DraftNotFoundError('Order Draft not found')
+            await diner_authority_service.lock_diner_write_context(
+                db, tenant_id=tenant_id, diner_session_id=owner_diner_session_id,
+                conversation_id=conversation_id,
+            )
+        else:
+            await diner_authority_service.lock_ordering_context_for_conversation(
+                db, tenant_id=tenant_id, conversation_id=conversation_id
+            )
+        draft = await db.scalar(select(OrderDraft).where(
+            OrderDraft.tenant_id == tenant_id, OrderDraft.conversation_id == conversation_id,
+            OrderDraft.status == 'OPEN', OrderDraft.current_slot == 1,
+        ).with_for_update())
+        if draft is None:
+            raise DraftNotFoundError('Order Draft not found')
+        if draft.version != expected_version:
+            raise DraftConcurrencyConflictError(
+                f'Expected Draft version {expected_version}, current version is {draft.version}'
+            )
+        draft.status = 'ABANDONED'; draft.current_slot = None
+        draft.terminal_at = datetime.now(UTC).replace(tzinfo=None)
+        draft.abandoned_actor_type = context.actor_type.value
+        draft.abandoned_actor_id = context.principal_id
+        draft.abandoned_actor_reference = context.principal_reference
+        draft.abandon_idempotency_key = idempotency_key
+        draft.abandon_request_fingerprint = request_fingerprint
+        await db.commit(); await db.refresh(draft)
+    except Exception:
+        await db.rollback(); raise
+    _event('order_draft_abandoned', draft, correlation_id=correlation_id, outcome='abandoned')
     return draft
 
 

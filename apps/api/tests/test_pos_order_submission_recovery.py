@@ -372,7 +372,7 @@ def test_ambiguous_mapping_persists_action_required_without_external_call(client
     assert len(adapter._orders) == initial_order_count
 
 
-def test_permissions_scope_and_closed_service_do_not_invalidate_accepted_order(client, sql_connection):
+def test_permissions_scope_and_close_guard_do_not_invalidate_accepted_order(client, sql_connection):
     connection, prefix = sql_connection
     scope = _scope(connection, prefix)
     order_id, product_id, service_id = _accepted_order(client, connection, scope)
@@ -380,7 +380,8 @@ def test_permissions_scope_and_closed_service_do_not_invalidate_accepted_order(c
     client.app.state.pos_adapters[CONNECTOR] = adapter
     headers = _headers(client, scope)
     closed = client.post(f'/restaurant-service-sessions/{service_id}/close', headers=headers)
-    assert closed.status_code == 200, closed.text
+    assert closed.status_code == 409, closed.text
+    assert closed.json()['error']['code'] == 'TABLE_OUTSTANDING_BALANCE_NOT_ZERO'
     submitted = client.post(f'/restaurant-orders/{order_id}/pos-submission', headers=headers)
     assert submitted.status_code == 200 and submitted.json()['state'] == 'SUCCEEDED'
 

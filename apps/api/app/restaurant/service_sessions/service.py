@@ -489,7 +489,30 @@ async def lock_diner_write_context(
         != (diner.organization_id, diner.location_id, diner.resource_id)
     ):
         raise errors.DinerAuthorizationError('Diner commercial context is not active')
+    from app.restaurant.checks.service import ensure_ordering_allowed
+
+    await ensure_ordering_allowed(db, tenant_id=tenant_id, diner_session_id=diner.id)
     return session, diner, conversation
+
+
+async def lock_ordering_context_for_conversation(
+    db: AsyncSession, *, tenant_id: int, conversation_id: int
+) -> tuple[RestaurantServiceSession, DinerSession, Conversation] | None:
+    """Resolve staff/conversation writes through the diner lock chain when one exists."""
+    diner = await db.scalar(
+        select(DinerSession).where(
+            DinerSession.tenant_id == tenant_id,
+            DinerSession.conversation_id == conversation_id,
+        )
+    )
+    if diner is None:
+        return None
+    return await lock_diner_write_context(
+        db,
+        tenant_id=tenant_id,
+        diner_session_id=diner.id,
+        conversation_id=conversation_id,
+    )
 
 
 async def _abandon_current_draft(
@@ -527,6 +550,8 @@ async def end_diner_session(
         diner = await db.scalar(select(DinerSession).where(DinerSession.id == diner_session_id, DinerSession.service_session_id == session.id, DinerSession.tenant_id == tenant_id).with_for_update())
         if diner is None or diner.status != 'ACTIVE':
             raise errors.DinerAuthorizationError('Diner session is not active')
+        from app.restaurant.checks.service import assert_diner_can_end
+        await assert_diner_can_end(db, tenant_id=tenant_id, diner_session_id=diner.id)
         conversation = await db.scalar(select(Conversation).where(Conversation.id == diner.conversation_id, Conversation.tenant_id == tenant_id).with_for_update())
         now = _now()
         await _abandon_current_draft(
@@ -565,6 +590,8 @@ async def close_service_session(
             raise errors.ServiceSessionNotFoundError('Service Session not found')
         if session.status != 'OPEN':
             raise errors.ServiceSessionClosedError('Service Session is closed')
+        from app.restaurant.checks.service import assert_service_can_close
+        await assert_service_can_close(db, tenant_id=tenant_id, service_session_id=session.id)
         diners = tuple((await db.execute(select(DinerSession).where(DinerSession.service_session_id == session.id, DinerSession.active_slot == 1).order_by(DinerSession.id).with_for_update())).scalars().all())
         conversation_ids = tuple(sorted(diner.conversation_id for diner in diners))
         conversations = tuple((await db.execute(select(Conversation).where(Conversation.id.in_(conversation_ids or (-1,)), Conversation.tenant_id == tenant_id).order_by(Conversation.id).with_for_update())).scalars().all())

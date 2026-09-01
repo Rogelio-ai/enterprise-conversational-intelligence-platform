@@ -47,6 +47,8 @@ CORE_PERMISSIONS = {
     'restaurant_service.read': 'Read Restaurant service sessions.',
     'restaurant_service.manage': 'Manage Restaurant service sessions.',
     'restaurant_order.read': 'Read immutable accepted Restaurant Orders.',
+    'restaurant_check.read': 'Read canonical Restaurant Checks and table balances.',
+    'restaurant_check.manage': 'Manage canonical Restaurant Checks.',
     'pos_submission.read': 'Read POS order submission state and history.',
     'pos_submission.submit': 'Submit accepted Restaurant Orders to a POS.',
     'pos_submission.retry': 'Retry safely retryable POS order submissions.',

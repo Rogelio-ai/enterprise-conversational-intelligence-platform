@@ -137,6 +137,10 @@ class DinerSession(TimestampMixin, Base):
         UniqueConstraint('conversation_id', name='uq_diner_sessions_conversation'),
         UniqueConstraint('conversation_participant_id', name='uq_diner_sessions_participant'),
         UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id',
+            name='uq_diner_sessions_check_controller_scope',
+        ),
+        UniqueConstraint(
             'id', 'tenant_id', 'organization_id', 'location_id', 'resource_id',
             'service_session_id', 'conversation_id', name='uq_diner_sessions_full_scope',
         ),

@@ -197,6 +197,9 @@ def _response(value) -> DraftResponse:
 
 
 def _translate_error(exc: Exception) -> HTTPException:
+    from app.restaurant.checks.errors import OrderingBlockedError
+    if isinstance(exc, OrderingBlockedError):
+        return HTTPException(status.HTTP_409_CONFLICT, {'code': exc.code, 'message': str(exc)})
     if isinstance(exc, (errors.DraftNotFoundError, errors.DraftItemNotFoundError)):
         return HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
     if isinstance(exc, (errors.InvalidDraftQuantityError, errors.InvalidDraftSelectionError)):

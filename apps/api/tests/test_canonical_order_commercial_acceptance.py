@@ -214,7 +214,7 @@ def test_confirm_vs_mutation_has_one_serialized_winner(client, sql_connection):
     assert count == (1 if confirm_response.status_code == 201 else 0)
 
 
-def test_end_abandons_open_draft_and_terminal_draft_is_not_mutable(client, sql_connection):
+def test_end_is_blocked_when_it_would_orphan_accepted_consumption(client, sql_connection):
     connection, prefix = sql_connection
     scope = _scope(connection, prefix)
     _, diner_headers = _open_and_join(client, scope)
@@ -224,12 +224,14 @@ def test_end_abandons_open_draft_and_terminal_draft_is_not_mutable(client, sql_c
     assert accepted.status_code == 201
     next_draft = client.post('/diner/order-draft', headers=diner_headers)
     assert next_draft.status_code == 201
-    assert client.post('/diner-session/end', headers=diner_headers).status_code == 200
+    ended = client.post('/diner-session/end', headers=diner_headers)
+    assert ended.status_code == 409
+    assert ended.json()['error']['code'] == 'TABLE_NOT_ELIGIBLE_FOR_CLOSURE'
     with connection.cursor() as cursor:
         cursor.execute('SELECT status,current_slot FROM order_drafts WHERE tenant_id=%s ORDER BY id', (scope.tenant_id,))
         rows = cursor.fetchall()
-    assert [value['status'] for value in rows] == ['ACCEPTED', 'ABANDONED']
-    assert all(value['current_slot'] is None for value in rows)
+    assert [value['status'] for value in rows] == ['ACCEPTED', 'OPEN']
+    assert rows[0]['current_slot'] is None and rows[1]['current_slot'] == 1
 
 
 @pytest.mark.parametrize('closure', ['conversation', 'service'])

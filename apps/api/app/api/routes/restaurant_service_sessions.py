@@ -61,6 +61,9 @@ class ClosedServiceSessionResponse(BaseModel):
 
 
 def _error(exc: Exception) -> HTTPException:
+    from app.restaurant.checks.errors import RestaurantCheckError
+    if isinstance(exc, RestaurantCheckError):
+        return HTTPException(status.HTTP_409_CONFLICT, {'code': exc.code, 'message': str(exc)})
     if isinstance(exc, (errors.ServiceContextError, errors.ServiceSessionNotFoundError)):
         return HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
     if isinstance(

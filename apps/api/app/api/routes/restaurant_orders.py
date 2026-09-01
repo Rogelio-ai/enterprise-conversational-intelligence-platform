@@ -89,6 +89,9 @@ class RestaurantOrderResponse(BaseModel):
 
 
 def _error(exc: Exception, *, diner: bool) -> HTTPException:
+    from app.restaurant.checks.errors import OrderingBlockedError
+    if isinstance(exc, OrderingBlockedError):
+        return HTTPException(status.HTTP_409_CONFLICT, {'code': exc.code, 'message': str(exc)})
     if isinstance(exc, acceptance_errors.RestaurantOrderNotFoundError):
         return HTTPException(status.HTTP_404_NOT_FOUND, 'Restaurant Order not found')
     if isinstance(

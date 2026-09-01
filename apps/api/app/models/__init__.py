@@ -37,6 +37,14 @@ from app.models.restaurant_order import (
     RestaurantOrderItemComponent,
     RestaurantOrderPromotion,
 )
+from app.models.restaurant_check import (
+    RestaurantCheck,
+    RestaurantCheckAllocation,
+    RestaurantCheckCommand,
+    RestaurantCheckGratuity,
+    RestaurantCheckMember,
+    RestaurantCheckVersion,
+)
 from app.models.pos_submission import (
     LocationPosConnection,
     PosOrderSubmission,
@@ -98,6 +106,12 @@ __all__ = [
     'RestaurantOrderItem',
     'RestaurantOrderItemComponent',
     'RestaurantOrderPromotion',
+    'RestaurantCheck',
+    'RestaurantCheckAllocation',
+    'RestaurantCheckCommand',
+    'RestaurantCheckGratuity',
+    'RestaurantCheckMember',
+    'RestaurantCheckVersion',
     'LocationPosConnection',
     'PosOrderSubmission',
     'PosOrderSubmissionAttempt',

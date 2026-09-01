@@ -133,6 +133,9 @@ def _conversation_error(exc: Exception) -> HTTPException:
 
 
 def _draft_error(exc: Exception) -> HTTPException:
+    from app.restaurant.checks.errors import OrderingBlockedError
+    if isinstance(exc, OrderingBlockedError):
+        return HTTPException(status.HTTP_409_CONFLICT, {'code': exc.code, 'message': str(exc)})
     if isinstance(exc, (draft_errors.DraftNotFoundError, draft_errors.DraftItemNotFoundError, errors.DinerAuthorizationError)):
         return HTTPException(status.HTTP_404_NOT_FOUND, 'Order Draft not found')
     if isinstance(exc, (draft_errors.InvalidDraftQuantityError, draft_errors.InvalidDraftSelectionError)):
@@ -198,13 +201,22 @@ async def end_diner_session(
     context: Annotated[DinerAuthenticatedContext, Depends(get_diner_authenticated_context)],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> DinerSessionResponse:
-    value = await service.end_diner_session(
-        db,
-        tenant_id=context.tenant_id,
-        service_session_id=context.service_session_id,
-        diner_session_id=context.diner_session_id,
-        correlation_id=get_correlation_id(),
-    )
+    try:
+        value = await service.end_diner_session(
+            db,
+            tenant_id=context.tenant_id,
+            service_session_id=context.service_session_id,
+            diner_session_id=context.diner_session_id,
+            correlation_id=get_correlation_id(),
+        )
+    except Exception as exc:
+        from app.restaurant.checks.errors import RestaurantCheckError
+        if isinstance(exc, RestaurantCheckError):
+            raise HTTPException(
+                status.HTTP_409_CONFLICT,
+                {'code': exc.code, 'message': str(exc)},
+            ) from exc
+        raise
     return _diner_response(value)
 
 

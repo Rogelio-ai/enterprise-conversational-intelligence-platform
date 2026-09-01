@@ -56,6 +56,10 @@ class OrderDraft(TimestampMixin, Base):
             name='uq_order_drafts_tenant_conversation_current'
         ),
         UniqueConstraint(
+            'tenant_id', 'conversation_id', 'abandon_idempotency_key',
+            name='uq_order_drafts_abandon_idempotency',
+        ),
+        UniqueConstraint(
             'id', 'tenant_id', 'organization_id', name='uq_order_drafts_id_tenant_org'
         ),
         UniqueConstraint(
@@ -94,6 +98,17 @@ class OrderDraft(TimestampMixin, Base):
         SmallInteger, nullable=True, default=1, server_default=text('1')
     )
     terminal_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    abandoned_actor_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    abandoned_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    abandoned_actor_reference: Mapped[str | None] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=True
+    )
+    abandon_idempotency_key: Mapped[str | None] = mapped_column(
+        String(128, collation='ascii_bin'), nullable=True
+    )
+    abandon_request_fingerprint: Mapped[str | None] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=True
+    )
 
 
 class OrderDraftItem(TimestampMixin, Base):

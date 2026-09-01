@@ -74,6 +74,12 @@ APPLICATION_TABLES = {
     'preparation_delivery_destinations',
     'preparation_dispatches',
     'preparation_dispatch_attempts',
+    'restaurant_checks',
+    'restaurant_check_members',
+    'restaurant_check_allocations',
+    'restaurant_check_versions',
+    'restaurant_check_gratuities',
+    'restaurant_check_commands',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -130,6 +136,12 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'preparation_delivery_destinations',
     'preparation_dispatches',
     'preparation_dispatch_attempts',
+    'restaurant_checks',
+    'restaurant_check_members',
+    'restaurant_check_allocations',
+    'restaurant_check_versions',
+    'restaurant_check_gratuities',
+    'restaurant_check_commands',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -432,6 +444,27 @@ EXPECTED_INDEX_COLUMNS = {
 }
 
 EXPECTED_DOMAIN_CHECKS = {
+    ('restaurant_checks', 'ck_restaurant_checks_lifecycle'),
+    ('restaurant_checks', 'ck_restaurant_checks_controller_actor'),
+    ('restaurant_checks', 'ck_restaurant_checks_created_actor'),
+    ('restaurant_checks', 'ck_restaurant_checks_status'),
+    ('restaurant_checks', 'ck_restaurant_checks_money'),
+    ('restaurant_checks', 'ck_restaurant_checks_arithmetic'),
+    ('restaurant_checks', 'ck_restaurant_checks_versions'),
+    ('restaurant_check_members', 'ck_check_members_relationship'),
+    ('restaurant_check_members', 'ck_check_members_lifecycle'),
+    ('restaurant_check_members', 'ck_check_members_versions'),
+    ('restaurant_check_members', 'ck_check_members_active_slot'),
+    ('restaurant_check_allocations', 'ck_check_allocations_lifecycle'),
+    ('restaurant_check_allocations', 'ck_check_allocations_state'),
+    ('restaurant_check_allocations', 'ck_check_allocations_values'),
+    ('restaurant_check_allocations', 'ck_check_allocations_owner_slot'),
+    ('restaurant_check_versions', 'ck_check_versions_money'),
+    ('restaurant_check_versions', 'ck_check_versions_versions'),
+    ('restaurant_check_gratuities', 'ck_check_gratuities_type'),
+    ('restaurant_check_gratuities', 'ck_check_gratuities_rounding'),
+    ('restaurant_check_gratuities', 'ck_check_gratuities_values'),
+    ('restaurant_check_commands', 'ck_check_commands_result_version'),
     ('preparation_delivery_connector_enrollments', 'ck_connector_enrollments_active_slot'),
     ('preparation_delivery_connector_credentials', 'ck_connector_credentials_status'),
     ('resources', 'ck_resources_status'),
@@ -785,6 +818,32 @@ _index('preparation_dispatch_attempts', 'uq_preparation_dispatch_attempts_sequen
 _index('preparation_dispatch_attempts', 'uq_preparation_dispatch_attempts_claim', ('claim_token',), 0)
 _index('preparation_dispatch_attempts', 'uq_dispatch_attempts_claim_request', ('tenant_id', 'connector_id', 'claim_request_id'), 0)
 _index('preparation_dispatch_attempts', 'ix_preparation_dispatch_attempts_ordered', ('tenant_id', 'dispatch_id', 'attempt_sequence', 'id'), 1)
+_index('diner_sessions', 'uq_diner_sessions_check_controller_scope', ('id', 'tenant_id', 'organization_id', 'location_id'), 0)
+_index('order_drafts', 'uq_order_drafts_abandon_idempotency', ('tenant_id', 'conversation_id', 'abandon_idempotency_key'), 0)
+_index('restaurant_checks', 'uq_restaurant_checks_scope', ('id', 'tenant_id', 'organization_id', 'location_id'), 0)
+_index('restaurant_checks', 'uq_restaurant_checks_id_tenant', ('id', 'tenant_id'), 0)
+_index('restaurant_checks', 'ix_restaurant_checks_location_status', ('tenant_id', 'location_id', 'status', 'id'), 1)
+_index('restaurant_checks', 'fk_restaurant_checks_location_scope', ('location_id', 'tenant_id', 'organization_id'), 1)
+_index('restaurant_checks', 'fk_restaurant_checks_controller_diner_scope', ('controller_diner_session_id', 'tenant_id', 'organization_id', 'location_id'), 1)
+_index('restaurant_check_members', 'uq_check_members_check_diner', ('check_id', 'diner_session_id'), 0)
+_index('restaurant_check_members', 'uq_check_members_diner_active', ('tenant_id', 'diner_session_id', 'active_slot'), 0)
+_index('restaurant_check_members', 'ix_check_members_check_active', ('tenant_id', 'check_id', 'active_slot', 'diner_session_id'), 1)
+_index('restaurant_check_members', 'fk_check_members_check_scope', ('check_id', 'tenant_id', 'organization_id', 'location_id'), 1)
+_index('restaurant_check_members', 'fk_check_members_diner_scope', ('diner_session_id', 'tenant_id', 'organization_id', 'location_id', 'resource_id', 'service_session_id', 'conversation_id'), 1)
+_index('restaurant_check_allocations', 'uq_check_allocations_check_order', ('check_id', 'restaurant_order_id'), 0)
+_index('restaurant_check_allocations', 'uq_check_allocations_order_owner', ('tenant_id', 'restaurant_order_id', 'ownership_slot'), 0)
+_index('restaurant_check_allocations', 'ix_check_allocations_check_state', ('tenant_id', 'check_id', 'state', 'restaurant_order_id'), 1)
+_index('restaurant_check_allocations', 'ix_check_allocations_service_balance', ('tenant_id', 'source_service_session_id', 'state', 'restaurant_order_id'), 1)
+_index('restaurant_check_allocations', 'fk_check_allocations_check_scope', ('check_id', 'tenant_id', 'organization_id', 'location_id'), 1)
+_index('restaurant_check_allocations', 'fk_check_allocations_order_scope', ('restaurant_order_id', 'tenant_id', 'organization_id', 'location_id'), 1)
+_index('restaurant_check_allocations', 'fk_check_allocations_diner_scope', ('source_diner_session_id', 'tenant_id', 'organization_id', 'location_id', 'source_resource_id', 'source_service_session_id', 'source_conversation_id'), 1)
+_index('restaurant_check_versions', 'uq_check_versions_check_version', ('check_id', 'version'), 0)
+_index('restaurant_check_versions', 'uq_check_versions_check_fingerprint', ('check_id', 'fingerprint'), 0)
+_index('restaurant_check_versions', 'fk_check_versions_check_scope', ('check_id', 'tenant_id', 'organization_id', 'location_id'), 1)
+_index('restaurant_check_gratuities', 'uq_check_gratuities_check_version', ('check_id', 'check_version'), 0)
+_index('restaurant_check_gratuities', 'fk_check_gratuities_check_scope', ('check_id', 'tenant_id', 'organization_id', 'location_id'), 1)
+_index('restaurant_check_commands', 'uq_check_commands_idempotency', ('tenant_id', 'actor_scope', 'idempotency_key'), 0)
+_index('restaurant_check_commands', 'fk_check_commands_check_tenant', ('check_id', 'tenant_id'), 1)
 
 for constraint, table, local_columns, target_table, target_columns in (
     ('fk_product_categories_parent_tenant_org', 'product_categories', ('parent_id', 'tenant_id', 'organization_id'), 'product_categories', ('id', 'tenant_id', 'organization_id')),
@@ -921,6 +980,25 @@ for constraint, table, local_columns, target_table, target_columns in (
         for position, (local, target) in enumerate(zip(local_columns, target_columns), 1)
     )
 
+for constraint, table, local_columns, target_table, target_columns in (
+    ('fk_restaurant_checks_tenant', 'restaurant_checks', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_restaurant_checks_location_scope', 'restaurant_checks', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_restaurant_checks_controller_diner_scope', 'restaurant_checks', ('controller_diner_session_id', 'tenant_id', 'organization_id', 'location_id'), 'diner_sessions', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_check_members_check_scope', 'restaurant_check_members', ('check_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_checks', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_check_members_diner_scope', 'restaurant_check_members', ('diner_session_id', 'tenant_id', 'organization_id', 'location_id', 'resource_id', 'service_session_id', 'conversation_id'), 'diner_sessions', ('id', 'tenant_id', 'organization_id', 'location_id', 'resource_id', 'service_session_id', 'conversation_id')),
+    ('fk_check_allocations_check_scope', 'restaurant_check_allocations', ('check_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_checks', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_check_allocations_order_scope', 'restaurant_check_allocations', ('restaurant_order_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_orders', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_check_allocations_diner_scope', 'restaurant_check_allocations', ('source_diner_session_id', 'tenant_id', 'organization_id', 'location_id', 'source_resource_id', 'source_service_session_id', 'source_conversation_id'), 'diner_sessions', ('id', 'tenant_id', 'organization_id', 'location_id', 'resource_id', 'service_session_id', 'conversation_id')),
+    ('fk_check_versions_check_scope', 'restaurant_check_versions', ('check_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_checks', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_check_gratuities_check_scope', 'restaurant_check_gratuities', ('check_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_checks', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_check_commands_tenant', 'restaurant_check_commands', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_check_commands_check_tenant', 'restaurant_check_commands', ('check_id', 'tenant_id'), 'restaurant_checks', ('id', 'tenant_id')),
+):
+    EXPECTED_FOREIGN_KEY_COLUMNS.update(
+        (constraint, table, local, target_table, target, position)
+        for position, (local, target) in enumerate(zip(local_columns, target_columns), 1)
+    )
+
 API_ROOT = Path(__file__).resolve().parents[1]
 
 
@@ -1007,7 +1085,10 @@ def _assert_database_contract(connection) -> None:
             SELECT TABLE_NAME, CONSTRAINT_NAME
             FROM information_schema.TABLE_CONSTRAINTS
             WHERE CONSTRAINT_SCHEMA = DATABASE()
-              AND CONSTRAINT_TYPE = 'CHECK'
+                  AND CONSTRAINT_TYPE = 'CHECK'
+                  AND CONSTRAINT_NAME NOT IN (
+                      'member_snapshot', 'allocation_snapshot', 'gratuity_snapshot'
+                  )
               AND TABLE_NAME IN (
                   'resources', 'customers', 'product_categories', 'products', 'menus',
                   'menu_locations', 'menu_sections', 'menu_items', 'product_prices',
@@ -1029,9 +1110,12 @@ def _assert_database_contract(connection) -> None:
                   , 'preparation_delivery_connectors'
                   , 'preparation_delivery_connector_enrollments'
                   , 'preparation_delivery_connector_credentials'
-                  , 'preparation_delivery_destinations'
-                  , 'preparation_dispatches', 'preparation_dispatch_attempts'
-              )
+                      , 'preparation_delivery_destinations'
+                      , 'preparation_dispatches', 'preparation_dispatch_attempts'
+                      , 'restaurant_checks', 'restaurant_check_members'
+                      , 'restaurant_check_allocations', 'restaurant_check_versions'
+                      , 'restaurant_check_gratuities', 'restaurant_check_commands'
+                  )
             '''
         )
         assert {(row['TABLE_NAME'], row['CONSTRAINT_NAME']) for row in cursor.fetchall()} == (
@@ -1110,6 +1194,31 @@ def _assert_database_contract(connection) -> None:
                        'claim_token', 'claim_request_id', 'result_fingerprint', 'local_job_reference',
                        'error_kind'
                    ))
+                  OR
+                  (TABLE_NAME = 'restaurant_checks'
+                   AND COLUMN_NAME IN (
+                       'current_fingerprint', 'controller_actor_reference',
+                       'created_actor_reference', 'frozen_actor_reference',
+                       'cancelled_actor_reference'
+                   ))
+                  OR
+                  (TABLE_NAME = 'restaurant_check_members'
+                   AND COLUMN_NAME IN ('acquired_actor_reference', 'released_actor_reference'))
+                  OR
+                  (TABLE_NAME = 'restaurant_check_allocations'
+                   AND COLUMN_NAME IN (
+                       'accepted_commercial_fingerprint', 'claimed_actor_reference',
+                       'released_actor_reference', 'settlement_reference'
+                   ))
+                  OR
+                  (TABLE_NAME = 'restaurant_check_versions'
+                   AND COLUMN_NAME IN ('fingerprint', 'actor_reference'))
+                  OR
+                  (TABLE_NAME = 'restaurant_check_gratuities'
+                   AND COLUMN_NAME = 'actor_reference')
+                  OR
+                  (TABLE_NAME = 'restaurant_check_commands'
+                   AND COLUMN_NAME IN ('actor_scope', 'idempotency_key', 'request_fingerprint'))
               )
             '''
         )
@@ -1167,6 +1276,23 @@ def _assert_database_contract(connection) -> None:
             ('preparation_dispatch_attempts', 'result_fingerprint', 'ascii_bin'),
             ('preparation_dispatch_attempts', 'local_job_reference', 'utf8mb4_bin'),
             ('preparation_dispatch_attempts', 'error_kind', 'ascii_bin'),
+            ('restaurant_checks', 'current_fingerprint', 'ascii_bin'),
+            ('restaurant_checks', 'controller_actor_reference', 'utf8mb4_bin'),
+            ('restaurant_checks', 'created_actor_reference', 'utf8mb4_bin'),
+            ('restaurant_checks', 'frozen_actor_reference', 'utf8mb4_bin'),
+            ('restaurant_checks', 'cancelled_actor_reference', 'utf8mb4_bin'),
+            ('restaurant_check_members', 'acquired_actor_reference', 'utf8mb4_bin'),
+            ('restaurant_check_members', 'released_actor_reference', 'utf8mb4_bin'),
+            ('restaurant_check_allocations', 'accepted_commercial_fingerprint', 'ascii_bin'),
+            ('restaurant_check_allocations', 'claimed_actor_reference', 'utf8mb4_bin'),
+            ('restaurant_check_allocations', 'released_actor_reference', 'utf8mb4_bin'),
+            ('restaurant_check_allocations', 'settlement_reference', 'ascii_bin'),
+            ('restaurant_check_versions', 'fingerprint', 'ascii_bin'),
+            ('restaurant_check_versions', 'actor_reference', 'utf8mb4_bin'),
+            ('restaurant_check_gratuities', 'actor_reference', 'utf8mb4_bin'),
+            ('restaurant_check_commands', 'actor_scope', 'ascii_bin'),
+            ('restaurant_check_commands', 'idempotency_key', 'ascii_bin'),
+            ('restaurant_check_commands', 'request_fingerprint', 'ascii_bin'),
         }
 
 
@@ -2723,6 +2849,72 @@ def test_upgrade_from_unsafe_0002_schema_reaches_portable_database_contract(
 
     _run_alembic(database_name, 'head')
 
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+    finally:
+        connection.close()
+
+
+def test_0022_upgrade_downgrade_upgrade_preserves_single_portable_head(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    check_tables = {
+        'restaurant_checks',
+        'restaurant_check_members',
+        'restaurant_check_allocations',
+        'restaurant_check_versions',
+        'restaurant_check_gratuities',
+        'restaurant_check_commands',
+    }
+
+    _run_alembic(database_name, '0021_restaurant_local_connector_machine_delivery')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME FROM information_schema.TABLES '
+                'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME LIKE %s',
+                ('restaurant_check%',),
+            )
+            assert {row['TABLE_NAME'] for row in cursor.fetchall()} == set()
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, '0022_restaurant_check_settlement_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert [row['version_num'] for row in cursor.fetchall()] == [
+                '0022_restaurant_check_settlement_foundation'
+            ]
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0021_restaurant_local_connector_machine_delivery')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME FROM information_schema.TABLES '
+                'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s,%s,%s,%s,%s)',
+                tuple(sorted(check_tables)),
+            )
+            assert {row['TABLE_NAME'] for row in cursor.fetchall()} == set()
+            cursor.execute(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='order_drafts' "
+                "AND COLUMN_NAME LIKE 'abandon_%'",
+            )
+            assert {row['COLUMN_NAME'] for row in cursor.fetchall()} == set()
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, '0022_restaurant_check_settlement_foundation')
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         _assert_database_contract(connection)

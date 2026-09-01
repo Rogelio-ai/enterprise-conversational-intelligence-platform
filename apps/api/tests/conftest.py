@@ -135,6 +135,19 @@ def sql_connection(integration_settings: Settings):
                     (f'{prefix}%',),
                 )
             for table in (
+                'restaurant_check_commands',
+                'restaurant_check_gratuities',
+                'restaurant_check_versions',
+                'restaurant_check_members',
+                'restaurant_check_allocations',
+                'restaurant_checks',
+            ):
+                cursor.execute(
+                    f'DELETE FROM {table} WHERE tenant_id IN '
+                    '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                    (f'{prefix}%',),
+                )
+            for table in (
                 'restaurant_order_promotions',
                 'restaurant_order_item_components',
                 'restaurant_order_items',
