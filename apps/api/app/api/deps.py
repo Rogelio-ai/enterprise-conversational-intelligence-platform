@@ -30,6 +30,7 @@ class AuthenticatedContext:
 
 async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
     async for session in request.app.state.database.session():
+        session.info['payment_executors'] = request.app.state.payment_executors
         yield session
 
 

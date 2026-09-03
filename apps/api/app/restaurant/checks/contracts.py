@@ -43,6 +43,8 @@ class CheckProjection:
     currency: str
     controller_diner_session_id: int | None
     member_ids: tuple[int, ...]
+    diner_scope_ids: tuple[int, ...]
+    table_scope_session_ids: tuple[int, ...]
     consumption_total: Decimal
     gratuity_total: Decimal
     liability_total: Decimal
@@ -50,6 +52,8 @@ class CheckProjection:
     outstanding: Decimal
     uncertain_exposure: Decimal
     frozen_at: datetime | None
+    settled_at: datetime | None
+    continuation_decision: str
     cancelled_at: datetime | None
     details: tuple[CheckResourceGroup, ...] | None
     signal: str | None = None
@@ -78,6 +82,7 @@ class TableBalanceProjection:
     unreserved_unsettled_consumption: Decimal
     settled_consumption: Decimal
     pending_exposure: Decimal
+    reserved_payment_exposure: Decimal
     uncertain_exposure: Decimal
     outstanding_confirmed_balance: Decimal
     unresolved_active_checks: int

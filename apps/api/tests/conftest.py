@@ -135,7 +135,11 @@ def sql_connection(integration_settings: Settings):
                     (f'{prefix}%',),
                 )
             for table in (
+                'restaurant_check_settlements',
+                'restaurant_payment_attempts',
+                'restaurant_payments',
                 'restaurant_check_commands',
+                'restaurant_check_table_scopes',
                 'restaurant_check_gratuities',
                 'restaurant_check_versions',
                 'restaurant_check_members',

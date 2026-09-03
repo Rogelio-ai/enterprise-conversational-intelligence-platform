@@ -31,6 +31,7 @@ from app.api.routes.resources import router as resources_router
 from app.api.routes.restaurant_service_sessions import router as restaurant_service_sessions_router
 from app.api.routes.restaurant_orders import router as restaurant_orders_router
 from app.api.routes.restaurant_checks import router as restaurant_checks_router
+from app.api.routes.restaurant_payments import router as restaurant_payments_router
 from app.api.routes.tenants import router as tenants_router
 from app.core.config import Settings, get_settings
 from app.core.errors import register_error_handlers
@@ -49,6 +50,7 @@ def create_app(
     settings: Settings | None = None,
     database: DatabaseLifecycle | None = None,
     pos_adapters: Mapping[str, object] | None = None,
+    payment_executors: Mapping[str, object] | None = None,
 ) -> FastAPI:
     runtime_settings = settings or get_settings()
     runtime_database = database or DatabaseManager(runtime_settings)
@@ -72,6 +74,7 @@ def create_app(
     app.state.settings = runtime_settings
     app.state.database = runtime_database
     app.state.pos_adapters = dict(pos_adapters or {})
+    app.state.payment_executors = dict(payment_executors or {})
     app.add_middleware(RuntimeMiddleware)
     register_error_handlers(app)
     app.include_router(health_router)
@@ -87,6 +90,7 @@ def create_app(
     app.include_router(diner_sessions_router)
     app.include_router(restaurant_orders_router)
     app.include_router(restaurant_checks_router)
+    app.include_router(restaurant_payments_router)
     app.include_router(pos_submissions_router)
     app.include_router(preparation_router)
     app.include_router(preparation_delivery_router)

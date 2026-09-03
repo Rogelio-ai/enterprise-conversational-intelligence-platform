@@ -40,16 +40,18 @@ class RestaurantCheck(TimestampMixin, Base):
         ),
         UniqueConstraint('id', 'tenant_id', 'organization_id', 'location_id', name='uq_restaurant_checks_scope'),
         UniqueConstraint('id', 'tenant_id', name='uq_restaurant_checks_id_tenant'),
-        CheckConstraint("status IN ('OPEN','FROZEN','CANCELLED')", name='ck_restaurant_checks_status'),
+        CheckConstraint("status IN ('OPEN','FROZEN','SETTLED','CANCELLED')", name='ck_restaurant_checks_status'),
         CheckConstraint('version >= 1 AND fingerprint_schema_version >= 1', name='ck_restaurant_checks_versions'),
         CheckConstraint('consumption_total >= 0 AND gratuity_total >= 0 AND liability_total >= 0', name='ck_restaurant_checks_money'),
         CheckConstraint('liability_total = consumption_total + gratuity_total', name='ck_restaurant_checks_arithmetic'),
         CheckConstraint("controller_actor_type IN ('EMPLOYEE','DINER','SYSTEM','AGENT','EXTERNAL_SYSTEM')", name='ck_restaurant_checks_controller_actor'),
         CheckConstraint("created_actor_type IN ('EMPLOYEE','DINER','SYSTEM','AGENT','EXTERNAL_SYSTEM')", name='ck_restaurant_checks_created_actor'),
+        CheckConstraint("continuation_decision IN ('NONE','PENDING','YES','NO')", name='ck_restaurant_checks_continuation'),
         CheckConstraint(
-            "(status='OPEN' AND frozen_at IS NULL AND cancelled_at IS NULL) OR "
-            "(status='FROZEN' AND frozen_at IS NOT NULL AND cancelled_at IS NULL) OR "
-            "(status='CANCELLED' AND cancelled_at IS NOT NULL)",
+            "(status='OPEN' AND frozen_at IS NULL AND settled_at IS NULL AND cancelled_at IS NULL AND continuation_decision='NONE') OR "
+            "(status='FROZEN' AND frozen_at IS NOT NULL AND settled_at IS NULL AND cancelled_at IS NULL AND continuation_decision='NONE') OR "
+            "(status='SETTLED' AND frozen_at IS NOT NULL AND settled_at IS NOT NULL AND cancelled_at IS NULL AND continuation_decision IN ('PENDING','YES','NO')) OR "
+            "(status='CANCELLED' AND cancelled_at IS NOT NULL AND settled_at IS NULL AND continuation_decision='NONE')",
             name='ck_restaurant_checks_lifecycle',
         ),
         Index('ix_restaurant_checks_location_status', 'tenant_id', 'location_id', 'status', 'id'),
@@ -78,6 +80,17 @@ class RestaurantCheck(TimestampMixin, Base):
     frozen_actor_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
     frozen_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     frozen_actor_reference: Mapped[str | None] = mapped_column(String(200, collation='utf8mb4_bin'), nullable=True)
+    settled_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    settled_actor_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    settled_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    settled_actor_reference: Mapped[str | None] = mapped_column(String(200, collation='utf8mb4_bin'), nullable=True)
+    continuation_decision: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='NONE', server_default=text("'NONE'")
+    )
+    continuation_decided_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    continuation_actor_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    continuation_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    continuation_actor_reference: Mapped[str | None] = mapped_column(String(200, collation='utf8mb4_bin'), nullable=True)
     cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
     cancelled_actor_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
     cancelled_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -128,6 +141,53 @@ class RestaurantCheckMember(TimestampMixin, Base):
     released_actor_reference: Mapped[str | None] = mapped_column(String(200, collation='utf8mb4_bin'), nullable=True)
     release_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
     released_version: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+
+
+class RestaurantCheckTableScope(TimestampMixin, Base):
+    """Durable whole-table ordering ownership; diner membership remains separate."""
+
+    __tablename__ = 'restaurant_check_table_scopes'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['check_id', 'tenant_id', 'organization_id', 'location_id'],
+            ['restaurant_checks.id', 'restaurant_checks.tenant_id', 'restaurant_checks.organization_id', 'restaurant_checks.location_id'],
+            name='fk_check_table_scopes_check_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['service_session_id', 'tenant_id', 'organization_id', 'location_id', 'resource_id'],
+            ['restaurant_service_sessions.id', 'restaurant_service_sessions.tenant_id', 'restaurant_service_sessions.organization_id', 'restaurant_service_sessions.location_id', 'restaurant_service_sessions.resource_id'],
+            name='fk_check_table_scopes_service_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint('check_id', 'service_session_id', name='uq_check_table_scopes_check_service'),
+        UniqueConstraint('tenant_id', 'service_session_id', 'active_slot', name='uq_check_table_scopes_service_active'),
+        CheckConstraint('active_slot IS NULL OR active_slot = 1', name='ck_check_table_scopes_active_slot'),
+        CheckConstraint("lock_phase IN ('CHECK','CONTINUATION','RELEASED')", name='ck_check_table_scopes_phase'),
+        CheckConstraint(
+            "(lock_phase IN ('CHECK','CONTINUATION') AND active_slot=1 AND released_at IS NULL) OR "
+            "(lock_phase='RELEASED' AND active_slot IS NULL AND released_at IS NOT NULL)",
+            name='ck_check_table_scopes_lifecycle',
+        ),
+        Index('ix_check_table_scopes_check_active', 'tenant_id', 'check_id', 'active_slot', 'service_session_id'),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    check_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    service_session_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    resource_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    lock_phase: Mapped[str] = mapped_column(String(16), nullable=False, default='CHECK', server_default=text("'CHECK'"))
+    active_slot: Mapped[int | None] = mapped_column(SmallInteger, nullable=True, default=1, server_default=text('1'))
+    acquired_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    acquired_actor_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    acquired_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    acquired_actor_reference: Mapped[str | None] = mapped_column(String(200, collation='utf8mb4_bin'), nullable=True)
+    released_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    released_actor_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    released_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    released_actor_reference: Mapped[str | None] = mapped_column(String(200, collation='utf8mb4_bin'), nullable=True)
+    release_reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
 
 class RestaurantCheckAllocation(TimestampMixin, Base):

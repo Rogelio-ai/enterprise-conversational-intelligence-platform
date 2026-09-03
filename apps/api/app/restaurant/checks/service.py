@@ -22,6 +22,9 @@ from app.models import (
     RestaurantCheckGratuity,
     RestaurantCheckMember,
     RestaurantCheckVersion,
+    RestaurantCheckSettlement,
+    RestaurantCheckTableScope,
+    RestaurantPayment,
     RestaurantOrder,
     RestaurantOrderItem,
     RestaurantServiceSession,
@@ -79,6 +82,11 @@ def _raise_concurrency_conflict(exc: OperationalError) -> None:
 
 
 async def ensure_ordering_allowed(db: AsyncSession, *, tenant_id: int, diner_session_id: int) -> None:
+    diner = await db.scalar(select(DinerSession).where(
+        DinerSession.tenant_id == tenant_id, DinerSession.id == diner_session_id,
+    ))
+    if diner is None:
+        raise errors.OrderingBlockedError()
     member = await db.scalar(
         select(RestaurantCheckMember.id).where(
             RestaurantCheckMember.tenant_id == tenant_id,
@@ -88,6 +96,13 @@ async def ensure_ordering_allowed(db: AsyncSession, *, tenant_id: int, diner_ses
     )
     if member is not None:
         raise errors.OrderingBlockedError()
+    table_scope = await db.scalar(select(RestaurantCheckTableScope.id).where(
+        RestaurantCheckTableScope.tenant_id == tenant_id,
+        RestaurantCheckTableScope.service_session_id == diner.service_session_id,
+        RestaurantCheckTableScope.active_slot == 1,
+    ))
+    if table_scope is not None:
+        raise errors.OrderingBlockedError('Ordering is blocked by an active TABLE Check scope')
 
 
 async def _lock_diners(
@@ -164,6 +179,15 @@ async def _active_membership_conflict(db: AsyncSession, diners: tuple[DinerSessi
     )
     if conflict is not None:
         raise errors.DinerAlreadyAssignedError()
+    table_conflict = await db.scalar(
+        select(RestaurantCheckTableScope.id).where(
+            RestaurantCheckTableScope.tenant_id == diners[0].tenant_id,
+            RestaurantCheckTableScope.service_session_id.in_(tuple({value.service_session_id for value in diners})),
+            RestaurantCheckTableScope.active_slot == 1,
+        ).order_by(RestaurantCheckTableScope.id).with_for_update()
+    )
+    if table_conflict is not None:
+        raise errors.DinerAlreadyAssignedError('Diner belongs to an active TABLE Check scope')
 
 
 async def _eligible_orders(
@@ -309,6 +333,7 @@ async def create_check(
     idempotency_key: str,
     eligible_members_only: bool = False,
     allow_controller_without_order: bool = False,
+    table_service_session_ids: tuple[int, ...] = (),
     _deadlock_retried: bool = False,
 ) -> tuple[CheckProjection, bool]:
     selected = tuple(sorted(set(diner_ids)))
@@ -317,15 +342,19 @@ async def create_check(
         'controller_diner_session_id': controller_diner_session_id,
         'eligible_members_only': eligible_members_only,
         'allow_controller_without_order': allow_controller_without_order,
+        'table_service_session_ids': tuple(sorted(set(table_service_session_ids))),
     }
     try:
         replay = await _command_replay(db, context=context, idempotency_key=idempotency_key, operation='CREATE', request=request)
         if replay is not None:
             await db.commit()
             return await get_check(db, tenant_id=context.tenant_id, check_id=replay.check_id), True
-        _, locked_diners, _ = await _lock_diners(
+        locked_sessions, locked_diners, _ = await _lock_diners(
             db, tenant_id=context.tenant_id, diner_ids=selected
         )
+        table_ids = tuple(sorted(set(table_service_session_ids)))
+        if not set(table_ids).issubset({value.id for value in locked_sessions}):
+            raise errors.CheckNotFoundError('TABLE scope Service Session was not found')
         if controller_diner_session_id is not None and controller_diner_session_id not in selected:
             raise errors.CheckPermissionError('Diner controller must participate in the check')
         orders = await _eligible_orders(db, locked_diners)
@@ -339,6 +368,19 @@ async def create_check(
         diners = tuple(value for value in locked_diners if value.id in member_ids)
         await _validate_drafts(db, diners)
         await _active_membership_conflict(db, diners)
+        if table_ids:
+            member_conflict = await db.scalar(select(RestaurantCheckMember.id).where(
+                RestaurantCheckMember.tenant_id == context.tenant_id,
+                RestaurantCheckMember.service_session_id.in_(table_ids),
+                RestaurantCheckMember.active_slot == 1,
+            ).order_by(RestaurantCheckMember.id).with_for_update())
+            table_conflict = await db.scalar(select(RestaurantCheckTableScope.id).where(
+                RestaurantCheckTableScope.tenant_id == context.tenant_id,
+                RestaurantCheckTableScope.service_session_id.in_(table_ids),
+                RestaurantCheckTableScope.active_slot == 1,
+            ).order_by(RestaurantCheckTableScope.id).with_for_update())
+            if member_conflict is not None or table_conflict is not None:
+                raise errors.DinerAlreadyAssignedError('TABLE scope overlaps another active Check')
         by_diner = {value.id: 0 for value in diners}
         for order in orders:
             if order.diner_session_id in by_diner:
@@ -376,6 +418,16 @@ async def create_check(
                 relationship='CONTROLLER' if diner.id == controller_diner_session_id else 'INCLUDED',
                 active_slot=1, acquired_at=now, acquired_version=1, **_actor_values(context, 'acquired'),
             ))
+        sessions_by_id = {value.id: value for value in locked_sessions}
+        for service_session_id in table_ids:
+            session = sessions_by_id[service_session_id]
+            db.add(RestaurantCheckTableScope(
+                tenant_id=check.tenant_id, organization_id=check.organization_id,
+                location_id=check.location_id, check_id=check.id,
+                service_session_id=session.id, resource_id=session.resource_id,
+                lock_phase='CHECK', active_slot=1, acquired_at=now,
+                **_actor_values(context, 'acquired'),
+            ))
         await db.flush()
         for order in orders:
             db.add(RestaurantCheckAllocation(
@@ -400,6 +452,7 @@ async def create_check(
                 idempotency_key=idempotency_key,
                 eligible_members_only=eligible_members_only,
                 allow_controller_without_order=allow_controller_without_order,
+                table_service_session_ids=table_service_session_ids,
                 _deadlock_retried=True,
             )
         raise
@@ -445,6 +498,41 @@ async def create_global_table_check(
         idempotency_key=idempotency_key,
         eligible_members_only=True,
         allow_controller_without_order=True,
+        table_service_session_ids=(service_session_id,),
+    )
+
+
+async def create_scoped_check(
+    db: AsyncSession, *, context: ExecutionContext,
+    diner_ids: tuple[int, ...], table_service_session_ids: tuple[int, ...],
+    controller_diner_session_id: int | None, idempotency_key: str,
+) -> tuple[CheckProjection, bool]:
+    table_ids = tuple(sorted(set(table_service_session_ids)))
+    if table_ids:
+        sessions = tuple((await db.execute(select(RestaurantServiceSession).where(
+            RestaurantServiceSession.tenant_id == context.tenant_id,
+            RestaurantServiceSession.id.in_(table_ids),
+            RestaurantServiceSession.status == 'OPEN',
+            RestaurantServiceSession.open_slot == 1,
+        ).order_by(RestaurantServiceSession.id).with_for_update())).scalars().all())
+        if len(sessions) != len(table_ids):
+            raise errors.CheckNotFoundError('TABLE scope Service Session was not found')
+        table_diners = tuple((await db.execute(select(DinerSession.id).where(
+            DinerSession.tenant_id == context.tenant_id,
+            DinerSession.service_session_id.in_(table_ids),
+            DinerSession.active_slot == 1,
+        ).order_by(DinerSession.id))).scalars().all())
+    else:
+        table_diners = ()
+    selected = tuple(sorted(set(diner_ids) | set(table_diners)))
+    if not selected:
+        raise errors.NoEligibleConsumptionError()
+    return await create_check(
+        db, context=context, diner_ids=selected,
+        controller_diner_session_id=controller_diner_session_id,
+        idempotency_key=idempotency_key, eligible_members_only=bool(table_ids),
+        allow_controller_without_order=bool(table_ids),
+        table_service_session_ids=table_ids,
     )
 
 
@@ -666,9 +754,16 @@ async def _verify_complete(db: AsyncSession, check: RestaurantCheck) -> None:
     diner_ids = tuple((await db.execute(select(RestaurantCheckMember.diner_session_id).where(
         RestaurantCheckMember.check_id == check.id, RestaurantCheckMember.active_slot == 1,
     ).order_by(RestaurantCheckMember.diner_session_id))).scalars().all())
+    owned_elsewhere = exists().where(
+        RestaurantCheckAllocation.tenant_id == RestaurantOrder.tenant_id,
+        RestaurantCheckAllocation.restaurant_order_id == RestaurantOrder.id,
+        RestaurantCheckAllocation.ownership_slot == 1,
+        RestaurantCheckAllocation.check_id != check.id,
+    )
     order_ids = set((await db.execute(select(RestaurantOrder.id).where(
         RestaurantOrder.tenant_id == check.tenant_id, RestaurantOrder.diner_session_id.in_(diner_ids or (-1,)),
         RestaurantOrder.status == 'ACCEPTED',
+        ~owned_elsewhere,
     ).order_by(RestaurantOrder.id).with_for_update())).scalars().all())
     allocation_ids = set((await db.execute(select(RestaurantCheckAllocation.restaurant_order_id).where(
         RestaurantCheckAllocation.check_id == check.id, RestaurantCheckAllocation.ownership_slot == 1,
@@ -723,6 +818,10 @@ async def cancel_check(
         ).order_by(RestaurantCheckAllocation.id).with_for_update())).scalars().all())
         if any(value.state != 'CLAIMED' for value in allocations):
             raise errors.CheckNotModifiableError('Check contains financially non-releasable allocations')
+        table_scopes = tuple((await db.execute(select(RestaurantCheckTableScope).where(
+            RestaurantCheckTableScope.check_id == check.id,
+            RestaurantCheckTableScope.active_slot == 1,
+        ).order_by(RestaurantCheckTableScope.service_session_id).with_for_update())).scalars().all())
         now = _now(); check.version += 1
         for member in members:
             member.active_slot = None; member.released_at = now; member.release_reason = reason; member.released_version = check.version
@@ -731,11 +830,88 @@ async def cancel_check(
             allocation.state = 'RELEASED'; allocation.ownership_slot = None; allocation.released_at = now
             allocation.release_reason = reason; allocation.released_version = check.version
             for key, value in _actor_values(context, 'released').items(): setattr(allocation, key, value)
+        for table_scope in table_scopes:
+            table_scope.lock_phase = 'RELEASED'; table_scope.active_slot = None
+            table_scope.released_at = now; table_scope.release_reason = reason
+            for key, value in _actor_values(context, 'released').items(): setattr(table_scope, key, value)
         check.status = 'CANCELLED'; check.cancelled_at = now; check.cancellation_reason = reason
         for key, value in _actor_values(context, 'cancelled').items(): setattr(check, key, value)
         check.consumption_total = ZERO; check.gratuity_total = ZERO; check.liability_total = ZERO
         await _write_version(db, check, context=context)
         _record_command(db, context=context, idempotency_key=idempotency_key, operation='CANCEL', request=request, check=check)
+        await db.commit()
+    except OperationalError as exc:
+        await db.rollback(); _raise_concurrency_conflict(exc)
+    except Exception:
+        await db.rollback(); raise
+    return await get_check(db, tenant_id=context.tenant_id, check_id=check_id), False
+
+
+async def decide_continuation(
+    db: AsyncSession, *, context: ExecutionContext, check_id: int,
+    expected_version: int, decision: str, idempotency_key: str,
+) -> tuple[CheckProjection, bool]:
+    decision = decision.strip().upper()
+    if decision not in ('YES', 'NO'):
+        raise ValueError('Continuation decision must be YES or NO')
+    request = {'check_id': check_id, 'expected_version': expected_version, 'decision': decision}
+    try:
+        replay = await _command_replay(
+            db, context=context, idempotency_key=idempotency_key,
+            operation='CONTINUATION_DECISION', request=request,
+        )
+        if replay is not None:
+            await db.commit()
+            return await get_check(db, tenant_id=context.tenant_id, check_id=check_id), True
+        check = await db.scalar(select(RestaurantCheck).where(
+            RestaurantCheck.id == check_id, RestaurantCheck.tenant_id == context.tenant_id,
+        ).with_for_update())
+        if check is None:
+            raise errors.CheckNotFoundError()
+        _authorize_controller(check, context)
+        if check.version != expected_version:
+            raise errors.CheckVersionConflictError()
+        if check.status != 'SETTLED' or check.continuation_decision != 'PENDING':
+            raise errors.CheckNotModifiableError('Continuation decision is not pending')
+        members = tuple((await db.execute(select(RestaurantCheckMember).where(
+            RestaurantCheckMember.check_id == check.id,
+            RestaurantCheckMember.active_slot == 1,
+        ).order_by(RestaurantCheckMember.diner_session_id).with_for_update())).scalars().all())
+        table_scopes = tuple((await db.execute(select(RestaurantCheckTableScope).where(
+            RestaurantCheckTableScope.check_id == check.id,
+            RestaurantCheckTableScope.active_slot == 1,
+        ).order_by(RestaurantCheckTableScope.service_session_id).with_for_update())).scalars().all())
+        await _lock_diners(
+            db, tenant_id=context.tenant_id,
+            diner_ids=tuple(value.diner_session_id for value in members),
+        )
+        confirmed = Decimal(await db.scalar(select(func.coalesce(func.sum(RestaurantCheckSettlement.amount), ZERO)).where(
+            RestaurantCheckSettlement.check_id == check.id,
+        )))
+        exposure = Decimal(await db.scalar(select(func.coalesce(func.sum(RestaurantPayment.amount), ZERO)).where(
+            RestaurantPayment.check_id == check.id,
+            RestaurantPayment.state.in_(('RESERVED', 'IN_PROGRESS', 'UNCERTAIN')),
+        )))
+        if confirmed != check.liability_total or exposure != ZERO:
+            raise errors.CheckNotModifiableError('Financial state is not safe for continuation')
+        now = _now()
+        check.continuation_decision = decision
+        check.continuation_decided_at = now
+        for key, value in _actor_values(context, 'continuation').items():
+            setattr(check, key, value)
+        if decision == 'YES':
+            for member in members:
+                member.active_slot = None; member.released_at = now
+                member.release_reason = 'SERVICE_CONTINUATION_ACCEPTED'; member.released_version = check.version
+                for key, value in _actor_values(context, 'released').items(): setattr(member, key, value)
+            for table_scope in table_scopes:
+                table_scope.lock_phase = 'RELEASED'; table_scope.active_slot = None
+                table_scope.released_at = now; table_scope.release_reason = 'SERVICE_CONTINUATION_ACCEPTED'
+                for key, value in _actor_values(context, 'released').items(): setattr(table_scope, key, value)
+        _record_command(
+            db, context=context, idempotency_key=idempotency_key,
+            operation='CONTINUATION_DECISION', request=request, check=check,
+        )
         await db.commit()
     except OperationalError as exc:
         await db.rollback(); _raise_concurrency_conflict(exc)
@@ -751,10 +927,15 @@ async def get_check(
     check = await db.scalar(select(RestaurantCheck).where(RestaurantCheck.id == check_id, RestaurantCheck.tenant_id == tenant_id))
     if check is None:
         raise errors.CheckNotFoundError()
-    members = tuple((await db.execute(select(RestaurantCheckMember).where(
-        RestaurantCheckMember.check_id == check.id, RestaurantCheckMember.active_slot == 1,
+    all_members = tuple((await db.execute(select(RestaurantCheckMember).where(
+        RestaurantCheckMember.check_id == check.id,
     ).order_by(RestaurantCheckMember.diner_session_id))).scalars().all())
-    if owner_diner_session_id is not None and owner_diner_session_id not in {value.diner_session_id for value in members}:
+    members = tuple(value for value in all_members if value.active_slot == 1)
+    table_scopes = tuple((await db.execute(select(RestaurantCheckTableScope).where(
+        RestaurantCheckTableScope.check_id == check.id,
+    ).order_by(RestaurantCheckTableScope.service_session_id))).scalars().all())
+    table_session_ids = {value.service_session_id for value in table_scopes}
+    if owner_diner_session_id is not None and owner_diner_session_id not in {value.diner_session_id for value in all_members}:
         raise errors.CheckNotFoundError()
     allocations = tuple((await db.execute(select(RestaurantCheckAllocation).where(
         RestaurantCheckAllocation.check_id == check.id, RestaurantCheckAllocation.state != 'RELEASED',
@@ -791,17 +972,27 @@ async def get_check(
             ))
             for (resource_id, session_id), diners in sorted(grouped.items())
         )
-    settled = sum((value.accepted_payable_amount for value in allocations if value.state == 'SETTLED'), ZERO)
+    settled = Decimal(await db.scalar(select(func.coalesce(func.sum(RestaurantCheckSettlement.amount), ZERO)).where(
+        RestaurantCheckSettlement.check_id == check.id,
+    )))
+    uncertain = Decimal(await db.scalar(select(func.coalesce(func.sum(RestaurantPayment.amount), ZERO)).where(
+        RestaurantPayment.check_id == check.id, RestaurantPayment.state == 'UNCERTAIN',
+    )))
     return CheckProjection(
         id=check.id, tenant_id=check.tenant_id, organization_id=check.organization_id,
         location_id=check.location_id, status=check.status, version=check.version,
         fingerprint=check.current_fingerprint, currency=check.currency,
         controller_diner_session_id=check.controller_diner_session_id,
         member_ids=tuple(value.diner_session_id for value in members),
+        diner_scope_ids=tuple(value.diner_session_id for value in all_members if value.service_session_id not in table_session_ids),
+        table_scope_session_ids=tuple(value.service_session_id for value in table_scopes),
         consumption_total=check.consumption_total, gratuity_total=check.gratuity_total,
         liability_total=check.liability_total, confirmed_settlement=settled,
-        outstanding=max(ZERO, check.liability_total - settled), uncertain_exposure=ZERO,
-        frozen_at=check.frozen_at, cancelled_at=check.cancelled_at, details=details,
+        outstanding=max(ZERO, check.liability_total - settled), uncertain_exposure=uncertain,
+        frozen_at=check.frozen_at, settled_at=check.settled_at,
+        continuation_decision=check.continuation_decision,
+        cancelled_at=check.cancelled_at, details=details,
+        signal=('SERVICE_CONTINUATION_DECISION_REQUIRED' if check.continuation_decision == 'PENDING' else None),
     )
 
 
@@ -826,6 +1017,12 @@ async def eligible_consumption(
             RestaurantCheckMember.diner_session_id == diner.id,
             RestaurantCheckMember.active_slot == 1,
         ))
+        if active_check_id is None:
+            active_check_id = await db.scalar(select(RestaurantCheckTableScope.check_id).where(
+                RestaurantCheckTableScope.tenant_id == tenant_id,
+                RestaurantCheckTableScope.service_session_id == diner.service_session_id,
+                RestaurantCheckTableScope.active_slot == 1,
+            ))
         orders = await _eligible_orders(db, (diner,))
         draft_id = await db.scalar(select(OrderDraft.id).where(
             OrderDraft.tenant_id == tenant_id, OrderDraft.conversation_id == diner.conversation_id,
@@ -871,37 +1068,78 @@ async def table_balance(
     check_rows = tuple((await db.execute(select(RestaurantCheck).where(
         RestaurantCheck.tenant_id == tenant_id,
         RestaurantCheck.id.in_(check_ids or (-1,)),
-        RestaurantCheck.status.in_(('OPEN', 'FROZEN')),
     ).order_by(RestaurantCheck.id))).scalars().all())
     claimed_check_ids = {value.check_id for value in allocations if value.state == 'CLAIMED'}
     unresolved_check_ids = claimed_check_ids | {
-        value.id for value in check_rows if value.gratuity_total > ZERO
+        value.id for value in check_rows if value.status in ('OPEN', 'FROZEN') and value.gratuity_total > ZERO
     }
-    pending_gratuity = sum(
-        (value.gratuity_total for value in check_rows if value.id in unresolved_check_ids),
-        ZERO,
-    )
+    payment_rows = tuple((await db.execute(select(RestaurantPayment).where(
+        RestaurantPayment.tenant_id == tenant_id,
+        RestaurantPayment.check_id.in_(check_ids or (-1,)),
+        RestaurantPayment.state.in_(('RESERVED', 'IN_PROGRESS', 'UNCERTAIN')),
+    ).order_by(RestaurantPayment.id))).scalars().all())
+    pending_gratuity = sum((value.gratuity_total for value in check_rows if value.id in unresolved_check_ids), ZERO)
+    reserved_payment = sum((value.amount for value in payment_rows if value.state in ('RESERVED', 'IN_PROGRESS')), ZERO)
+    uncertain_payment = sum((value.amount for value in payment_rows if value.state == 'UNCERTAIN'), ZERO)
     unresolved_checks = len(unresolved_check_ids)
+    # This field remains the accepted-consumption balance. Gratuity, active Checks,
+    # and payment exposure are reported separately and independently block closure.
+    # That preserves the WS-22 projection while WS-23 settlement rows become the
+    # authoritative liability application evidence.
     outstanding = max(ZERO, accepted - settled)
     currencies = {value.currency for value in orders}
-    closure_eligible = outstanding == ZERO and unresolved_checks == 0 and unreserved == ZERO
+    closure_eligible = (
+        outstanding == ZERO and unresolved_checks == 0 and unreserved == ZERO
+        and reserved_payment == ZERO and uncertain_payment == ZERO
+    )
+    continuation_required = await db.scalar(select(RestaurantCheckTableScope.id).join(
+        RestaurantCheck, RestaurantCheck.id == RestaurantCheckTableScope.check_id,
+    ).where(
+        RestaurantCheckTableScope.tenant_id == tenant_id,
+        RestaurantCheckTableScope.service_session_id == service_session_id,
+        RestaurantCheckTableScope.active_slot == 1,
+        RestaurantCheck.continuation_decision == 'PENDING',
+    )) is not None
     return TableBalanceProjection(
         session.id, session.resource_id, next(iter(currencies)) if len(currencies) == 1 else None,
-        accepted, reserved, unreserved, settled, pending_gratuity, ZERO,
+        accepted, reserved, unreserved, settled, pending_gratuity, reserved_payment, uncertain_payment,
         outstanding, unresolved_checks,
-        closure_eligible and pending_gratuity == ZERO,
-        closure_eligible and pending_gratuity == ZERO and session.status == 'OPEN',
+        closure_eligible,
+        continuation_required,
     )
 
 
 async def assert_diner_can_end(db: AsyncSession, *, tenant_id: int, diner_session_id: int) -> None:
-    active = await db.scalar(select(RestaurantCheckMember.id).where(
+    active_members = tuple((await db.execute(select(RestaurantCheckMember).where(
         RestaurantCheckMember.tenant_id == tenant_id,
         RestaurantCheckMember.diner_session_id == diner_session_id,
         RestaurantCheckMember.active_slot == 1,
-    ))
-    if active is not None:
-        raise errors.TableNotEligibleError('Diner has active Restaurant Check membership')
+    ).order_by(RestaurantCheckMember.id).with_for_update())).scalars().all())
+    diner = await db.scalar(select(DinerSession).where(
+        DinerSession.tenant_id == tenant_id, DinerSession.id == diner_session_id,
+    ).with_for_update())
+    if diner is None:
+        raise errors.TableNotEligibleError('Diner Session was not found')
+    releasable: list[RestaurantCheckMember] = []
+    for member in active_members:
+        check = await db.scalar(select(RestaurantCheck).where(
+            RestaurantCheck.id == member.check_id,
+            RestaurantCheck.tenant_id == tenant_id,
+        ).with_for_update())
+        table_scope = await db.scalar(select(RestaurantCheckTableScope.id).where(
+            RestaurantCheckTableScope.check_id == member.check_id,
+            RestaurantCheckTableScope.service_session_id == diner.service_session_id,
+            RestaurantCheckTableScope.active_slot == 1,
+        ))
+        if check is None or check.status != 'SETTLED' or check.continuation_decision != 'NO' or table_scope is not None:
+            raise errors.TableNotEligibleError('Diner does not have an applicable NO continuation decision')
+        exposure = Decimal(await db.scalar(select(func.coalesce(func.sum(RestaurantPayment.amount), ZERO)).where(
+            RestaurantPayment.check_id == check.id,
+            RestaurantPayment.state.in_(('RESERVED', 'IN_PROGRESS', 'UNCERTAIN')),
+        )))
+        if exposure != ZERO:
+            raise errors.TableNotEligibleError('Diner has unresolved financial exposure')
+        releasable.append(member)
     orders = tuple((await db.execute(select(RestaurantOrder.id).where(
         RestaurantOrder.tenant_id == tenant_id, RestaurantOrder.diner_session_id == diner_session_id,
     ))).scalars().all())
@@ -913,6 +1151,13 @@ async def assert_diner_can_end(db: AsyncSession, *, tenant_id: int, diner_sessio
         ))).scalars().all())
         if set(orders) != settled:
             raise errors.TableNotEligibleError('Diner has unsettled accepted consumption')
+    now = _now()
+    for member in releasable:
+        member.active_slot = None; member.released_at = now
+        member.release_reason = 'DINER_SESSION_CLOSED_AFTER_CONTINUATION_NO'
+        member.released_version = check.version
+        member.released_actor_type = ActorType.SYSTEM.value
+        member.released_actor_reference = 'diner-session-close'
 
 
 async def assert_service_can_close(db: AsyncSession, *, tenant_id: int, service_session_id: int) -> TableBalanceProjection:
@@ -921,4 +1166,32 @@ async def assert_service_can_close(db: AsyncSession, *, tenant_id: int, service_
         raise errors.TableOutstandingBalanceError()
     if not balance.closure_eligible:
         raise errors.TableNotEligibleError()
+    scopes = tuple((await db.execute(select(RestaurantCheckTableScope).where(
+        RestaurantCheckTableScope.tenant_id == tenant_id,
+        RestaurantCheckTableScope.service_session_id == service_session_id,
+        RestaurantCheckTableScope.active_slot == 1,
+    ).order_by(RestaurantCheckTableScope.id).with_for_update())).scalars().all())
+    now = _now()
+    for scope in scopes:
+        check = await db.scalar(select(RestaurantCheck).where(
+            RestaurantCheck.id == scope.check_id,
+            RestaurantCheck.tenant_id == tenant_id,
+        ).with_for_update())
+        if check is None or check.status != 'SETTLED' or check.continuation_decision != 'NO':
+            raise errors.TableNotEligibleError('TABLE closure requires an applicable NO continuation decision')
+        scope.lock_phase = 'RELEASED'; scope.active_slot = None; scope.released_at = now
+        scope.release_reason = 'TABLE_SESSION_CLOSED_AFTER_CONTINUATION_NO'
+        scope.released_actor_type = ActorType.SYSTEM.value
+        scope.released_actor_reference = 'service-session-close'
+        members = tuple((await db.execute(select(RestaurantCheckMember).where(
+            RestaurantCheckMember.check_id == check.id,
+            RestaurantCheckMember.service_session_id == service_session_id,
+            RestaurantCheckMember.active_slot == 1,
+        ).order_by(RestaurantCheckMember.id).with_for_update())).scalars().all())
+        for member in members:
+            member.active_slot = None; member.released_at = now
+            member.release_reason = 'TABLE_SESSION_CLOSED_AFTER_CONTINUATION_NO'
+            member.released_version = check.version
+            member.released_actor_type = ActorType.SYSTEM.value
+            member.released_actor_reference = 'service-session-close'
     return balance

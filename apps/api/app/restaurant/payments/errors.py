@@ -1,0 +1,69 @@
+class RestaurantPaymentError(RuntimeError):
+    code = 'RESTAURANT_PAYMENT_ERROR'
+
+    def __init__(self, message: str | None = None):
+        super().__init__(message or self.code)
+
+
+class PaymentNotFoundError(RestaurantPaymentError):
+    code = 'PAYMENT_NOT_FOUND'
+
+
+class PaymentPermissionError(RestaurantPaymentError):
+    code = 'PAYMENT_PERMISSION_DENIED'
+
+
+class PaymentIdempotencyConflictError(RestaurantPaymentError):
+    code = 'PAYMENT_IDEMPOTENCY_CONFLICT'
+
+
+class CheckNotPayableError(RestaurantPaymentError):
+    code = 'CHECK_NOT_PAYABLE'
+
+
+class CheckFinancialIdentityConflictError(RestaurantPaymentError):
+    code = 'CHECK_FINANCIAL_IDENTITY_CONFLICT'
+
+
+class PaymentAmountExceedsAvailableError(RestaurantPaymentError):
+    code = 'PAYMENT_AMOUNT_EXCEEDS_AVAILABLE_LIABILITY'
+
+
+class InvalidPaymentAmountError(RestaurantPaymentError):
+    code = 'INVALID_PAYMENT_AMOUNT'
+
+
+class InvalidCashTenderError(RestaurantPaymentError):
+    code = 'INVALID_CASH_TENDER'
+
+
+class PaymentStateConflictError(RestaurantPaymentError):
+    code = 'PAYMENT_STATE_CONFLICT'
+
+
+class PaymentRecoveryRequiredError(RestaurantPaymentError):
+    code = 'PAYMENT_RECOVERY_REQUIRED'
+
+
+class PaymentStaleResultError(RestaurantPaymentError):
+    code = 'PAYMENT_STALE_RESULT'
+
+
+class PaymentConcurrencyConflictError(RestaurantPaymentError):
+    code = 'PAYMENT_CONCURRENCY_CONFLICT'
+
+
+class DuplicateSettlementError(RestaurantPaymentError):
+    code = 'DUPLICATE_PAYMENT_SETTLEMENT'
+
+
+class UnsupportedExecutionCapabilityError(RestaurantPaymentError):
+    code = 'PAYMENT_EXECUTION_UNSUPPORTED'
+
+
+class RecoveryUnavailableError(RestaurantPaymentError):
+    code = 'PAYMENT_RECOVERY_UNAVAILABLE'
+
+
+class SensitiveCredentialMisuseError(RestaurantPaymentError):
+    code = 'SENSITIVE_PAYMENT_CREDENTIAL_MISUSE'

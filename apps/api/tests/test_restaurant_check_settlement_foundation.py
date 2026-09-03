@@ -781,7 +781,10 @@ def test_multi_table_check_balance_continuation_and_multiple_cycles(integration_
         )
         assert balance1.status_code == 200
         assert Decimal(balance1.json()['outstanding_confirmed_balance']) == Decimal('0')
-        assert balance1.json()['service_continuation_decision_required'] is True
+        # WS-23-B supersedes the former derived zero-balance signal: only an
+        # actual fully settled Check with a durable PENDING decision emits it.
+        # This WS-22 fixture mutates allocations only and therefore must not.
+        assert balance1.json()['service_continuation_decision_required'] is False
 
         _accepted_order(client, connection, scope, first_headers, amount='35')
         positive = client.get(

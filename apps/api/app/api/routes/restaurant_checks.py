@@ -48,8 +48,19 @@ class CheckCreateRequest(BaseModel):
 
 class StaffCheckCreateRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
-    diner_session_ids: list[int] = Field(min_length=1)
+    diner_session_ids: list[int] = Field(default_factory=list)
+    table_service_session_ids: list[int] = Field(default_factory=list)
     controller_diner_session_id: int | None = Field(default=None, gt=0)
+
+    @model_validator(mode='after')
+    def validate_scope(self):
+        if not self.diner_session_ids and not self.table_service_session_ids:
+            raise ValueError('At least one DINER or TABLE scope is required')
+        if len(self.diner_session_ids) != len(set(self.diner_session_ids)):
+            raise ValueError('diner_session_ids must be distinct')
+        if len(self.table_service_session_ids) != len(set(self.table_service_session_ids)):
+            raise ValueError('table_service_session_ids must be distinct')
+        return self
 
 
 class CheckVersionRequest(BaseModel):
@@ -74,6 +85,11 @@ class GratuityRequest(CheckVersionRequest):
     input_value: ExactNonNegativeMoney
 
 
+class ContinuationDecisionRequest(CheckVersionRequest):
+    model_config = ConfigDict(extra='forbid')
+    decision: Literal['YES', 'NO']
+
+
 class DraftAbandonRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     expected_version: int = Field(ge=1)
@@ -91,6 +107,8 @@ class CheckResponse(BaseModel):
     currency: str
     controller_diner_session_id: int | None
     member_ids: tuple[int, ...]
+    diner_scope_ids: tuple[int, ...]
+    table_scope_session_ids: tuple[int, ...]
     consumption_total: Decimal
     gratuity_total: Decimal
     liability_total: Decimal
@@ -98,6 +116,8 @@ class CheckResponse(BaseModel):
     outstanding: Decimal
     uncertain_exposure: Decimal
     frozen_at: Any
+    settled_at: Any
+    continuation_decision: str
     cancelled_at: Any
     details: Any
     signal: str | None = None
@@ -126,6 +146,7 @@ class TableBalanceResponse(BaseModel):
     unreserved_unsettled_consumption: Decimal
     settled_consumption: Decimal
     pending_exposure: Decimal
+    reserved_payment_exposure: Decimal
     uncertain_exposure: Decimal
     outstanding_confirmed_balance: Decimal
     unresolved_active_checks: int
@@ -291,8 +312,9 @@ async def staff_create_check(payload: StaffCheckCreateRequest, response: Respons
     context: Annotated[AuthenticatedContext, Depends(require_permission('restaurant_check.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)], idempotency_key: IdempotencyKey) -> object:
     try:
-        value, replayed = await service.create_check(
+        value, replayed = await service.create_scoped_check(
             db, context=_staff_execution(context), diner_ids=tuple(payload.diner_session_ids),
+            table_service_session_ids=tuple(payload.table_service_session_ids),
             controller_diner_session_id=payload.controller_diner_session_id, idempotency_key=idempotency_key,
         )
     except Exception as exc: raise _error(exc) from exc
@@ -388,3 +410,35 @@ async def staff_cancel(check_id: int, payload: ReasonRequest,
     try: return (await service.cancel_check(db, context=_staff_execution(context), check_id=check_id,
         expected_version=payload.expected_version, idempotency_key=idempotency_key, reason=payload.reason))[0]
     except Exception as exc: raise _error(exc) from exc
+
+
+@router.post('/diner/restaurant-checks/{check_id}/continuation-decision', response_model=CheckResponse)
+async def diner_continuation_decision(
+    check_id: int, payload: ContinuationDecisionRequest,
+    context: Annotated[DinerAuthenticatedContext, Depends(get_diner_authenticated_context)],
+    db: Annotated[AsyncSession, Depends(get_db)], idempotency_key: IdempotencyKey,
+) -> object:
+    try:
+        return (await service.decide_continuation(
+            db, context=_diner_execution(context), check_id=check_id,
+            expected_version=payload.expected_version, decision=payload.decision,
+            idempotency_key=idempotency_key,
+        ))[0]
+    except Exception as exc:
+        raise _error(exc, diner=True) from exc
+
+
+@router.post('/restaurant-checks/{check_id}/continuation-decision', response_model=CheckResponse)
+async def staff_continuation_decision(
+    check_id: int, payload: ContinuationDecisionRequest,
+    context: Annotated[AuthenticatedContext, Depends(require_permission('restaurant_check.manage'))],
+    db: Annotated[AsyncSession, Depends(get_db)], idempotency_key: IdempotencyKey,
+) -> object:
+    try:
+        return (await service.decide_continuation(
+            db, context=_staff_execution(context), check_id=check_id,
+            expected_version=payload.expected_version, decision=payload.decision,
+            idempotency_key=idempotency_key,
+        ))[0]
+    except Exception as exc:
+        raise _error(exc) from exc

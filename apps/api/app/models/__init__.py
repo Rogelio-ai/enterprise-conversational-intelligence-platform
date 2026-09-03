@@ -43,7 +43,13 @@ from app.models.restaurant_check import (
     RestaurantCheckCommand,
     RestaurantCheckGratuity,
     RestaurantCheckMember,
+    RestaurantCheckTableScope,
     RestaurantCheckVersion,
+)
+from app.models.restaurant_payment import (
+    RestaurantCheckSettlement,
+    RestaurantPayment,
+    RestaurantPaymentAttempt,
 )
 from app.models.pos_submission import (
     LocationPosConnection,
@@ -111,7 +117,11 @@ __all__ = [
     'RestaurantCheckCommand',
     'RestaurantCheckGratuity',
     'RestaurantCheckMember',
+    'RestaurantCheckTableScope',
     'RestaurantCheckVersion',
+    'RestaurantPayment',
+    'RestaurantPaymentAttempt',
+    'RestaurantCheckSettlement',
     'LocationPosConnection',
     'PosOrderSubmission',
     'PosOrderSubmissionAttempt',
