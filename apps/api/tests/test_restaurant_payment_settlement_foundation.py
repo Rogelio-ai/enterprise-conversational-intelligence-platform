@@ -26,7 +26,7 @@ def _client(settings, executor=None):
     return TestClient(create_app(settings=settings, payment_executors=executors))
 
 
-def _grant(connection, tenant_id: int) -> None:
+def _grant(connection, tenant_id: int, *, configure_executor: bool = True) -> None:
     with connection.cursor() as cursor:
         cursor.execute('SELECT id FROM roles WHERE tenant_id=%s ORDER BY id LIMIT 1', (tenant_id,))
         role_id = cursor.fetchone()['id']
@@ -39,6 +39,40 @@ def _grant(connection, tenant_id: int) -> None:
             cursor.execute(
                 'INSERT INTO role_permissions (role_id,permission_id) VALUES (%s,%s)',
                 (role_id, permission_id),
+            )
+        if configure_executor:
+            cursor.execute(
+                '''
+                SELECT organization_id,id AS location_id
+                FROM locations WHERE tenant_id=%s ORDER BY id LIMIT 1
+                ''',
+                (tenant_id,),
+            )
+            owner = cursor.fetchone()
+            cursor.execute(
+                '''
+                INSERT INTO location_payment_executor_configurations (
+                    tenant_id,organization_id,location_id,executor_key,display_name,
+                    adapter_kind,topology,status,selection_priority
+                ) VALUES (%s,%s,%s,'deterministic','Deterministic','deterministic',
+                    'EXTERNAL','ACTIVE',100)
+                ''',
+                (tenant_id, owner['organization_id'], owner['location_id']),
+            )
+            configuration_id = cursor.lastrowid
+            cursor.execute(
+                '''
+                INSERT INTO location_payment_executor_capabilities (
+                    executor_configuration_id,tenant_id,organization_id,location_id,
+                    method_category,currency
+                ) VALUES (%s,%s,%s,%s,'CARD','MXN')
+                ''',
+                (
+                    configuration_id,
+                    tenant_id,
+                    owner['organization_id'],
+                    owner['location_id'],
+                ),
             )
 
 

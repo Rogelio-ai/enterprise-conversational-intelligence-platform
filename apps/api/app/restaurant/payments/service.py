@@ -2,9 +2,10 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from typing import Mapping
+from time import perf_counter
 from uuid import uuid4
 
 from sqlalchemy import select
@@ -18,6 +19,7 @@ from app.models import (
     RestaurantCheckMember,
     RestaurantCheckSettlement,
     RestaurantCheckTableScope,
+    LocationPaymentExecutorConfiguration,
     RestaurantPayment,
     RestaurantPaymentAttempt,
     RestaurantServiceSession,
@@ -25,7 +27,8 @@ from app.models import (
 )
 from app.restaurant.checks import service as check_service
 from app.restaurant.integrations.payments.contracts import (
-    EphemeralExecutionCredential,
+    EphemeralCustomerPaymentSource,
+    EphemeralMerchantCredential,
     PaymentExecutionOutcome,
     PaymentExecutionRequest,
     PaymentExecutionResult,
@@ -33,7 +36,22 @@ from app.restaurant.integrations.payments.contracts import (
     PaymentRecoveryRequest,
     PaymentRecoveryResult,
 )
+from app.restaurant.integrations.payments.credentials import (
+    MerchantCredentialContext,
+    MerchantCredentialResolver,
+)
+from app.restaurant.integrations.payments.observability import (
+    PAYMENT_EXECUTION_DURATION_SECONDS,
+    PAYMENT_EXECUTION_TOTAL,
+    PAYMENT_RECOVERY_TOTAL,
+)
 from app.restaurant.integrations.payments.ports import PaymentExecutionPort, PaymentRecoveryPort
+from app.restaurant.integrations.payments.registry import PaymentExecutorRegistry
+from app.restaurant.integrations.payments.resolver import (
+    PaymentExecutorResolver,
+    PaymentExecutorSelectionMode,
+    ResolvedPaymentExecutor,
+)
 from app.restaurant.payments import errors
 from app.restaurant.payments.contracts import (
     CheckSettlementProjection,
@@ -47,6 +65,7 @@ MONEY_UNIT = Decimal('0.0001')
 REQUEST_SCHEMA_VERSION = 1
 CLAIM_LEASE = timedelta(minutes=2)
 RESERVING_STATES = ('RESERVED', 'IN_PROGRESS', 'UNCERTAIN')
+logger = logging.getLogger('ecip.restaurant_payments')
 
 
 def _now() -> datetime:
@@ -418,10 +437,10 @@ async def _finish(
             raise errors.PaymentNotFoundError()
         check = await db.scalar(select(RestaurantCheck).where(
             RestaurantCheck.id == check_id, RestaurantCheck.tenant_id == tenant_id,
-        ).with_for_update())
+        ).with_for_update().execution_options(populate_existing=True))
         payment = await db.scalar(select(RestaurantPayment).where(
             RestaurantPayment.id == payment_id, RestaurantPayment.tenant_id == tenant_id,
-        ).with_for_update())
+        ).with_for_update().execution_options(populate_existing=True))
         if payment.claim_token != token:
             await db.rollback()
             winner = await db.scalar(select(RestaurantPayment).where(
@@ -436,6 +455,59 @@ async def _finish(
         ).with_for_update())
         if attempt is None or attempt.result != 'IN_PROGRESS':
             raise errors.PaymentStaleResultError()
+        attempt_external_reference = result.external_reference
+        if (
+            state == 'SUCCEEDED'
+            and result.external_reference is not None
+            and payment.executor_configuration_id is not None
+        ):
+            await db.scalar(select(LocationPaymentExecutorConfiguration.id).where(
+                LocationPaymentExecutorConfiguration.id
+                == payment.executor_configuration_id,
+                LocationPaymentExecutorConfiguration.tenant_id == payment.tenant_id,
+                LocationPaymentExecutorConfiguration.organization_id
+                == payment.organization_id,
+                LocationPaymentExecutorConfiguration.location_id == payment.location_id,
+            ).with_for_update())
+            duplicate_payment_id = await db.scalar(select(RestaurantPayment.id).where(
+                RestaurantPayment.executor_configuration_id
+                == payment.executor_configuration_id,
+                RestaurantPayment.external_reference == result.external_reference,
+                RestaurantPayment.id != payment.id,
+            ).with_for_update())
+            if duplicate_payment_id is not None:
+                state = 'UNCERTAIN'
+                updates = {
+                    'external_reference': None,
+                    'error_code': 'PAYMENT_EXTERNAL_REFERENCE_CONFLICT',
+                    'error_message': (
+                        'Provider transaction identity is already associated '
+                        'with another payment'
+                    ),
+                }
+                if isinstance(result, PaymentExecutionResult):
+                    updates['outcome'] = PaymentExecutionOutcome.UNCERTAIN
+                else:
+                    updates['outcome'] = PaymentRecoveryOutcome.STILL_UNCERTAIN
+                result = result.model_copy(update=updates)
+                logger.warning(
+                    'Duplicate provider transaction identity preserved as uncertain',
+                    extra={
+                        'event': 'payment_external_reference_conflict',
+                        'operation': 'finalize',
+                        'tenant_id': payment.tenant_id,
+                        'organization_id': payment.organization_id,
+                        'location_id': payment.location_id,
+                        'payment_id': payment.id,
+                        'executor_key': payment.executor_key,
+                        'method': payment.method_category,
+                        'currency': payment.currency,
+                        'payment_state': payment.state,
+                        'attempt_number': payment.attempt_count,
+                        'correlation_id': context.correlation_id,
+                        'outcome': 'UNCERTAIN',
+                    },
+                )
         now = _now()
         payment.state = state
         payment.claim_token = None
@@ -448,12 +520,12 @@ async def _finish(
                 payment.terminal_at = now
         attempt.result = state
         attempt.completed_at = now
-        attempt.external_reference = result.external_reference
+        attempt.external_reference = attempt_external_reference
         attempt.external_status = result.external_status
         attempt.error_code = result.error_code
         attempt.error_message = result.error_message
         attempt.result_fingerprint = _sha({
-            'result': state, 'external_reference': result.external_reference,
+            'result': state, 'external_reference': attempt_external_reference,
             'external_status': result.external_status, 'error_code': result.error_code,
         })
         await db.commit()
@@ -484,38 +556,276 @@ def _recovery_state(result: PaymentRecoveryResult) -> str:
     }[result.outcome]
 
 
+async def _historical_executor(
+    db: AsyncSession,
+    *,
+    payment: RestaurantPayment,
+    registry: PaymentExecutorRegistry,
+) -> ResolvedPaymentExecutor:
+    if payment.executor_configuration_id is None:
+        raise errors.PaymentExecutorConfigurationNotFoundError(
+            'Payment has no durable executor configuration identity'
+        )
+    try:
+        resolved = await PaymentExecutorResolver(db, registry).resolve_historical(
+            tenant_id=payment.tenant_id,
+            organization_id=payment.organization_id,
+            location_id=payment.location_id,
+            executor_configuration_id=payment.executor_configuration_id,
+        )
+        await db.commit()
+        return resolved
+    except (
+        errors.PaymentExecutorRegistryError,
+        errors.PaymentExecutorResolutionError,
+    ):
+        await db.commit()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
+
+async def _execution_executor(
+    db: AsyncSession,
+    *,
+    payment: RestaurantPayment,
+    registry: PaymentExecutorRegistry,
+) -> ResolvedPaymentExecutor:
+    if payment.executor_configuration_id is None:
+        raise errors.PaymentExecutorConfigurationNotFoundError(
+            'Payment has no durable executor configuration identity'
+        )
+    try:
+        resolved = await PaymentExecutorResolver(db, registry).resolve_for_execution(
+            tenant_id=payment.tenant_id,
+            organization_id=payment.organization_id,
+            location_id=payment.location_id,
+            executor_configuration_id=payment.executor_configuration_id,
+            method_category=payment.method_category,
+            currency=payment.currency,
+        )
+        await db.commit()
+        return resolved
+    except (
+        errors.PaymentExecutorRegistryError,
+        errors.PaymentExecutorResolutionError,
+    ):
+        await db.commit()
+        raise
+    except Exception:
+        await db.rollback()
+        raise
+
+
+async def _merchant_credential(
+    *,
+    payment: RestaurantPayment,
+    configuration: LocationPaymentExecutorConfiguration,
+    resolver: MerchantCredentialResolver | None,
+) -> EphemeralMerchantCredential | None:
+    if configuration.credential_binding is None:
+        return None
+    if resolver is None or not isinstance(resolver, MerchantCredentialResolver):
+        raise errors.MerchantCredentialResolutionError(
+            'Merchant credential resolver is unavailable'
+        )
+    context = MerchantCredentialContext(
+        tenant_id=configuration.tenant_id,
+        organization_id=configuration.organization_id,
+        location_id=configuration.location_id,
+        executor_configuration_id=configuration.id,
+        adapter_kind=configuration.adapter_kind,
+        credential_binding=configuration.credential_binding,
+        operation_reference=str(payment.id),
+    )
+    try:
+        credential = await resolver.resolve(context=context)
+    except errors.MerchantCredentialResolutionError:
+        raise
+    except Exception as exc:
+        raise errors.MerchantCredentialResolutionError(
+            'Merchant credential resolution failed'
+        ) from exc
+    if not isinstance(credential, EphemeralMerchantCredential):
+        raise errors.MerchantCredentialResolutionError(
+            'Merchant credential resolver returned an invalid result'
+        )
+    return credential
+
+
 async def _execute_claimed(
     db: AsyncSession, *, payment: RestaurantPayment, token: str,
-    context: ExecutionContext, executor: object | None,
-    credential: EphemeralExecutionCredential | None,
+    context: ExecutionContext, executor_registry: PaymentExecutorRegistry,
+    credential_resolver: MerchantCredentialResolver | None,
+    customer_payment_source: EphemeralCustomerPaymentSource | None,
 ) -> PaymentProjection:
-    if executor is None or not isinstance(executor, PaymentExecutionPort):
-        result = PaymentExecutionResult(
-            outcome=PaymentExecutionOutcome.DEFINITE_FAILURE,
-            error_code=errors.UnsupportedExecutionCapabilityError.code,
-            error_message='Configured payment executor is unavailable',
+    try:
+        resolved = await _execution_executor(
+            db, payment=payment, registry=executor_registry
         )
-    elif credential is None:
+    except (errors.PaymentExecutorRegistryError, errors.PaymentExecutorResolutionError) as exc:
+        logger.warning(
+            'Durably selected payment executor is unavailable',
+            extra={
+                'event': 'payment_executor_unavailable',
+                'operation': 'execute',
+                'tenant_id': payment.tenant_id,
+                'organization_id': payment.organization_id,
+                'location_id': payment.location_id,
+                'payment_id': payment.id,
+                'executor_key': payment.executor_key,
+                'method': payment.method_category,
+                'currency': payment.currency,
+                'payment_state': payment.state,
+                'attempt_number': payment.attempt_count,
+                'correlation_id': context.correlation_id,
+                'outcome': exc.code,
+            },
+        )
         result = PaymentExecutionResult(
             outcome=PaymentExecutionOutcome.DEFINITE_FAILURE,
-            error_code=errors.SensitiveCredentialMisuseError.code,
-            error_message='Ephemeral execution credential is required',
+            error_code=exc.code,
+            error_message='Durably selected payment executor is unavailable',
         )
     else:
-        request = PaymentExecutionRequest(
-            operation_reference=str(payment.id), amount=payment.amount,
-            currency=payment.currency, method_category=payment.method_category,
-            idempotency_key=payment.provider_idempotency_key,
-            request_fingerprint=payment.request_fingerprint,
-        )
-        try:
-            result = await executor.execute(request=request, credential=credential)
-        except Exception as exc:
-            result = PaymentExecutionResult(
-                outcome=PaymentExecutionOutcome.UNCERTAIN,
-                error_code='PAYMENT_EXECUTION_RESULT_UNCERTAIN',
-                error_message=f'Unexpected failure after payment call boundary: {type(exc).__name__}',
+        executor = resolved.executor
+        if not isinstance(executor, PaymentExecutionPort):
+            logger.warning(
+                'Configured payment executor cannot execute payments',
+                extra={
+                    'event': 'payment_executor_unavailable',
+                    'operation': 'execute',
+                    'tenant_id': payment.tenant_id,
+                    'organization_id': payment.organization_id,
+                    'location_id': payment.location_id,
+                    'payment_id': payment.id,
+                    'executor_key': resolved.configuration.executor_key,
+                    'adapter_kind': resolved.configuration.adapter_kind,
+                    'method': payment.method_category,
+                    'currency': payment.currency,
+                    'payment_state': payment.state,
+                    'attempt_number': payment.attempt_count,
+                    'correlation_id': context.correlation_id,
+                    'outcome': errors.UnsupportedExecutionCapabilityError.code,
+                },
             )
+            result = PaymentExecutionResult(
+                outcome=PaymentExecutionOutcome.DEFINITE_FAILURE,
+                error_code=errors.UnsupportedExecutionCapabilityError.code,
+                error_message='Configured payment executor cannot execute payments',
+            )
+        else:
+            try:
+                merchant_credential = await _merchant_credential(
+                    payment=payment,
+                    configuration=resolved.configuration,
+                    resolver=credential_resolver,
+                )
+            except errors.MerchantCredentialResolutionError as exc:
+                logger.warning(
+                    'Merchant credential resolution prevented payment execution',
+                    extra={
+                        'event': 'payment_executor_unavailable',
+                        'operation': 'credential_resolution',
+                        'tenant_id': payment.tenant_id,
+                        'organization_id': payment.organization_id,
+                        'location_id': payment.location_id,
+                        'payment_id': payment.id,
+                        'executor_key': resolved.configuration.executor_key,
+                        'adapter_kind': resolved.configuration.adapter_kind,
+                        'method': payment.method_category,
+                        'currency': payment.currency,
+                        'payment_state': payment.state,
+                        'attempt_number': payment.attempt_count,
+                        'correlation_id': context.correlation_id,
+                        'outcome': exc.code,
+                    },
+                )
+                result = PaymentExecutionResult(
+                    outcome=PaymentExecutionOutcome.DEFINITE_FAILURE,
+                    error_code=exc.code,
+                    error_message='Merchant credential could not be resolved',
+                )
+            else:
+                request = PaymentExecutionRequest(
+                    operation_reference=str(payment.id), amount=payment.amount,
+                    currency=payment.currency, method_category=payment.method_category,
+                    idempotency_key=payment.provider_idempotency_key,
+                    request_fingerprint=payment.request_fingerprint,
+                )
+                log_context = {
+                    'tenant_id': payment.tenant_id,
+                    'organization_id': payment.organization_id,
+                    'location_id': payment.location_id,
+                    'payment_id': payment.id,
+                    'executor_key': resolved.configuration.executor_key,
+                    'adapter_kind': resolved.configuration.adapter_kind,
+                    'topology': resolved.configuration.topology,
+                    'method': payment.method_category,
+                    'currency': payment.currency,
+                    'payment_state': payment.state,
+                    'attempt_number': payment.attempt_count,
+                    'correlation_id': context.correlation_id,
+                }
+                logger.info(
+                    'Payment execution started',
+                    extra={
+                        'event': 'payment_execution_started',
+                        'operation': 'execute',
+                        **log_context,
+                    },
+                )
+                started = perf_counter()
+                try:
+                    result = await executor.execute(
+                        request=request,
+                        merchant_credential=merchant_credential,
+                        customer_payment_source=customer_payment_source,
+                    )
+                except Exception as exc:
+                    result = PaymentExecutionResult(
+                        outcome=PaymentExecutionOutcome.UNCERTAIN,
+                        error_code='PAYMENT_EXECUTION_RESULT_UNCERTAIN',
+                        error_message=(
+                            'Unexpected failure after payment call boundary: '
+                            f'{type(exc).__name__}'
+                        ),
+                    )
+                duration = perf_counter() - started
+                outcome = result.outcome.value
+                PAYMENT_EXECUTION_TOTAL.labels(
+                    method=payment.method_category,
+                    outcome=outcome,
+                    adapter_kind=resolved.configuration.adapter_kind,
+                    topology=resolved.configuration.topology,
+                ).inc()
+                PAYMENT_EXECUTION_DURATION_SECONDS.labels(
+                    method=payment.method_category,
+                    outcome=outcome,
+                    adapter_kind=resolved.configuration.adapter_kind,
+                    topology=resolved.configuration.topology,
+                ).observe(duration)
+                logger.info(
+                    'Payment execution completed',
+                    extra={
+                        'event': 'payment_execution_completed',
+                        'operation': 'execute',
+                        **log_context,
+                        'outcome': outcome,
+                        'duration_ms': round(duration * 1000, 3),
+                    },
+                )
+                if result.outcome is PaymentExecutionOutcome.UNCERTAIN:
+                    logger.warning(
+                        'Payment execution remains uncertain',
+                        extra={
+                            'event': 'payment_execution_uncertain',
+                            'operation': 'execute',
+                            **log_context,
+                            'outcome': outcome,
+                        },
+                    )
     finished = await _finish(
         db, tenant_id=payment.tenant_id, payment_id=payment.id, token=token,
         context=context, result=result, state=_execution_state(result),
@@ -530,7 +840,10 @@ async def initiate_payment(
     payer_type: str, payer_diner_session_id: int | None,
     payer_reference: str | None, cash_tendered_amount: Decimal | None,
     executor_key: str | None, idempotency_key: str,
-    executors: Mapping[str, object], credential: EphemeralExecutionCredential | None,
+    selection_mode: PaymentExecutorSelectionMode | str | None,
+    executor_registry: PaymentExecutorRegistry,
+    credential_resolver: MerchantCredentialResolver | None,
+    customer_payment_source: EphemeralCustomerPaymentSource | None,
 ) -> tuple[PaymentProjection, bool]:
     amount = _validate_amount(amount)
     currency = currency.strip().upper()
@@ -551,17 +864,19 @@ async def initiate_payment(
     if method_category == 'CASH':
         if context.actor_type is not ActorType.EMPLOYEE:
             raise errors.PaymentPermissionError('Only authorized staff may confirm physical cash receipt')
-        if executor_key is not None or credential is not None:
+        if executor_key is not None or customer_payment_source is not None:
             raise errors.SensitiveCredentialMisuseError('Cash payment cannot carry execution credentials')
         if cash_tendered_amount is None:
             raise errors.InvalidCashTenderError()
         cash_tendered_amount = _validate_amount(cash_tendered_amount)
         if cash_tendered_amount < amount:
             raise errors.InvalidCashTenderError('Cash tender must cover the settlement amount')
-    elif not executor_key:
-        raise errors.UnsupportedExecutionCapabilityError('Electronic payment requires an executor key')
     elif cash_tendered_amount is not None:
         raise errors.InvalidCashTenderError('Electronic payment cannot include cash tender evidence')
+    elif selection_mode is None:
+        raise errors.InvalidPaymentExecutorSelectionError(
+            'Electronic payment requires an executor selection mode'
+        )
 
     fingerprint = _request_fingerprint(
         check_id=check_id, expected_version=expected_check_version,
@@ -601,6 +916,58 @@ async def initiate_payment(
         available = check.liability_total - confirmed - reserved
         if amount > available:
             raise errors.PaymentAmountExceedsAvailableError()
+        resolved_executor = None
+        if method_category != 'CASH':
+            try:
+                resolved_executor = await PaymentExecutorResolver(
+                    db, executor_registry
+                ).resolve(
+                    tenant_id=check.tenant_id,
+                    organization_id=check.organization_id,
+                    location_id=check.location_id,
+                    method_category=method_category,
+                    currency=currency,
+                    selection_mode=selection_mode,
+                    executor_key=executor_key,
+                )
+            except (
+                errors.PaymentExecutorRegistryError,
+                errors.PaymentExecutorResolutionError,
+            ) as exc:
+                logger.warning(
+                    'Payment executor selection rejected',
+                    extra={
+                        'event': 'payment_executor_unavailable',
+                        'operation': 'select',
+                        'tenant_id': check.tenant_id,
+                        'organization_id': check.organization_id,
+                        'location_id': check.location_id,
+                        'executor_key': executor_key,
+                        'method': method_category,
+                        'currency': currency,
+                        'correlation_id': context.correlation_id,
+                        'outcome': exc.code,
+                    },
+                )
+                raise
+            logger.info(
+                'Payment executor selected',
+                extra={
+                    'event': 'payment_executor_selected',
+                    'operation': 'select',
+                    'tenant_id': check.tenant_id,
+                    'organization_id': check.organization_id,
+                    'location_id': check.location_id,
+                    'executor_key': resolved_executor.configuration.executor_key,
+                    'adapter_kind': resolved_executor.configuration.adapter_kind,
+                    'topology': resolved_executor.configuration.topology,
+                    'method': method_category,
+                    'currency': currency,
+                    'selection_mode': PaymentExecutorSelectionMode(selection_mode).value,
+                    'correlation_id': context.correlation_id,
+                    'outcome': 'SELECTED',
+                },
+            )
         now = _now()
         payment = RestaurantPayment(
             tenant_id=check.tenant_id, organization_id=check.organization_id,
@@ -614,7 +981,15 @@ async def initiate_payment(
             initiated_actor_reference=context.principal_reference,
             actor_scope=_actor_scope(context), idempotency_key=idempotency_key,
             request_schema_version=REQUEST_SCHEMA_VERSION,
-            request_fingerprint=fingerprint, state='RESERVED', executor_key=executor_key,
+            request_fingerprint=fingerprint, state='RESERVED',
+            executor_key=(
+                None if resolved_executor is None else
+                resolved_executor.configuration.executor_key
+            ),
+            executor_configuration_id=(
+                None if resolved_executor is None else
+                resolved_executor.configuration.id
+            ),
             provider_idempotency_key=(
                 None if method_category == 'CASH' else
                 f'payment-v1:{context.tenant_id}:{fingerprint[:32]}:{_sha([_actor_scope(context), idempotency_key])[:16]}'
@@ -653,13 +1028,17 @@ async def initiate_payment(
         return await _payment_projection(db, claimed), True
     return await _execute_claimed(
         db, payment=claimed, token=token, context=context,
-        executor=executors.get(claimed.executor_key), credential=credential,
+        executor_registry=executor_registry,
+        credential_resolver=credential_resolver,
+        customer_payment_source=customer_payment_source,
     ), False
 
 
 async def retry_payment(
     db: AsyncSession, *, context: ExecutionContext, payment_id: int,
-    executors: Mapping[str, object], credential: EphemeralExecutionCredential | None,
+    executor_registry: PaymentExecutorRegistry,
+    credential_resolver: MerchantCredentialResolver | None,
+    customer_payment_source: EphemeralCustomerPaymentSource | None,
 ) -> PaymentProjection:
     claimed, token = await _claim(
         db, tenant_id=context.tenant_id, payment_id=payment_id, context=context,
@@ -669,13 +1048,16 @@ async def retry_payment(
         return await _payment_projection(db, claimed)
     return await _execute_claimed(
         db, payment=claimed, token=token, context=context,
-        executor=executors.get(claimed.executor_key), credential=credential,
+        executor_registry=executor_registry,
+        credential_resolver=credential_resolver,
+        customer_payment_source=customer_payment_source,
     )
 
 
 async def recover_payment(
     db: AsyncSession, *, context: ExecutionContext, payment_id: int,
-    executors: Mapping[str, object],
+    executor_registry: PaymentExecutorRegistry,
+    credential_resolver: MerchantCredentialResolver | None,
 ) -> PaymentProjection:
     payment = await db.scalar(select(RestaurantPayment).where(
         RestaurantPayment.id == payment_id,
@@ -714,27 +1096,140 @@ async def recover_payment(
         db, tenant_id=context.tenant_id, payment_id=payment_id, context=context,
         attempt_type=attempt_type, allowed_states=('UNCERTAIN',),
     )
-    executor = executors.get(claimed.executor_key)
-    if executor is None or not isinstance(executor, PaymentRecoveryPort):
+    try:
+        resolved = await _historical_executor(
+            db, payment=claimed, registry=executor_registry
+        )
+    except (errors.PaymentExecutorRegistryError, errors.PaymentExecutorResolutionError) as exc:
+        logger.warning(
+            'Durably selected payment executor is unavailable for recovery',
+            extra={
+                'event': 'payment_executor_unavailable',
+                'operation': 'recover',
+                'tenant_id': claimed.tenant_id,
+                'organization_id': claimed.organization_id,
+                'location_id': claimed.location_id,
+                'payment_id': claimed.id,
+                'executor_key': claimed.executor_key,
+                'method': claimed.method_category,
+                'currency': claimed.currency,
+                'payment_state': claimed.state,
+                'attempt_number': claimed.attempt_count,
+                'correlation_id': context.correlation_id,
+                'outcome': exc.code,
+            },
+        )
         result = PaymentRecoveryResult(
             outcome=PaymentRecoveryOutcome.STILL_UNCERTAIN,
             error_code=errors.RecoveryUnavailableError.code,
-            error_message='Configured executor has no recovery capability',
+            error_message='Durably selected payment executor is unavailable for recovery',
         )
     else:
-        request = PaymentRecoveryRequest(
-            operation_reference=str(claimed.id),
-            idempotency_key=claimed.provider_idempotency_key,
-            request_fingerprint=claimed.request_fingerprint,
-        )
-        try:
-            result = await executor.recover(request=request)
-        except Exception as exc:
+        executor = resolved.executor
+        if not isinstance(executor, PaymentRecoveryPort):
+            logger.warning(
+                'Configured payment executor cannot recover payments',
+                extra={
+                    'event': 'payment_executor_unavailable',
+                    'operation': 'recover',
+                    'tenant_id': claimed.tenant_id,
+                    'organization_id': claimed.organization_id,
+                    'location_id': claimed.location_id,
+                    'payment_id': claimed.id,
+                    'executor_key': resolved.configuration.executor_key,
+                    'adapter_kind': resolved.configuration.adapter_kind,
+                    'method': claimed.method_category,
+                    'currency': claimed.currency,
+                    'payment_state': claimed.state,
+                    'attempt_number': claimed.attempt_count,
+                    'correlation_id': context.correlation_id,
+                    'outcome': errors.RecoveryUnavailableError.code,
+                },
+            )
             result = PaymentRecoveryResult(
                 outcome=PaymentRecoveryOutcome.STILL_UNCERTAIN,
-                error_code='PAYMENT_RECOVERY_RESULT_UNCERTAIN',
-                error_message=f'Unexpected recovery failure: {type(exc).__name__}',
+                error_code=errors.RecoveryUnavailableError.code,
+                error_message='Configured executor has no recovery capability',
             )
+        else:
+            try:
+                merchant_credential = await _merchant_credential(
+                    payment=claimed,
+                    configuration=resolved.configuration,
+                    resolver=credential_resolver,
+                )
+            except errors.MerchantCredentialResolutionError:
+                result = PaymentRecoveryResult(
+                    outcome=PaymentRecoveryOutcome.STILL_UNCERTAIN,
+                    error_code=errors.MerchantCredentialResolutionError.code,
+                    error_message='Merchant credential could not be resolved for recovery',
+                )
+            else:
+                request = PaymentRecoveryRequest(
+                    operation_reference=str(claimed.id),
+                    idempotency_key=claimed.provider_idempotency_key,
+                    request_fingerprint=claimed.request_fingerprint,
+                    external_reference=claimed.external_reference,
+                )
+                log_context = {
+                    'tenant_id': claimed.tenant_id,
+                    'organization_id': claimed.organization_id,
+                    'location_id': claimed.location_id,
+                    'payment_id': claimed.id,
+                    'executor_key': resolved.configuration.executor_key,
+                    'adapter_kind': resolved.configuration.adapter_kind,
+                    'topology': resolved.configuration.topology,
+                    'method': claimed.method_category,
+                    'currency': claimed.currency,
+                    'payment_state': claimed.state,
+                    'attempt_number': claimed.attempt_count,
+                    'correlation_id': context.correlation_id,
+                }
+                logger.info(
+                    'Payment recovery started',
+                    extra={
+                        'event': 'payment_recovery_started',
+                        'operation': 'recover',
+                        **log_context,
+                    },
+                )
+                try:
+                    result = await executor.recover(
+                        request=request,
+                        merchant_credential=merchant_credential,
+                    )
+                except Exception as exc:
+                    result = PaymentRecoveryResult(
+                        outcome=PaymentRecoveryOutcome.STILL_UNCERTAIN,
+                        error_code='PAYMENT_RECOVERY_RESULT_UNCERTAIN',
+                        error_message=f'Unexpected recovery failure: {type(exc).__name__}',
+                    )
+                outcome = result.outcome.value
+                PAYMENT_RECOVERY_TOTAL.labels(
+                    method=claimed.method_category,
+                    outcome=outcome,
+                    adapter_kind=resolved.configuration.adapter_kind,
+                    topology=resolved.configuration.topology,
+                ).inc()
+                logger.info(
+                    'Payment recovery completed',
+                    extra={
+                        'event': 'payment_recovery_completed',
+                        'operation': 'recover',
+                        **log_context,
+                        'outcome': outcome,
+                    },
+                )
+                if result.outcome is PaymentRecoveryOutcome.STILL_UNCERTAIN:
+                    logger.warning(
+                        'Payment recovery remains uncertain',
+                        extra={
+                            'event': 'payment_recovery_uncertain',
+                            'operation': 'recover',
+                            **log_context,
+                            'outcome': outcome,
+                        },
+                    )
     finished = await _finish(
         db, tenant_id=context.tenant_id, payment_id=payment_id, token=token,
         context=context, result=result, state=_recovery_state(result),

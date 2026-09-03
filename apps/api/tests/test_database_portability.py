@@ -84,6 +84,8 @@ APPLICATION_TABLES = {
     'restaurant_payments',
     'restaurant_payment_attempts',
     'restaurant_check_settlements',
+    'location_payment_executor_configurations',
+    'location_payment_executor_capabilities',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -148,6 +150,8 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'restaurant_check_commands',
     'restaurant_check_table_scopes',
     'restaurant_payments',
+    'location_payment_executor_configurations',
+    'location_payment_executor_capabilities',
     'restaurant_payment_attempts',
     'restaurant_check_settlements',
 }
@@ -491,6 +495,11 @@ EXPECTED_DOMAIN_CHECKS = {
     ('restaurant_payment_attempts', 'ck_restaurant_payment_attempts_lifecycle'),
     ('restaurant_check_settlements', 'ck_check_settlements_amount'),
     ('restaurant_check_settlements', 'ck_check_settlements_actor'),
+    ('location_payment_executor_configurations', 'ck_payment_executor_configurations_topology'),
+    ('location_payment_executor_configurations', 'ck_payment_executor_configurations_status'),
+    ('location_payment_executor_configurations', 'ck_payment_executor_configurations_priority'),
+    ('location_payment_executor_capabilities', 'ck_payment_executor_capabilities_method'),
+    ('location_payment_executor_capabilities', 'ck_payment_executor_capabilities_currency'),
     ('preparation_delivery_connector_enrollments', 'ck_connector_enrollments_active_slot'),
     ('preparation_delivery_connector_credentials', 'ck_connector_credentials_status'),
     ('resources', 'ck_resources_status'),
@@ -1024,6 +1033,10 @@ for constraint, table, local_columns, target_table, target_columns in (
     ('fk_restaurant_payments_tenant', 'restaurant_payments', ('tenant_id',), 'tenants', ('id',)),
     ('fk_restaurant_payments_check_scope', 'restaurant_payments', ('check_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_checks', ('id', 'tenant_id', 'organization_id', 'location_id')),
     ('fk_restaurant_payments_payer_diner_scope', 'restaurant_payments', ('payer_diner_session_id', 'tenant_id', 'organization_id', 'location_id'), 'diner_sessions', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_payment_executor_configurations_tenant', 'location_payment_executor_configurations', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_payment_executor_configurations_location_scope', 'location_payment_executor_configurations', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_payment_executor_capabilities_configuration_scope', 'location_payment_executor_capabilities', ('executor_configuration_id', 'tenant_id', 'organization_id', 'location_id'), 'location_payment_executor_configurations', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_restaurant_payments_executor_configuration_scope', 'restaurant_payments', ('executor_configuration_id', 'tenant_id', 'organization_id', 'location_id'), 'location_payment_executor_configurations', ('id', 'tenant_id', 'organization_id', 'location_id')),
     ('fk_restaurant_payment_attempts_payment_scope', 'restaurant_payment_attempts', ('payment_id', 'tenant_id'), 'restaurant_payments', ('id', 'tenant_id')),
     ('fk_check_settlements_check_scope', 'restaurant_check_settlements', ('check_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_checks', ('id', 'tenant_id', 'organization_id', 'location_id')),
     ('fk_check_settlements_payment_scope', 'restaurant_check_settlements', ('payment_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_payments', ('id', 'tenant_id', 'organization_id', 'location_id')),
@@ -1041,11 +1054,20 @@ for table, name, columns, non_unique in (
     ('restaurant_payments', 'uq_restaurant_payments_scope', ('id', 'tenant_id', 'organization_id', 'location_id'), 0),
     ('restaurant_payments', 'uq_restaurant_payments_id_tenant', ('id', 'tenant_id'), 0),
     ('restaurant_payments', 'uq_restaurant_payments_idempotency', ('tenant_id', 'actor_scope', 'idempotency_key'), 0),
+    ('restaurant_payments', 'uq_restaurant_payments_configuration_external_reference', ('executor_configuration_id', 'external_reference'), 0),
     ('restaurant_payments', 'ix_restaurant_payments_check_state', ('tenant_id', 'check_id', 'state', 'id'), 1),
     ('restaurant_payments', 'ix_restaurant_payments_claim', ('tenant_id', 'state', 'claim_expires_at', 'id'), 1),
     ('restaurant_payments', 'ix_restaurant_payments_external', ('tenant_id', 'executor_key', 'external_reference', 'id'), 1),
     ('restaurant_payments', 'fk_restaurant_payments_check_scope', ('check_id', 'tenant_id', 'organization_id', 'location_id'), 1),
     ('restaurant_payments', 'fk_restaurant_payments_payer_diner_scope', ('payer_diner_session_id', 'tenant_id', 'organization_id', 'location_id'), 1),
+    ('restaurant_payments', 'fk_restaurant_payments_executor_configuration_scope', ('executor_configuration_id', 'tenant_id', 'organization_id', 'location_id'), 1),
+    ('location_payment_executor_configurations', 'uq_payment_executor_configurations_scope', ('id', 'tenant_id', 'organization_id', 'location_id'), 0),
+    ('location_payment_executor_configurations', 'uq_payment_executor_configurations_location_key', ('tenant_id', 'organization_id', 'location_id', 'executor_key'), 0),
+    ('location_payment_executor_configurations', 'ix_payment_executor_configurations_lookup', ('tenant_id', 'organization_id', 'location_id', 'status', 'selection_priority', 'id'), 1),
+    ('location_payment_executor_configurations', 'fk_payment_executor_configurations_location_scope', ('location_id', 'tenant_id', 'organization_id'), 1),
+    ('location_payment_executor_capabilities', 'uq_payment_executor_capabilities_method_currency', ('executor_configuration_id', 'method_category', 'currency'), 0),
+    ('location_payment_executor_capabilities', 'ix_payment_executor_capabilities_lookup', ('tenant_id', 'organization_id', 'location_id', 'method_category', 'currency', 'executor_configuration_id'), 1),
+    ('location_payment_executor_capabilities', 'fk_payment_executor_capabilities_configuration_scope', ('executor_configuration_id', 'tenant_id', 'organization_id', 'location_id'), 1),
     ('restaurant_payment_attempts', 'uq_restaurant_payment_attempts_sequence', ('payment_id', 'attempt_sequence'), 0),
     ('restaurant_payment_attempts', 'uq_restaurant_payment_attempts_claim', ('claim_token',), 0),
     ('restaurant_payment_attempts', 'ix_restaurant_payment_attempts_ordered', ('tenant_id', 'payment_id', 'attempt_sequence', 'id'), 1),
@@ -1176,6 +1198,8 @@ def _assert_database_contract(connection) -> None:
                       , 'restaurant_check_table_scopes'
                       , 'restaurant_payments', 'restaurant_payment_attempts'
                       , 'restaurant_check_settlements'
+                      , 'location_payment_executor_configurations'
+                      , 'location_payment_executor_capabilities'
                   )
             '''
         )
@@ -1293,6 +1317,12 @@ def _assert_database_contract(connection) -> None:
                        'claim_token'
                    ))
                   OR
+                  (TABLE_NAME = 'location_payment_executor_configurations'
+                   AND COLUMN_NAME IN ('executor_key', 'adapter_kind', 'credential_binding'))
+                  OR
+                  (TABLE_NAME = 'location_payment_executor_capabilities'
+                   AND COLUMN_NAME = 'currency')
+                  OR
                   (TABLE_NAME = 'restaurant_payment_attempts'
                    AND COLUMN_NAME IN (
                        'executor_key', 'claim_token', 'actor_reference',
@@ -1390,6 +1420,10 @@ def _assert_database_contract(connection) -> None:
             ('restaurant_payments', 'provider_idempotency_key', 'ascii_bin'),
             ('restaurant_payments', 'external_reference', 'utf8mb4_bin'),
             ('restaurant_payments', 'claim_token', 'ascii_bin'),
+            ('location_payment_executor_configurations', 'executor_key', 'utf8mb4_bin'),
+            ('location_payment_executor_configurations', 'adapter_kind', 'utf8mb4_bin'),
+            ('location_payment_executor_configurations', 'credential_binding', 'utf8mb4_bin'),
+            ('location_payment_executor_capabilities', 'currency', 'ascii_bin'),
             ('restaurant_payment_attempts', 'executor_key', 'utf8mb4_bin'),
             ('restaurant_payment_attempts', 'claim_token', 'ascii_bin'),
             ('restaurant_payment_attempts', 'actor_reference', 'utf8mb4_bin'),
@@ -3014,8 +3048,13 @@ def test_0023_upgrade_downgrade_upgrade_preserves_single_portable_head(
     _run_alembic(database_name, '0023_restaurant_payment_settlement_foundation')
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
-        _assert_database_contract(connection)
         with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME FROM information_schema.TABLES '
+                'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s,%s,%s)',
+                tuple(sorted(payment_tables)),
+            )
+            assert {row['TABLE_NAME'] for row in cursor.fetchall()} == payment_tables
             cursor.execute('SELECT version_num FROM alembic_version')
             assert [row['version_num'] for row in cursor.fetchall()] == [
                 '0023_restaurant_payment_settlement_foundation'
@@ -3045,6 +3084,72 @@ def test_0023_upgrade_downgrade_upgrade_preserves_single_portable_head(
     _run_alembic(database_name, '0023_restaurant_payment_settlement_foundation')
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert [row['version_num'] for row in cursor.fetchall()] == [
+                '0023_restaurant_payment_settlement_foundation'
+            ]
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
         _assert_database_contract(connection)
+    finally:
+        connection.close()
+
+
+def test_0024_upgrade_from_0023_establishes_payment_executor_foundation(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    executor_tables = {
+        'location_payment_executor_configurations',
+        'location_payment_executor_capabilities',
+    }
+
+    _run_alembic(database_name, '0023_restaurant_payment_settlement_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME FROM information_schema.TABLES '
+                'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s)',
+                tuple(sorted(executor_tables)),
+            )
+            assert {row['TABLE_NAME'] for row in cursor.fetchall()} == set()
+            cursor.execute(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='restaurant_payments' "
+                "AND COLUMN_NAME='executor_configuration_id'"
+            )
+            assert cursor.fetchall() == ()
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, '0024_payment_executor_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert [row['version_num'] for row in cursor.fetchall()] == [
+                '0024_payment_executor_foundation'
+            ]
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0023_restaurant_payment_settlement_foundation')
+    _run_alembic(database_name, '0024_payment_executor_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert [row['version_num'] for row in cursor.fetchall()] == [
+                '0024_payment_executor_foundation'
+            ]
     finally:
         connection.close()

@@ -21,6 +21,105 @@ from app.db.base import Base
 from app.models.identity import TimestampMixin
 
 
+class LocationPaymentExecutorConfiguration(TimestampMixin, Base):
+    __tablename__ = 'location_payment_executor_configurations'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['tenant_id'], ['tenants.id'],
+            name='fk_payment_executor_configurations_tenant', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['location_id', 'tenant_id', 'organization_id'],
+            ['locations.id', 'locations.tenant_id', 'locations.organization_id'],
+            name='fk_payment_executor_configurations_location_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id',
+            name='uq_payment_executor_configurations_scope',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'organization_id', 'location_id', 'executor_key',
+            name='uq_payment_executor_configurations_location_key',
+        ),
+        CheckConstraint(
+            "topology IN ('LOCAL','EXTERNAL')",
+            name='ck_payment_executor_configurations_topology',
+        ),
+        CheckConstraint(
+            "status IN ('ACTIVE','INACTIVE')",
+            name='ck_payment_executor_configurations_status',
+        ),
+        CheckConstraint(
+            'selection_priority >= 0',
+            name='ck_payment_executor_configurations_priority',
+        ),
+        Index(
+            'ix_payment_executor_configurations_lookup',
+            'tenant_id', 'organization_id', 'location_id', 'status',
+            'selection_priority', 'id',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    executor_key: Mapped[str] = mapped_column(String(128, collation='utf8mb4_bin'), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    adapter_kind: Mapped[str] = mapped_column(String(128, collation='utf8mb4_bin'), nullable=False)
+    topology: Mapped[str] = mapped_column(String(16), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='ACTIVE', server_default=text("'ACTIVE'")
+    )
+    credential_binding: Mapped[str | None] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=True
+    )
+    selection_priority: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=100, server_default=text('100')
+    )
+
+
+class LocationPaymentExecutorCapability(TimestampMixin, Base):
+    __tablename__ = 'location_payment_executor_capabilities'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['executor_configuration_id', 'tenant_id', 'organization_id', 'location_id'],
+            [
+                'location_payment_executor_configurations.id',
+                'location_payment_executor_configurations.tenant_id',
+                'location_payment_executor_configurations.organization_id',
+                'location_payment_executor_configurations.location_id',
+            ],
+            name='fk_payment_executor_capabilities_configuration_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'executor_configuration_id', 'method_category', 'currency',
+            name='uq_payment_executor_capabilities_method_currency',
+        ),
+        CheckConstraint(
+            "method_category IN ('CASH','CARD','TRANSFER')",
+            name='ck_payment_executor_capabilities_method',
+        ),
+        CheckConstraint(
+            "currency REGEXP '^[A-Z][A-Z][A-Z]$'",
+            name='ck_payment_executor_capabilities_currency',
+        ),
+        Index(
+            'ix_payment_executor_capabilities_lookup',
+            'tenant_id', 'organization_id', 'location_id',
+            'method_category', 'currency', 'executor_configuration_id',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    executor_configuration_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    method_category: Mapped[str] = mapped_column(String(16), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3, collation='ascii_bin'), nullable=False)
+
+
 class RestaurantPayment(TimestampMixin, Base):
     __tablename__ = 'restaurant_payments'
     __table_args__ = (
@@ -35,9 +134,23 @@ class RestaurantPayment(TimestampMixin, Base):
             ['diner_sessions.id', 'diner_sessions.tenant_id', 'diner_sessions.organization_id', 'diner_sessions.location_id'],
             name='fk_restaurant_payments_payer_diner_scope', ondelete='RESTRICT',
         ),
+        ForeignKeyConstraint(
+            ['executor_configuration_id', 'tenant_id', 'organization_id', 'location_id'],
+            [
+                'location_payment_executor_configurations.id',
+                'location_payment_executor_configurations.tenant_id',
+                'location_payment_executor_configurations.organization_id',
+                'location_payment_executor_configurations.location_id',
+            ],
+            name='fk_restaurant_payments_executor_configuration_scope', ondelete='RESTRICT',
+        ),
         UniqueConstraint('id', 'tenant_id', 'organization_id', 'location_id', name='uq_restaurant_payments_scope'),
         UniqueConstraint('id', 'tenant_id', name='uq_restaurant_payments_id_tenant'),
         UniqueConstraint('tenant_id', 'actor_scope', 'idempotency_key', name='uq_restaurant_payments_idempotency'),
+        UniqueConstraint(
+            'executor_configuration_id', 'external_reference',
+            name='uq_restaurant_payments_configuration_external_reference',
+        ),
         CheckConstraint("state IN ('RESERVED','IN_PROGRESS','SUCCEEDED','FAILED','REJECTED','UNCERTAIN','CANCELLED')", name='ck_restaurant_payments_state'),
         CheckConstraint("method_category IN ('CASH','CARD','TRANSFER')", name='ck_restaurant_payments_method'),
         CheckConstraint("payer_type IN ('DINER','OTHER')", name='ck_restaurant_payments_payer_type'),
@@ -88,6 +201,7 @@ class RestaurantPayment(TimestampMixin, Base):
     request_fingerprint: Mapped[str] = mapped_column(String(64, collation='ascii_bin'), nullable=False)
     state: Mapped[str] = mapped_column(String(16), nullable=False, default='RESERVED', server_default=text("'RESERVED'"))
     executor_key: Mapped[str | None] = mapped_column(String(128, collation='utf8mb4_bin'), nullable=True)
+    executor_configuration_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     provider_idempotency_key: Mapped[str | None] = mapped_column(String(128, collation='ascii_bin'), nullable=True)
     external_reference: Mapped[str | None] = mapped_column(String(200, collation='utf8mb4_bin'), nullable=True)
     external_status: Mapped[str | None] = mapped_column(String(64), nullable=True)

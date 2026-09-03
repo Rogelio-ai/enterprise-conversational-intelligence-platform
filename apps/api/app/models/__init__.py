@@ -47,6 +47,8 @@ from app.models.restaurant_check import (
     RestaurantCheckVersion,
 )
 from app.models.restaurant_payment import (
+    LocationPaymentExecutorCapability,
+    LocationPaymentExecutorConfiguration,
     RestaurantCheckSettlement,
     RestaurantPayment,
     RestaurantPaymentAttempt,
@@ -122,6 +124,8 @@ __all__ = [
     'RestaurantPayment',
     'RestaurantPaymentAttempt',
     'RestaurantCheckSettlement',
+    'LocationPaymentExecutorCapability',
+    'LocationPaymentExecutorConfiguration',
     'LocationPosConnection',
     'PosOrderSubmission',
     'PosOrderSubmissionAttempt',

@@ -7,7 +7,8 @@ import pytest
 from pydantic import ValidationError
 
 from app.restaurant.integrations.payments.contracts import (
-    EphemeralExecutionCredential,
+    EphemeralCustomerPaymentSource,
+    EphemeralMerchantCredential,
     PaymentExecutionOutcome,
     PaymentExecutionRequest,
     PaymentRecoveryOutcome,
@@ -48,17 +49,32 @@ def test_deterministic_executor_stable_idempotency_and_recovery_outcomes() -> No
         currency='MXN', method_category='CARD', idempotency_key='stable-key',
         request_fingerprint='a' * 64,
     )
-    credential = EphemeralExecutionCredential(value='test-only-ephemeral')
-    first = asyncio.run(executor.execute(request=request, credential=credential))
-    replay = asyncio.run(executor.execute(request=request, credential=credential))
+    customer_source = EphemeralCustomerPaymentSource(value='test-only-customer-source')
+    merchant_credential = EphemeralMerchantCredential(value='test-only-merchant-credential')
+    first = asyncio.run(executor.execute(
+        request=request,
+        merchant_credential=merchant_credential,
+        customer_payment_source=customer_source,
+    ))
+    replay = asyncio.run(executor.execute(
+        request=request,
+        merchant_credential=merchant_credential,
+        customer_payment_source=customer_source,
+    ))
     assert first == replay
     assert executor.execution_calls == 1
     recovery_request = PaymentRecoveryRequest(
         operation_reference='operation-1', idempotency_key='stable-key',
         request_fingerprint='a' * 64,
     )
-    absent = asyncio.run(executor.recover(request=recovery_request))
-    uncertain = asyncio.run(executor.recover(request=recovery_request))
+    absent = asyncio.run(executor.recover(
+        request=recovery_request, merchant_credential=merchant_credential
+    ))
+    uncertain = asyncio.run(executor.recover(
+        request=recovery_request, merchant_credential=merchant_credential
+    ))
     assert absent.outcome is PaymentRecoveryOutcome.DEFINITE_ABSENCE
     assert uncertain.outcome is PaymentRecoveryOutcome.STILL_UNCERTAIN
-    assert 'test-only-ephemeral' not in repr(credential)
+    for secret in (customer_source, merchant_credential):
+        assert 'test-only' not in repr(secret)
+        assert 'test-only' not in str(secret)

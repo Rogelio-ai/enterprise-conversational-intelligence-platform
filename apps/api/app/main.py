@@ -38,6 +38,8 @@ from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging
 from app.core.middleware import RuntimeMiddleware
 from app.db.session import DatabaseManager
+from app.restaurant.integrations.payments.credentials import MerchantCredentialResolver
+from app.restaurant.integrations.payments.registry import PaymentExecutorRegistry
 
 
 class DatabaseLifecycle(Protocol):
@@ -51,6 +53,8 @@ def create_app(
     database: DatabaseLifecycle | None = None,
     pos_adapters: Mapping[str, object] | None = None,
     payment_executors: Mapping[str, object] | None = None,
+    payment_executor_registry: PaymentExecutorRegistry | None = None,
+    merchant_credential_resolver: MerchantCredentialResolver | None = None,
 ) -> FastAPI:
     runtime_settings = settings or get_settings()
     runtime_database = database or DatabaseManager(runtime_settings)
@@ -74,7 +78,10 @@ def create_app(
     app.state.settings = runtime_settings
     app.state.database = runtime_database
     app.state.pos_adapters = dict(pos_adapters or {})
-    app.state.payment_executors = dict(payment_executors or {})
+    app.state.payment_executor_registry = (
+        payment_executor_registry or PaymentExecutorRegistry(payment_executors)
+    )
+    app.state.merchant_credential_resolver = merchant_credential_resolver
     app.add_middleware(RuntimeMiddleware)
     register_error_handlers(app)
     app.include_router(health_router)

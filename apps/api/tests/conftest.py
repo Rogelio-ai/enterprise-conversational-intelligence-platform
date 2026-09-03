@@ -152,6 +152,15 @@ def sql_connection(integration_settings: Settings):
                     (f'{prefix}%',),
                 )
             for table in (
+                'location_payment_executor_capabilities',
+                'location_payment_executor_configurations',
+            ):
+                cursor.execute(
+                    f'DELETE FROM {table} WHERE tenant_id IN '
+                    '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                    (f'{prefix}%',),
+                )
+            for table in (
                 'restaurant_order_promotions',
                 'restaurant_order_item_components',
                 'restaurant_order_items',

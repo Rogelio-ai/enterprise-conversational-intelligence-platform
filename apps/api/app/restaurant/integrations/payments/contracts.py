@@ -34,8 +34,14 @@ class PaymentRecoveryOutcome(StrEnum):
     STILL_UNCERTAIN = 'STILL_UNCERTAIN'
 
 
-class EphemeralExecutionCredential(PaymentContractValue):
-    """Secret execution material that must never enter canonical persistence."""
+class EphemeralMerchantCredential(PaymentContractValue):
+    """Opaque server-side merchant authentication material; never durable."""
+
+    value: SecretStr
+
+
+class EphemeralCustomerPaymentSource(PaymentContractValue):
+    """Opaque single-execution customer payment source; never durable."""
 
     value: SecretStr
 
@@ -58,6 +64,7 @@ class PaymentRecoveryRequest(PaymentContractValue):
     operation_reference: str = Field(min_length=1, max_length=200)
     idempotency_key: str = Field(min_length=1, max_length=128)
     request_fingerprint: str = Field(min_length=64, max_length=64, pattern='^[0-9a-f]{64}$')
+    external_reference: str | None = Field(default=None, max_length=200)
 
 
 class SafePaymentEvidence(PaymentContractValue):

@@ -3,7 +3,8 @@ from __future__ import annotations
 from collections import deque
 
 from app.restaurant.integrations.payments.contracts import (
-    EphemeralExecutionCredential,
+    EphemeralCustomerPaymentSource,
+    EphemeralMerchantCredential,
     PaymentExecutionOutcome,
     PaymentExecutionRequest,
     PaymentExecutionResult,
@@ -27,15 +28,24 @@ class DeterministicPaymentExecutor:
         self._operations: dict[str, PaymentExecutionResult] = {}
         self.execution_calls = 0
         self.recovery_calls = 0
+        self.execution_received_customer_source = False
+        self.execution_received_merchant_credential = False
+        self.recovery_received_merchant_credential = False
+        self.last_recovery_external_reference: str | None = None
 
     @staticmethod
     def _reference(request_fingerprint: str) -> str:
         return f'mock-payment-{request_fingerprint[:24]}'
 
     async def execute(
-        self, *, request: PaymentExecutionRequest, credential: EphemeralExecutionCredential
+        self,
+        *,
+        request: PaymentExecutionRequest,
+        merchant_credential: EphemeralMerchantCredential | None,
+        customer_payment_source: EphemeralCustomerPaymentSource | None,
     ) -> PaymentExecutionResult:
-        del credential
+        self.execution_received_merchant_credential = merchant_credential is not None
+        self.execution_received_customer_source = customer_payment_source is not None
         existing = self._operations.get(request.idempotency_key)
         if existing is not None:
             return existing
@@ -62,8 +72,15 @@ class DeterministicPaymentExecutor:
         self._operations[request.idempotency_key] = result
         return result
 
-    async def recover(self, *, request: PaymentRecoveryRequest) -> PaymentRecoveryResult:
+    async def recover(
+        self,
+        *,
+        request: PaymentRecoveryRequest,
+        merchant_credential: EphemeralMerchantCredential | None = None,
+    ) -> PaymentRecoveryResult:
         self.recovery_calls += 1
+        self.recovery_received_merchant_credential = merchant_credential is not None
+        self.last_recovery_external_reference = request.external_reference
         outcome = self._recovery_outcomes.popleft() if self._recovery_outcomes else PaymentRecoveryOutcome.STILL_UNCERTAIN
         if outcome is PaymentRecoveryOutcome.DEFINITE_ABSENCE:
             # The executor has certified that no provider-side operation exists;
