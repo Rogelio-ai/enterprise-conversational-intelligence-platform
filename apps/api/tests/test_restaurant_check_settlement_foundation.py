@@ -706,6 +706,7 @@ def test_close_vs_new_order_acceptance_never_leaves_closed_unsettled_table(
             close_response = close_future.result()
             confirm_response = confirm_future.result()
         assert (close_response.status_code, confirm_response.status_code) in (
+            (200, 401),
             (200, 404),
             (409, 201),
         )

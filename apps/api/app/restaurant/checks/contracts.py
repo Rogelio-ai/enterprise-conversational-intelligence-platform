@@ -86,5 +86,6 @@ class TableBalanceProjection:
     uncertain_exposure: Decimal
     outstanding_confirmed_balance: Decimal
     unresolved_active_checks: int
+    financial_closure_eligible: bool
     closure_eligible: bool
     service_continuation_decision_required: bool

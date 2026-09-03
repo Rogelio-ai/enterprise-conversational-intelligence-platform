@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
@@ -21,6 +21,7 @@ from app.models import (
     Organization,
     OrderDraft,
     Resource,
+    RestaurantCheckTableScope,
     RestaurantServiceSession,
 )
 from app.restaurant.customers.service import normalize_email
@@ -331,6 +332,20 @@ async def join_diner(
             raise errors.JoinLockedError(300)
         raise errors.InvalidJoinError('Invalid diner join credentials')
 
+    table_lock = await db.scalar(select(RestaurantCheckTableScope.id).where(
+        RestaurantCheckTableScope.tenant_id == session.tenant_id,
+        RestaurantCheckTableScope.service_session_id == session.id,
+        RestaurantCheckTableScope.active_slot == 1,
+        RestaurantCheckTableScope.lock_phase.in_(('CHECK', 'CONTINUATION')),
+    ).with_for_update())
+    if table_lock is not None:
+        await db.commit()
+        _event(
+            'diner_session_join_rejected', session=session,
+            correlation_id=correlation_id, outcome='service_temporarily_unavailable',
+        )
+        raise errors.CapacityConflictError('Service Session is temporarily unavailable for joining')
+
     _reset_failures(session)
     active_count = int(await db.scalar(select(func.count(DinerSession.id)).where(DinerSession.service_session_id == session.id, DinerSession.active_slot == 1)))
     if active_count >= session.party_size:
@@ -543,6 +558,15 @@ async def end_diner_session(
     diner_session_id: int,
     correlation_id: str | None = None,
 ) -> DinerSession:
+    session: RestaurantServiceSession | None = None
+    _closure_context = {
+        'tenant_id': tenant_id, 'service_session_id': service_session_id,
+        'diner_session_id': diner_session_id, 'correlation_id': correlation_id,
+    }
+    logger.info(
+        'Diner closure requested',
+        extra={'event': 'diner_closure_requested', **_closure_context},
+    )
     try:
         session = await db.scalar(select(RestaurantServiceSession).where(RestaurantServiceSession.id == service_session_id, RestaurantServiceSession.tenant_id == tenant_id).with_for_update())
         if session is None or session.status != 'OPEN':
@@ -565,10 +589,34 @@ async def end_diner_session(
             conversation.closed_at = now
         await db.commit()
         await db.refresh(diner)
-    except Exception:
+    except OperationalError as exc:
         await db.rollback()
+        logger.info(
+            'Diner closure rejected',
+            extra={
+                'event': 'diner_closure_rejected', 'outcome': 'concurrency_conflict',
+                **_closure_context,
+            },
+        )
+        code = exc.orig.args[0] if getattr(exc.orig, 'args', ()) else None
+        if code in (1205, 1213):
+            from app.restaurant.checks.errors import CheckVersionConflictError
+            raise CheckVersionConflictError('Concurrent diner closure lost serialization') from exc
         raise
-    _event('diner_session_ended', session=session, correlation_id=correlation_id, diner_session_id=diner.id, conversation_id=diner.conversation_id)
+    except Exception as exc:
+        await db.rollback()
+        logger.info(
+            'Diner closure rejected',
+            extra={
+                'event': 'diner_closure_rejected', 'outcome': 'rejected',
+                'error_type': type(exc).__name__, **_closure_context,
+            },
+        )
+        raise
+    _event(
+        'diner_session_ended', session=session, correlation_id=correlation_id,
+        diner_session_id=diner.id, conversation_id=diner.conversation_id, outcome='closed',
+    )
     return diner
 
 
@@ -580,6 +628,15 @@ async def close_service_session(
     session_id: int,
     correlation_id: str | None = None,
 ) -> RestaurantServiceSession:
+    session: RestaurantServiceSession | None = None
+    _closure_context = {
+        'tenant_id': tenant_id, 'service_session_id': session_id,
+        'membership_id': membership_id, 'correlation_id': correlation_id,
+    }
+    logger.info(
+        'Service session closure requested',
+        extra={'event': 'session_closure_requested', **_closure_context},
+    )
     try:
         identity = await db.scalar(select(RestaurantServiceSession.resource_id).where(RestaurantServiceSession.id == session_id, RestaurantServiceSession.tenant_id == tenant_id))
         if identity is None:
@@ -616,8 +673,32 @@ async def close_service_session(
         session.closed_at = now
         await db.commit()
         await db.refresh(session)
-    except Exception:
+    except OperationalError as exc:
         await db.rollback()
+        logger.info(
+            'Service session closure rejected',
+            extra={
+                'event': 'session_closure_rejected', 'outcome': 'concurrency_conflict',
+                **_closure_context,
+            },
+        )
+        code = exc.orig.args[0] if getattr(exc.orig, 'args', ()) else None
+        if code in (1205, 1213):
+            from app.restaurant.checks.errors import CheckVersionConflictError
+            raise CheckVersionConflictError('Concurrent service closure lost serialization') from exc
         raise
-    _event('restaurant_service_session_closed', session=session, correlation_id=correlation_id, ended_diner_count=len(diners))
+    except Exception as exc:
+        await db.rollback()
+        logger.info(
+            'Service session closure rejected',
+            extra={
+                'event': 'session_closure_rejected', 'outcome': 'rejected',
+                'error_type': type(exc).__name__, **_closure_context,
+            },
+        )
+        raise
+    _event(
+        'restaurant_service_session_closed', session=session, correlation_id=correlation_id,
+        ended_diner_count=len(diners), outcome='closed',
+    )
     return session

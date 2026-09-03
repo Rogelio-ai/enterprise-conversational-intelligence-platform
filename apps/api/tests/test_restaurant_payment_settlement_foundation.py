@@ -164,13 +164,27 @@ def test_cash_auto_freeze_exact_settlement_keeps_lock_until_continuation_yes(
         )
         assert continued.status_code == 200, continued.text
         assert continued.json()['continuation_decision'] == 'YES'
+        replayed = client.post(
+            f"/diner/restaurant-checks/{check['id']}/continuation-decision",
+            headers={**diner_headers, 'Idempotency-Key': 'continue-after-cash'},
+            json={'expected_version': check['version'], 'decision': 'YES'},
+        )
+        assert replayed.status_code == 200
+        conflicting = client.post(
+            f"/diner/restaurant-checks/{check['id']}/continuation-decision",
+            headers={**diner_headers, 'Idempotency-Key': 'continue-after-cash'},
+            json={'expected_version': check['version'], 'decision': 'NO'},
+        )
+        assert conflicting.status_code == 409
         assert client.post('/diner/order-draft', headers=diner_headers).status_code == 201
         balance = client.get(
             f"/restaurant-service-sessions/{opened['id']}/outstanding-balance",
             headers=_staff_headers(client, scope),
         ).json()
-        assert balance['closure_eligible'] is True
+        assert balance['financial_closure_eligible'] is True
+        assert balance['closure_eligible'] is False
         assert balance['service_continuation_decision_required'] is False
+        assert client.post('/diner-session/end', headers=diner_headers).status_code == 409
     with connection.cursor() as cursor:
         cursor.execute('SELECT status,settled_at FROM restaurant_checks WHERE id=%s', (check['id'],))
         assert cursor.fetchone()['status'] == 'SETTLED'
@@ -701,6 +715,11 @@ def test_diner_scope_does_not_lock_unrelated_diner_and_no_closes_only_target(
         )
         assert no.status_code == 200, no.text
         assert client.post('/diner/order-draft', headers=first).status_code == 409
+        table_close = client.post(
+            f"/restaurant-service-sessions/{opened['id']}/close",
+            headers=_staff_headers(client, scope),
+        )
+        assert table_close.status_code == 409
         ended = client.post('/diner-session/end', headers=first)
         assert ended.status_code == 200, ended.text
         assert ended.json()['status'] == 'ENDED'
@@ -740,8 +759,12 @@ def test_table_scope_blocks_existing_and_new_diners_until_yes(
         assert check['table_scope_session_ids'] == [opened['id']]
         assert check['diner_scope_ids'] == []
         assert client.post('/diner/order-draft', headers=existing).status_code == 409
-        newcomer = _join_opened(client, opened, 'Newcomer')
-        assert client.post('/diner/order-draft', headers=newcomer).status_code == 409
+        locked_join = client.post('/diner-sessions/join', json={
+            'join_context_key': opened['join_context_key'],
+            'access_code': opened['access_code'],
+            'display_name': 'Newcomer',
+        })
+        assert locked_join.status_code == 409
         controller_id = client.get('/diner-session', headers=controller).json()['id']
         staff = _staff_headers(client, scope)
         paid = client.post(
@@ -756,7 +779,11 @@ def test_table_scope_blocks_existing_and_new_diners_until_yes(
             },
         )
         assert paid.status_code == 201, paid.text
-        assert client.post('/diner/order-draft', headers=newcomer).status_code == 409
+        assert client.post('/diner-sessions/join', json={
+            'join_context_key': opened['join_context_key'],
+            'access_code': opened['access_code'],
+            'display_name': 'Still blocked',
+        }).status_code == 409
         balance = client.get(
             f"/restaurant-service-sessions/{opened['id']}/outstanding-balance",
             headers=staff,
@@ -769,7 +796,11 @@ def test_table_scope_blocks_existing_and_new_diners_until_yes(
         )
         assert yes.status_code == 200, yes.text
         assert client.post('/diner/order-draft', headers=existing).status_code == 201
+        newcomer = _join_opened(client, opened, 'Newcomer')
         assert client.post('/diner/order-draft', headers=newcomer).status_code == 201
+        assert client.post(
+            f"/restaurant-service-sessions/{opened['id']}/close", headers=staff,
+        ).status_code == 409
         _order(client, connection, scope, controller, amount='25')
         second_cycle = client.post(
             '/diner/restaurant-checks',
@@ -796,11 +827,40 @@ def test_table_scope_blocks_existing_and_new_diners_until_yes(
             json={'expected_version': second_check['version'], 'decision': 'NO'},
         )
         assert no.status_code == 200, no.text
+        for state in ('RESERVED', 'IN_PROGRESS', 'UNCERTAIN'):
+            with connection.cursor() as cursor:
+                if state == 'IN_PROGRESS':
+                    cursor.execute(
+                        "UPDATE restaurant_payments SET state='IN_PROGRESS',"
+                        "claim_token='ws25-close-guard',"
+                        "claim_expires_at=DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 5 MINUTE) "
+                        'WHERE id=%s',
+                        (paid_again.json()['id'],),
+                    )
+                else:
+                    cursor.execute(
+                        'UPDATE restaurant_payments SET state=%s,claim_token=NULL,'
+                        'claim_expires_at=NULL WHERE id=%s',
+                        (state, paid_again.json()['id']),
+                    )
+            guarded = client.post(
+                f"/restaurant-service-sessions/{opened['id']}/close", headers=staff,
+            )
+            assert guarded.status_code == 409
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "UPDATE restaurant_payments SET state='SUCCEEDED',claim_token=NULL,"
+                'claim_expires_at=NULL WHERE id=%s',
+                (paid_again.json()['id'],),
+            )
         closed = client.post(
             f"/restaurant-service-sessions/{opened['id']}/close", headers=staff,
         )
         assert closed.status_code == 200, closed.text
         assert closed.json()['status'] == 'CLOSED'
+        assert client.post(
+            f"/restaurant-service-sessions/{opened['id']}/close", headers=staff,
+        ).status_code == 409
         reopened = client.post(
             f'/resources/{scope.resource_id}/service-sessions',
             headers=staff, json={'party_size': 2},
@@ -808,3 +868,88 @@ def test_table_scope_blocks_existing_and_new_diners_until_yes(
         assert reopened.status_code == 201, reopened.text
         assert reopened.json()['id'] != opened['id']
         assert reopened.json()['access_code'] != opened['access_code']
+
+
+def test_mixed_scope_no_closes_only_exact_independent_candidates(
+    integration_settings, sql_connection,
+):
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    _grant(connection, scope.tenant_id)
+    with connection.cursor() as cursor:
+        resource_ids = []
+        for suffix in ('T2', 'T3'):
+            cursor.execute(
+                "INSERT INTO resources (tenant_id,location_id,code,name,resource_type,status) "
+                "VALUES (%s,%s,%s,%s,'TABLE','ACTIVE')",
+                (
+                    scope.tenant_id, scope.location_id, f'{prefix}-{suffix}',
+                    f'WS25 {suffix}',
+                ),
+            )
+            resource_ids.append(int(cursor.lastrowid))
+    with _client(integration_settings) as client:
+        staff = _staff_headers(client, scope)
+        opened1, diner1 = _open_and_join(client, scope, name='Table 10')
+        opened = [opened1]
+        diners = [diner1]
+        for resource_id, name in zip(resource_ids, ('Table 12', 'Pedro / Table 15')):
+            response = client.post(
+                f'/resources/{resource_id}/service-sessions', headers=staff,
+                json={'party_size': 2},
+            )
+            assert response.status_code == 201, response.text
+            opened.append(response.json())
+            diners.append(_join_opened(client, response.json(), name))
+        for diner in diners:
+            _order(client, connection, scope, diner, amount='40')
+        diner_ids = [client.get('/diner-session', headers=value).json()['id'] for value in diners]
+        created = client.post(
+            '/restaurant-checks',
+            headers={**staff, 'Idempotency-Key': 'ws25-mixed-scope'},
+            json={
+                'diner_session_ids': [diner_ids[2]],
+                'table_service_session_ids': [opened[0]['id'], opened[1]['id']],
+                'controller_diner_session_id': diner_ids[0],
+            },
+        )
+        assert created.status_code == 201, created.text
+        check = created.json()
+        assert set(check['table_scope_session_ids']) == {opened[0]['id'], opened[1]['id']}
+        assert check['diner_scope_ids'] == [diner_ids[2]]
+        payment = client.post(
+            f"/restaurant-checks/{check['id']}/payments",
+            headers={**staff, 'Idempotency-Key': 'ws25-mixed-cash'},
+            json={
+                'expected_check_version': check['version'],
+                'expected_check_fingerprint': check['fingerprint'],
+                'amount': '120', 'currency': 'MXN', 'method_category': 'CASH',
+                'payer_type': 'DINER', 'payer_diner_session_id': diner_ids[0],
+                'cash_tendered_amount': '120',
+            },
+        )
+        assert payment.status_code == 201, payment.text
+        decision = client.post(
+            f"/restaurant-checks/{check['id']}/continuation-decision",
+            headers={**staff, 'Idempotency-Key': 'ws25-mixed-no'},
+            json={'expected_version': check['version'], 'decision': 'NO'},
+        )
+        assert decision.status_code == 200, decision.text
+
+        assert client.post(
+            f"/restaurant-service-sessions/{opened[2]['id']}/close", headers=staff,
+        ).status_code == 409
+        for table in opened[:2]:
+            closed = client.post(
+                f"/restaurant-service-sessions/{table['id']}/close", headers=staff,
+            )
+            assert closed.status_code == 200, closed.text
+        ended = client.post('/diner-session/end', headers=diners[2])
+        assert ended.status_code == 200, ended.text
+        assert client.get(
+            f"/resources/{opened[2]['resource_id']}/service-sessions/current",
+            headers=staff,
+        ).status_code == 200
+        assert client.post(
+            f"/restaurant-service-sessions/{opened[2]['id']}/close", headers=staff,
+        ).status_code == 409
