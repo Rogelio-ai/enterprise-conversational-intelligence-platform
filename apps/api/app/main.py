@@ -9,6 +9,7 @@ from typing import Protocol
 from fastapi import FastAPI
 
 from app.api.routes.auth import router as auth_router
+from app.api.routes.billing import router as billing_router
 from app.api.routes.connector_admin import router as connector_admin_router
 from app.api.routes.connector_api import router as connector_api_router
 from app.api.routes.connector_auth import router as connector_auth_router
@@ -98,6 +99,7 @@ def create_app(
     app.include_router(restaurant_orders_router)
     app.include_router(restaurant_checks_router)
     app.include_router(restaurant_payments_router)
+    app.include_router(billing_router)
     app.include_router(pos_submissions_router)
     app.include_router(preparation_router)
     app.include_router(preparation_delivery_router)

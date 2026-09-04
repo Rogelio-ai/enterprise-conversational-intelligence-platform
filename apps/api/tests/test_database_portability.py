@@ -14,6 +14,10 @@ from app.db.base import Base
 
 
 APPLICATION_TABLES = {
+    'billing_documents',
+    'billing_document_lines',
+    'billing_document_line_taxes',
+    'issuer_fiscal_profiles',
     'tenants',
     'users',
     'permissions',
@@ -25,6 +29,7 @@ APPLICATION_TABLES = {
     'locations',
     'resources',
     'customers',
+    'customer_fiscal_profiles',
     'customer_external_identities',
     'product_categories',
     'products',
@@ -89,10 +94,15 @@ APPLICATION_TABLES = {
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
+    'billing_documents',
+    'billing_document_lines',
+    'billing_document_line_taxes',
     'organizations',
+    'issuer_fiscal_profiles',
     'locations',
     'resources',
     'customers',
+    'customer_fiscal_profiles',
     'customer_external_identities',
     'product_categories',
     'products',

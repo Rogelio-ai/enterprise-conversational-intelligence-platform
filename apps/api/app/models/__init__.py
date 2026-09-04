@@ -1,3 +1,10 @@
+from app.models.billing import (
+    BillingDocument,
+    BillingDocumentLine,
+    BillingDocumentLineTax,
+    CustomerFiscalProfile,
+    IssuerFiscalProfile,
+)
 from app.models.customer import Customer, CustomerExternalIdentity
 from app.models.conversation import Conversation, ConversationMessage, ConversationParticipant
 from app.models.identity import (
@@ -77,8 +84,12 @@ from app.models.preparation import (
 )
 
 __all__ = [
+    'BillingDocument',
+    'BillingDocumentLine',
+    'BillingDocumentLineTax',
     'Customer',
     'CustomerExternalIdentity',
+    'CustomerFiscalProfile',
     'Conversation',
     'ConversationMessage',
     'ConversationParticipant',
@@ -89,6 +100,7 @@ __all__ = [
     'MenuSection',
     'Location',
     'IntelligenceDerivation',
+    'IssuerFiscalProfile',
     'Organization',
     'OrderDraft',
     'OrderDraftItem',
