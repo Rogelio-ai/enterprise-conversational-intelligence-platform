@@ -141,6 +141,7 @@ async def _lines(*_args, **_kwargs):
             base_amount=Decimal('100.0000'),
             discount_amount=Decimal('0.0000'),
             commercial_total=Decimal('100.0000'),
+            taxes=(),
         ),
     )
 

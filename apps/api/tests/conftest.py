@@ -95,6 +95,24 @@ def sql_connection(integration_settings: Settings):
     finally:
         with connection.cursor() as cursor:
             cursor.execute(
+                'DELETE FROM billing_document_line_taxes WHERE billing_document_line_id IN '
+                '(SELECT id FROM billing_document_lines WHERE billing_document_id IN '
+                '(SELECT id FROM billing_documents WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)))',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM billing_document_lines WHERE billing_document_id IN '
+                '(SELECT id FROM billing_documents WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s))',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM billing_documents WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
                 'UPDATE preparation_delivery_connector_credentials SET replaces_credential_id=NULL '
                 'WHERE tenant_id IN (SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),
@@ -161,6 +179,7 @@ def sql_connection(integration_settings: Settings):
                     (f'{prefix}%',),
                 )
             for table in (
+                'restaurant_order_item_tax_snapshots',
                 'restaurant_order_promotions',
                 'restaurant_order_item_components',
                 'restaurant_order_items',
@@ -267,12 +286,27 @@ def sql_connection(integration_settings: Settings):
                 (f'{prefix}%',),
             )
             cursor.execute(
+                'DELETE FROM customer_fiscal_profiles WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
                 'DELETE FROM customers WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),
             )
             cursor.execute(
                 'DELETE FROM resources WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM issuer_fiscal_profiles WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM restaurant_tax_rules WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),
             )

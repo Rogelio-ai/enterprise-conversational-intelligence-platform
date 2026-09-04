@@ -60,6 +60,7 @@ from app.models.restaurant_payment import (
     RestaurantPayment,
     RestaurantPaymentAttempt,
 )
+from app.models.restaurant_tax import RestaurantOrderItemTaxSnapshot, RestaurantTaxRule
 from app.models.pos_submission import (
     LocationPosConnection,
     PosOrderSubmission,
@@ -135,6 +136,8 @@ __all__ = [
     'RestaurantCheckVersion',
     'RestaurantPayment',
     'RestaurantPaymentAttempt',
+    'RestaurantOrderItemTaxSnapshot',
+    'RestaurantTaxRule',
     'RestaurantCheckSettlement',
     'LocationPaymentExecutorCapability',
     'LocationPaymentExecutorConfiguration',

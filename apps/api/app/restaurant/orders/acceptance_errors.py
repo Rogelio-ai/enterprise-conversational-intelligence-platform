@@ -2,6 +2,10 @@ class DraftNotConfirmableError(RuntimeError):
     pass
 
 
+class TaxEvidenceUnavailableError(DraftNotConfirmableError):
+    pass
+
+
 class ConfirmationStaleError(RuntimeError):
     pass
 

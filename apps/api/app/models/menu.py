@@ -147,6 +147,9 @@ class Product(TimestampMixin, Base):
     category_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     name: Mapped[str] = mapped_column(String(200), nullable=False)
     description: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    tax_classification_code: Mapped[str | None] = mapped_column(
+        String(64, collation='utf8mb4_bin'), nullable=True
+    )
     status: Mapped[str] = mapped_column(
         String(16), nullable=False, default='ACTIVE', server_default=_ACTIVE_DEFAULT
     )

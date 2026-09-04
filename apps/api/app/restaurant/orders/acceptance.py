@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import hmac
+import hashlib
+import json
 import logging
 from datetime import UTC, datetime
 
@@ -9,9 +11,11 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
     OrderDraft,
+    Product,
     RestaurantOrder,
     RestaurantOrderItem,
     RestaurantOrderItemComponent,
+    RestaurantOrderItemTaxSnapshot,
     RestaurantOrderPromotion,
 )
 from app.restaurant.catalog import structure
@@ -26,9 +30,31 @@ from app.restaurant.orders.acceptance_contracts import (
     RestaurantOrderProjection,
 )
 from app.restaurant.service_sessions import service as service_session_service
+from app.restaurant.tax import service as tax_service
+from app.restaurant.tax.contracts import RestaurantTaxLineCandidate
+from app.restaurant.tax.errors import RestaurantTaxError
 
 
 logger = logging.getLogger('ecip.restaurant_orders')
+ACCEPTED_FINGERPRINT_SCHEMA_VERSION = 2
+
+
+def _accepted_fingerprint(
+    commercial_fingerprint: str,
+    tax_evidence: tuple[tuple[int, str], ...],
+) -> str:
+    value = {
+        'fingerprint_schema_version': ACCEPTED_FINGERPRINT_SCHEMA_VERSION,
+        'commercial_fingerprint': commercial_fingerprint,
+        'tax_evidence': [
+            {'draft_item_id': item_id, 'evidence_fingerprint': fingerprint}
+            for item_id, fingerprint in tax_evidence
+        ],
+    }
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(',', ':'), ensure_ascii=False
+    ).encode('utf-8')
+    return hashlib.sha256(encoded).hexdigest()
 
 
 def _event(name: str, *, correlation_id: str | None, **values: object) -> None:
@@ -223,6 +249,78 @@ async def confirm_current_order(
             raise errors.ConfirmationStaleError('Commercial confirmation expectation is stale')
 
         accepted_at = datetime.now(UTC).replace(tzinfo=None)
+        draft_projection = await draft_service.evaluate_draft(
+            db, tenant_id=tenant_id, draft_id=draft.id, correlation_id=correlation_id
+        )
+        draft_items = {value.item_id: value for value in draft_projection.items}
+        resolved_lines = []
+        try:
+            for line in preview.lines:
+                draft_item = draft_items[line.draft_item_id]
+                product = await db.scalar(
+                    select(Product)
+                    .where(
+                        Product.id == line.product_id,
+                        Product.tenant_id == tenant_id,
+                        Product.organization_id == diner.organization_id,
+                    )
+                    .with_for_update()
+                )
+                if product is None:
+                    raise errors.TaxEvidenceUnavailableError(
+                        'Authoritative Product tax scope is unavailable'
+                    )
+                graph = None
+                component_classifications: tuple[str | None, ...] = ()
+                if line.composition_id is not None:
+                    graph = await structure.load_composition_graph(
+                        db, tenant_id=tenant_id, product_id=line.product_id, active_only=True
+                    )
+                    if graph is None or graph.composition.id != line.composition_id:
+                        raise errors.DraftNotConfirmableError(
+                            'Product composition is no longer valid'
+                        )
+                    selections = {value.choice_option_id for value in draft_item.selections}
+                    component_classifications = tuple(
+                        [value.product.tax_classification_code for value in graph.components]
+                        + [
+                            option.product.tax_classification_code
+                            for group in graph.groups
+                            for option in group.options
+                            if option.option.id in selections
+                        ]
+                    )
+                evidence = await tax_service.resolve_tax_evidence(
+                    db,
+                    RestaurantTaxLineCandidate(
+                        tenant_id=tenant_id,
+                        organization_id=diner.organization_id,
+                        location_id=diner.location_id,
+                        product_id=line.product_id,
+                        product_tax_classification_code=product.tax_classification_code,
+                        effective_at=accepted_at,
+                        tax_mode=preview.tax_mode.value,
+                        quantity=line.quantity,
+                        unit_price=line.unit_price,
+                        base_amount=line.base_amount,
+                        discount_amount=line.discount_amount,
+                        commercial_amount=line.commercial_amount,
+                        component_tax_classification_codes=component_classifications,
+                    ),
+                )
+                resolved_lines.append((line, draft_item, graph, evidence))
+        except RestaurantTaxError as exc:
+            raise errors.TaxEvidenceUnavailableError(
+                'Authoritative tax evidence is unavailable for order acceptance'
+            ) from exc
+
+        accepted_fingerprint = _accepted_fingerprint(
+            preview.commercial_fingerprint,
+            tuple(
+                (line.draft_item_id, evidence.evidence_fingerprint)
+                for line, _, _, evidence in resolved_lines
+            ),
+        )
         order = RestaurantOrder(
             tenant_id=tenant_id,
             organization_id=diner.organization_id,
@@ -237,8 +335,8 @@ async def confirm_current_order(
             status='ACCEPTED',
             accepted_draft_version=draft.version,
             confirmation_idempotency_key=idempotency_key,
-            commercial_fingerprint=preview.commercial_fingerprint,
-            fingerprint_schema_version=preview.fingerprint_schema_version,
+            commercial_fingerprint=accepted_fingerprint,
+            fingerprint_schema_version=ACCEPTED_FINGERPRINT_SCHEMA_VERSION,
             currency=preview.currency,
             tax_mode=preview.tax_mode.value,
             rounding_policy=preview.rounding_policy,
@@ -251,12 +349,7 @@ async def confirm_current_order(
         )
         db.add(order)
         await db.flush()
-        draft_projection = await draft_service.evaluate_draft(
-            db, tenant_id=tenant_id, draft_id=draft.id, correlation_id=correlation_id
-        )
-        draft_items = {value.item_id: value for value in draft_projection.items}
-        for line in preview.lines:
-            draft_item = draft_items[line.draft_item_id]
+        for line, draft_item, graph, evidence in resolved_lines:
             order_item = RestaurantOrderItem(
                 tenant_id=tenant_id,
                 organization_id=diner.organization_id,
@@ -277,12 +370,7 @@ async def confirm_current_order(
             db.add(order_item)
             await db.flush()
             component_position = 0
-            if line.composition_id is not None:
-                graph = await structure.load_composition_graph(
-                    db, tenant_id=tenant_id, product_id=line.product_id, active_only=True
-                )
-                if graph is None or graph.composition.id != line.composition_id:
-                    raise errors.DraftNotConfirmableError('Product composition is no longer valid')
+            if graph is not None:
                 for component in graph.components:
                     db.add(RestaurantOrderItemComponent(
                         tenant_id=tenant_id, organization_id=diner.organization_id,
@@ -323,6 +411,27 @@ async def confirm_current_order(
                     is_combinable=promotion.is_combinable,
                     calculated_discount=promotion.calculated_discount,
                 ))
+            db.add(
+                RestaurantOrderItemTaxSnapshot(
+                    tenant_id=tenant_id,
+                    organization_id=diner.organization_id,
+                    location_id=diner.location_id,
+                    restaurant_order_id=order.id,
+                    restaurant_order_item_id=order_item.id,
+                    source_tax_rule_id=evidence.source_tax_rule_id,
+                    tax_category=evidence.tax_category,
+                    tax_treatment=evidence.tax_treatment.value,
+                    tax_rate=evidence.tax_rate,
+                    taxable_base=evidence.taxable_base,
+                    tax_amount=evidence.tax_amount,
+                    jurisdiction_code=evidence.jurisdiction_code,
+                    calculation_policy=evidence.calculation_policy,
+                    rounding_policy=evidence.rounding_policy,
+                    schema_version=evidence.schema_version,
+                    evidence_fingerprint=evidence.evidence_fingerprint,
+                    created_at=accepted_at,
+                )
+            )
         draft.status = 'ACCEPTED'
         draft.current_slot = None
         draft.terminal_at = accepted_at

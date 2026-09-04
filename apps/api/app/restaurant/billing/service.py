@@ -21,6 +21,7 @@ from app.models import (
     RestaurantCheckVersion,
     RestaurantOrder,
     RestaurantOrderItem,
+    RestaurantOrderItemTaxSnapshot,
 )
 from app.restaurant.billing import errors
 from app.restaurant.billing.contracts import (
@@ -47,6 +48,16 @@ class _CommercialLineEvidence:
     base_amount: Decimal
     discount_amount: Decimal
     commercial_total: Decimal
+    taxes: tuple['_TaxEvidence', ...]
+
+
+@dataclass(frozen=True, slots=True)
+class _TaxEvidence:
+    tax_category: str
+    tax_rate: Decimal
+    taxable_base: Decimal
+    tax_amount: Decimal
+    tax_treatment: str
 
 
 def _sha(value: object) -> str:
@@ -381,6 +392,34 @@ async def _commercial_evidence(
         raise errors.BillingSourceNotEligibleError(
             'Allocated Restaurant Order line evidence is incomplete'
         )
+    item_ids = tuple(item.id for item in items)
+    tax_rows = tuple((await db.execute(
+        select(RestaurantOrderItemTaxSnapshot).where(
+            RestaurantOrderItemTaxSnapshot.tenant_id == check.tenant_id,
+            RestaurantOrderItemTaxSnapshot.organization_id == check.organization_id,
+            RestaurantOrderItemTaxSnapshot.location_id == check.location_id,
+            RestaurantOrderItemTaxSnapshot.restaurant_order_id.in_(order_ids),
+            RestaurantOrderItemTaxSnapshot.restaurant_order_item_id.in_(item_ids),
+        ).order_by(
+            RestaurantOrderItemTaxSnapshot.restaurant_order_item_id,
+            RestaurantOrderItemTaxSnapshot.id,
+        ).with_for_update()
+    )).scalars().all())
+    taxes_by_item: dict[int, list[_TaxEvidence]] = {item_id: [] for item_id in item_ids}
+    for tax in tax_rows:
+        taxes_by_item[tax.restaurant_order_item_id].append(
+            _TaxEvidence(
+                tax_category=tax.tax_category,
+                tax_rate=Decimal(tax.tax_rate),
+                taxable_base=Decimal(tax.taxable_base),
+                tax_amount=Decimal(tax.tax_amount),
+                tax_treatment=tax.tax_treatment,
+            )
+        )
+    if any(not taxes_by_item[item_id] for item_id in item_ids):
+        raise errors.BillingTaxEvidenceUnavailableError(
+            'At least one accepted Restaurant Order item lacks authoritative tax evidence'
+        )
     return tuple(
         _CommercialLineEvidence(
             source_restaurant_order_id=item.order_id,
@@ -391,6 +430,7 @@ async def _commercial_evidence(
             base_amount=Decimal(item.base_amount),
             discount_amount=Decimal(item.discount_amount),
             commercial_total=Decimal(item.commercial_amount),
+            taxes=tuple(taxes_by_item[item.id]),
         )
         for item in items
     )
@@ -401,9 +441,10 @@ def _require_authoritative_tax_evidence(
 ) -> None:
     if not lines:
         raise errors.BillingSourceNotEligibleError('Billing commercial evidence is empty')
-    raise errors.BillingTaxEvidenceUnavailableError(
-        'Accepted Restaurant Orders do not contain authoritative line-tax decomposition'
-    )
+    if any(not line.taxes for line in lines):
+        raise errors.BillingTaxEvidenceUnavailableError(
+            'Accepted Restaurant Orders do not contain authoritative line-tax decomposition'
+        )
 
 
 async def create_billing_document(
@@ -412,7 +453,7 @@ async def create_billing_document(
     context: ExecutionContext,
     command: CreateBillingDocumentCommand,
 ) -> tuple[BillingDocumentProjection, bool]:
-    """Create a whole-check invoice, or reject until authoritative taxes exist."""
+    """Create a whole-check invoice from immutable accepted-order evidence."""
 
     _validate_command(command)
     fingerprint = _request_fingerprint(command)
@@ -462,6 +503,59 @@ async def create_billing_document(
         _recipient_snapshot(recipient)
         lines = await _commercial_evidence(db, check=check)
         _require_authoritative_tax_evidence(lines)
+        document = BillingDocument(
+            tenant_id=check.tenant_id,
+            organization_id=check.organization_id,
+            location_id=check.location_id,
+            restaurant_check_id=check.id,
+            source_check_version=check.version,
+            source_check_fingerprint=check.current_fingerprint,
+            document_type='INVOICE',
+            status='DRAFT',
+            currency=check.currency,
+            subtotal=sum((line.base_amount for line in lines), start=ZERO),
+            discount_total=sum((line.discount_amount for line in lines), start=ZERO),
+            tax_total=sum(
+                (tax.tax_amount for line in lines for tax in line.taxes), start=ZERO
+            ),
+            total=Decimal(check.liability_total),
+            issuer_snapshot=_issuer_snapshot(issuer),
+            recipient_snapshot=_recipient_snapshot(recipient),
+            actor_scope=_actor_scope(context),
+            idempotency_key=command.idempotency_key,
+            request_fingerprint=fingerprint,
+        )
+        db.add(document)
+        await db.flush()
+        for line in lines:
+            billing_line = BillingDocumentLine(
+                billing_document_id=document.id,
+                source_restaurant_order_id=line.source_restaurant_order_id,
+                source_restaurant_order_item_id=line.source_restaurant_order_item_id,
+                description=line.description,
+                quantity=line.quantity,
+                unit_price=line.unit_price,
+                base_amount=line.base_amount,
+                discount_amount=line.discount_amount,
+                commercial_total=line.commercial_total,
+            )
+            db.add(billing_line)
+            await db.flush()
+            for tax in line.taxes:
+                db.add(
+                    BillingDocumentLineTax(
+                        billing_document_line_id=billing_line.id,
+                        tax_category=tax.tax_category,
+                        tax_rate=tax.tax_rate,
+                        taxable_base=tax.taxable_base,
+                        tax_amount=tax.tax_amount,
+                        tax_treatment=tax.tax_treatment,
+                    )
+                )
+        await db.flush()
+        await db.commit()
+        await db.refresh(document)
+        return _document_projection(document), False
     except OperationalError as exc:
         await db.rollback()
         _translate_operational(exc)
@@ -469,4 +563,4 @@ async def create_billing_document(
         await db.rollback()
         raise
 
-    raise AssertionError('Authoritative tax evidence gate must terminate billing creation')
+    raise AssertionError('Billing creation did not return a result')

@@ -79,6 +79,20 @@ def _open_and_join(client: TestClient, scope: Scope, *, name: str = 'Diner') -> 
 
 def _product(connection, scope: Scope, *, name: str = 'Hamburguesa Especial', amount: str = '150') -> int:
     product_id = _execute(connection, "INSERT INTO products (tenant_id,organization_id,name,status,source) VALUES (%s,%s,%s,'ACTIVE','PLATFORM')", (scope.tenant_id, scope.organization_id, name))
+    classification = f'PRODUCT-{product_id}'
+    connection.cursor().execute(
+        'UPDATE products SET tax_classification_code=%s WHERE id=%s',
+        (classification, product_id),
+    )
+    _execute(
+        connection,
+        "INSERT INTO restaurant_tax_rules (tenant_id,organization_id,location_id,"
+        "tax_classification_code,jurisdiction_code,tax_category,tax_treatment,tax_rate,"
+        "calculation_policy,rounding_policy,effective_from,effective_to,status) "
+        "VALUES (%s,%s,NULL,%s,'TEST-JURISDICTION','SALES_TAX','TAXABLE',0.160000,"
+        "'INCLUDED_PRICE_SINGLE_TAX','DECIMAL_4_HALF_UP',CURRENT_TIMESTAMP - INTERVAL 1 DAY,NULL,'ACTIVE')",
+        (scope.tenant_id, scope.organization_id, classification),
+    )
     menu_id = _execute(connection, "INSERT INTO menus (tenant_id,organization_id,name,status) VALUES (%s,%s,'Menu','ACTIVE')", (scope.tenant_id, scope.organization_id))
     _execute(connection, "INSERT INTO menu_locations (tenant_id,organization_id,menu_id,location_id,status) VALUES (%s,%s,%s,%s,'ACTIVE')", (scope.tenant_id, scope.organization_id, menu_id, scope.location_id))
     section_id = _execute(connection, "INSERT INTO menu_sections (tenant_id,organization_id,menu_id,name,status) VALUES (%s,%s,%s,'Food','ACTIVE')", (scope.tenant_id, scope.organization_id, menu_id))
@@ -273,8 +287,11 @@ def test_complex_configuration_and_promotion_are_immutable_snapshots(client, sql
     scope = _scope(connection, prefix)
     _, diner_headers = _open_and_join(client, scope)
     parent_id = _product(connection, scope, name='Combo', amount='150')
-    fixed_id = _execute(connection, "INSERT INTO products (tenant_id,organization_id,name,status,source) VALUES (%s,%s,'Fries','ACTIVE','PLATFORM')", (scope.tenant_id, scope.organization_id))
-    option_product_id = _execute(connection, "INSERT INTO products (tenant_id,organization_id,name,status,source) VALUES (%s,%s,'Cola','ACTIVE','PLATFORM')", (scope.tenant_id, scope.organization_id))
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT tax_classification_code FROM products WHERE id=%s', (parent_id,))
+        classification = cursor.fetchone()['tax_classification_code']
+    fixed_id = _execute(connection, "INSERT INTO products (tenant_id,organization_id,name,tax_classification_code,status,source) VALUES (%s,%s,'Fries',%s,'ACTIVE','PLATFORM')", (scope.tenant_id, scope.organization_id, classification))
+    option_product_id = _execute(connection, "INSERT INTO products (tenant_id,organization_id,name,tax_classification_code,status,source) VALUES (%s,%s,'Cola',%s,'ACTIVE','PLATFORM')", (scope.tenant_id, scope.organization_id, classification))
     composition_id = _execute(connection, "INSERT INTO product_compositions (tenant_id,organization_id,product_id,status) VALUES (%s,%s,%s,'ACTIVE')", (scope.tenant_id, scope.organization_id, parent_id))
     _execute(connection, "INSERT INTO product_components (tenant_id,organization_id,composition_id,component_product_id,quantity,display_order,status) VALUES (%s,%s,%s,%s,1,0,'ACTIVE')", (scope.tenant_id, scope.organization_id, composition_id, fixed_id))
     group_id = _execute(connection, "INSERT INTO product_choice_groups (tenant_id,organization_id,composition_id,name,min_selections,max_selections,display_order,status) VALUES (%s,%s,%s,'Drink',1,1,0,'ACTIVE')", (scope.tenant_id, scope.organization_id, composition_id))

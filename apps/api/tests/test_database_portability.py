@@ -7,6 +7,7 @@ from uuid import uuid4
 
 import pymysql
 import pytest
+from sqlalchemy import ForeignKeyConstraint, Numeric, UniqueConstraint
 
 from app import models  # noqa: F401
 from app.core.config import Settings
@@ -89,8 +90,21 @@ APPLICATION_TABLES = {
     'restaurant_payments',
     'restaurant_payment_attempts',
     'restaurant_check_settlements',
+    'restaurant_tax_rules',
+    'restaurant_order_item_tax_snapshots',
     'location_payment_executor_configurations',
     'location_payment_executor_capabilities',
+}
+
+
+APPLICATION_TABLES_0024 = APPLICATION_TABLES - {
+    'billing_documents',
+    'billing_document_lines',
+    'billing_document_line_taxes',
+    'issuer_fiscal_profiles',
+    'customer_fiscal_profiles',
+    'restaurant_tax_rules',
+    'restaurant_order_item_tax_snapshots',
 }
 
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
@@ -164,6 +178,8 @@ LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
     'location_payment_executor_capabilities',
     'restaurant_payment_attempts',
     'restaurant_check_settlements',
+    'restaurant_tax_rules',
+    'restaurant_order_item_tax_snapshots',
 }
 
 EXPECTED_FOREIGN_KEY_COLUMNS = {
@@ -664,6 +680,14 @@ EXPECTED_DOMAIN_CHECKS = {
     ('preparation_dispatch_attempts', 'ck_preparation_dispatch_attempts_result'),
     ('preparation_dispatch_attempts', 'ck_preparation_dispatch_attempts_lifecycle'),
     ('preparation_dispatch_attempts', 'ck_preparation_dispatch_attempts_actor'),
+    ('restaurant_tax_rules', 'ck_restaurant_tax_rules_rate'),
+    ('restaurant_tax_rules', 'ck_restaurant_tax_rules_effective_interval'),
+    ('restaurant_tax_rules', 'ck_restaurant_tax_rules_status'),
+    ('restaurant_order_item_tax_snapshots', 'ck_order_item_tax_snapshots_values'),
+    (
+        'restaurant_order_item_tax_snapshots',
+        'ck_order_item_tax_snapshots_schema_version',
+    ),
 }
 
 for table, prefix, target, target_table in (
@@ -1050,6 +1074,28 @@ for constraint, table, local_columns, target_table, target_columns in (
     ('fk_restaurant_payment_attempts_payment_scope', 'restaurant_payment_attempts', ('payment_id', 'tenant_id'), 'restaurant_payments', ('id', 'tenant_id')),
     ('fk_check_settlements_check_scope', 'restaurant_check_settlements', ('check_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_checks', ('id', 'tenant_id', 'organization_id', 'location_id')),
     ('fk_check_settlements_payment_scope', 'restaurant_check_settlements', ('payment_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_payments', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_issuer_fiscal_profiles_tenant', 'issuer_fiscal_profiles', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_issuer_fiscal_profiles_organization_scope', 'issuer_fiscal_profiles', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
+    ('fk_customer_fiscal_profiles_tenant', 'customer_fiscal_profiles', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_customer_fiscal_profiles_customer_scope', 'customer_fiscal_profiles', ('customer_id', 'tenant_id'), 'customers', ('id', 'tenant_id')),
+    ('fk_billing_documents_tenant', 'billing_documents', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_billing_documents_organization_scope', 'billing_documents', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
+    ('fk_billing_documents_location_scope', 'billing_documents', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_billing_documents_check_scope', 'billing_documents', ('restaurant_check_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_checks', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_billing_documents_check_version', 'billing_documents', ('restaurant_check_id', 'source_check_version'), 'restaurant_check_versions', ('check_id', 'version')),
+    ('fk_billing_document_lines_document', 'billing_document_lines', ('billing_document_id',), 'billing_documents', ('id',)),
+    ('fk_billing_document_lines_source_order', 'billing_document_lines', ('source_restaurant_order_id',), 'restaurant_orders', ('id',)),
+    ('fk_billing_document_lines_source_order_item', 'billing_document_lines', ('source_restaurant_order_item_id',), 'restaurant_order_items', ('id',)),
+    ('fk_billing_document_line_taxes_line', 'billing_document_line_taxes', ('billing_document_line_id',), 'billing_document_lines', ('id',)),
+    ('fk_restaurant_tax_rules_tenant', 'restaurant_tax_rules', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_restaurant_tax_rules_organization_scope', 'restaurant_tax_rules', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
+    ('fk_restaurant_tax_rules_location_scope', 'restaurant_tax_rules', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_order_item_tax_snapshots_tenant', 'restaurant_order_item_tax_snapshots', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_order_item_tax_snapshots_organization_scope', 'restaurant_order_item_tax_snapshots', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
+    ('fk_order_item_tax_snapshots_location_scope', 'restaurant_order_item_tax_snapshots', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_order_item_tax_snapshots_order_scope', 'restaurant_order_item_tax_snapshots', ('restaurant_order_id', 'tenant_id', 'organization_id', 'location_id'), 'restaurant_orders', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_order_item_tax_snapshots_item_scope', 'restaurant_order_item_tax_snapshots', ('restaurant_order_item_id', 'tenant_id', 'restaurant_order_id'), 'restaurant_order_items', ('id', 'tenant_id', 'order_id')),
+    ('fk_order_item_tax_snapshots_rule_scope', 'restaurant_order_item_tax_snapshots', ('source_tax_rule_id', 'tenant_id', 'organization_id'), 'restaurant_tax_rules', ('id', 'tenant_id', 'organization_id')),
 ):
     EXPECTED_FOREIGN_KEY_COLUMNS.update(
         (constraint, table, local, target_table, target, position)
@@ -1086,6 +1132,16 @@ for table, name, columns, non_unique in (
     ('restaurant_check_settlements', 'ix_check_settlements_check', ('tenant_id', 'check_id', 'applied_at', 'id'), 1),
     ('restaurant_check_settlements', 'fk_check_settlements_check_scope', ('check_id', 'tenant_id', 'organization_id', 'location_id'), 1),
     ('restaurant_check_settlements', 'fk_check_settlements_payment_scope', ('payment_id', 'tenant_id', 'organization_id', 'location_id'), 1),
+    ('restaurant_tax_rules', 'uq_restaurant_tax_rules_scope', ('id', 'tenant_id', 'organization_id'), 0),
+    ('restaurant_tax_rules', 'ix_restaurant_tax_rules_resolution', ('tenant_id', 'organization_id', 'location_id', 'tax_classification_code', 'status', 'effective_from', 'effective_to', 'id'), 1),
+    ('restaurant_tax_rules', 'fk_restaurant_tax_rules_organization_scope', ('organization_id', 'tenant_id'), 1),
+    ('restaurant_tax_rules', 'fk_restaurant_tax_rules_location_scope', ('location_id', 'tenant_id', 'organization_id'), 1),
+    ('restaurant_order_item_tax_snapshots', 'ix_order_item_tax_snapshots_item', ('tenant_id', 'restaurant_order_id', 'restaurant_order_item_id', 'id'), 1),
+    ('restaurant_order_item_tax_snapshots', 'fk_order_item_tax_snapshots_organization_scope', ('organization_id', 'tenant_id'), 1),
+    ('restaurant_order_item_tax_snapshots', 'fk_order_item_tax_snapshots_location_scope', ('location_id', 'tenant_id', 'organization_id'), 1),
+    ('restaurant_order_item_tax_snapshots', 'fk_order_item_tax_snapshots_order_scope', ('restaurant_order_id', 'tenant_id', 'organization_id', 'location_id'), 1),
+    ('restaurant_order_item_tax_snapshots', 'fk_order_item_tax_snapshots_item_scope', ('restaurant_order_item_id', 'tenant_id', 'restaurant_order_id'), 1),
+    ('restaurant_order_item_tax_snapshots', 'fk_order_item_tax_snapshots_rule_scope', ('source_tax_rule_id', 'tenant_id', 'organization_id'), 1),
 ):
     _index(table, name, columns, non_unique)
 
@@ -1161,14 +1217,29 @@ def _database_contract(connection) -> tuple[set[tuple], set[tuple], set[tuple]]:
     return tables, foreign_keys, indexes
 
 
-def _assert_database_contract(connection) -> None:
+def _assert_database_contract(
+    connection,
+    expected_tables: set[str] = APPLICATION_TABLES,
+) -> None:
     tables, foreign_keys, indexes = _database_contract(connection)
-    assert {row[0] for row in tables} == APPLICATION_TABLES
+
+    expected_foreign_keys = {
+        row
+        for row in EXPECTED_FOREIGN_KEY_COLUMNS
+        if row[1] in expected_tables
+    }
+    expected_indexes = {
+        row
+        for row in EXPECTED_INDEX_COLUMNS
+        if row[0] in expected_tables
+    }
+
+    assert {row[0] for row in tables} == expected_tables
     assert {row[1] for row in tables} == {'InnoDB'}
     assert {row[2] for row in tables} == {'utf8mb4'}
     assert {row[3] for row in tables} == {'utf8mb4_unicode_ci'}
-    assert foreign_keys == EXPECTED_FOREIGN_KEY_COLUMNS
-    assert indexes == EXPECTED_INDEX_COLUMNS
+    assert foreign_keys == expected_foreign_keys
+    assert indexes == expected_indexes
     with connection.cursor() as cursor:
         cursor.execute(
             '''
@@ -1208,14 +1279,22 @@ def _assert_database_contract(connection) -> None:
                       , 'restaurant_check_table_scopes'
                       , 'restaurant_payments', 'restaurant_payment_attempts'
                       , 'restaurant_check_settlements'
+                      , 'restaurant_tax_rules'
+                      , 'restaurant_order_item_tax_snapshots'
                       , 'location_payment_executor_configurations'
                       , 'location_payment_executor_capabilities'
                   )
             '''
         )
-        assert {(row['TABLE_NAME'], row['CONSTRAINT_NAME']) for row in cursor.fetchall()} == (
-            EXPECTED_DOMAIN_CHECKS
-        )
+        expected_domain_checks = {
+            row
+            for row in EXPECTED_DOMAIN_CHECKS
+            if row[0] in expected_tables
+        }
+        assert {
+            (row['TABLE_NAME'], row['CONSTRAINT_NAME'])
+            for row in cursor.fetchall()
+        } == expected_domain_checks
         cursor.execute(
             '''
             SELECT TABLE_NAME, COLUMN_NAME, COLLATION_NAME
@@ -1342,13 +1421,29 @@ def _assert_database_contract(connection) -> None:
                   OR
                   (TABLE_NAME = 'restaurant_check_settlements'
                    AND COLUMN_NAME = 'application_actor_reference')
+                  OR
+                  (TABLE_NAME = 'products'
+                   AND COLUMN_NAME = 'tax_classification_code')
+                  OR
+                  (TABLE_NAME = 'restaurant_tax_rules'
+                   AND COLUMN_NAME IN (
+                       'tax_classification_code', 'jurisdiction_code',
+                       'calculation_policy', 'rounding_policy'
+                   ))
+                  OR
+                  (TABLE_NAME = 'restaurant_order_item_tax_snapshots'
+                   AND COLUMN_NAME IN (
+                       'jurisdiction_code', 'calculation_policy',
+                       'rounding_policy', 'evidence_fingerprint'
+                   ))
               )
             '''
         )
-        assert {
+        actual_collations = {
             (row['TABLE_NAME'], row['COLUMN_NAME'], row['COLLATION_NAME'])
             for row in cursor.fetchall()
-        } == {
+        }
+        expected_collations = {
             ('customer_external_identities', 'external_customer_id', 'utf8mb4_bin'),
             ('product_external_mappings', 'external_product_id', 'utf8mb4_bin'),
             ('product_aliases', 'normalized_alias', 'utf8mb4_bin'),
@@ -1442,7 +1537,26 @@ def _assert_database_contract(connection) -> None:
             ('restaurant_payment_attempts', 'external_reference', 'utf8mb4_bin'),
             ('restaurant_payment_attempts', 'result_fingerprint', 'ascii_bin'),
             ('restaurant_check_settlements', 'application_actor_reference', 'utf8mb4_bin'),
+            ('products', 'tax_classification_code', 'utf8mb4_bin'),
+            ('restaurant_tax_rules', 'tax_classification_code', 'utf8mb4_bin'),
+            ('restaurant_tax_rules', 'jurisdiction_code', 'utf8mb4_bin'),
+            ('restaurant_tax_rules', 'calculation_policy', 'utf8mb4_bin'),
+            ('restaurant_tax_rules', 'rounding_policy', 'utf8mb4_bin'),
+            ('restaurant_order_item_tax_snapshots', 'jurisdiction_code', 'utf8mb4_bin'),
+            ('restaurant_order_item_tax_snapshots', 'calculation_policy', 'utf8mb4_bin'),
+            ('restaurant_order_item_tax_snapshots', 'rounding_policy', 'utf8mb4_bin'),
+            ('restaurant_order_item_tax_snapshots', 'evidence_fingerprint', 'ascii_bin'),
         }
+        expected_collations = {
+            row
+            for row in expected_collations
+            if row[0] in expected_tables
+        }
+        if expected_tables == APPLICATION_TABLES_0024:
+            expected_collations.discard(
+                ('products', 'tax_classification_code', 'utf8mb4_bin')
+            )
+        assert actual_collations == expected_collations
 
 
 def _run_alembic(database_name: str, revision: str) -> None:
@@ -1521,6 +1635,43 @@ def test_model_metadata_declares_portable_mysql_table_options() -> None:
         assert options['engine'] == 'InnoDB'
         assert options['charset'] == 'utf8mb4'
         assert options['collate'] == 'utf8mb4_unicode_ci'
+
+
+def test_authoritative_tax_evidence_metadata_contract() -> None:
+    products = Base.metadata.tables['products']
+    rules = Base.metadata.tables['restaurant_tax_rules']
+    snapshots = Base.metadata.tables['restaurant_order_item_tax_snapshots']
+
+    assert products.c.tax_classification_code.nullable
+    assert set(rules.c.keys()) == {
+        'id', 'tenant_id', 'organization_id', 'location_id',
+        'tax_classification_code', 'jurisdiction_code', 'tax_category',
+        'tax_treatment', 'tax_rate', 'calculation_policy', 'rounding_policy',
+        'effective_from', 'effective_to', 'status', 'created_at', 'updated_at',
+    }
+    assert rules.c.location_id.nullable
+    assert rules.c.effective_to.nullable
+    assert isinstance(rules.c.tax_rate.type, Numeric)
+
+    assert set(snapshots.c.keys()) == {
+        'id', 'tenant_id', 'organization_id', 'location_id',
+        'restaurant_order_id', 'restaurant_order_item_id', 'source_tax_rule_id',
+        'tax_category', 'tax_treatment', 'tax_rate', 'taxable_base', 'tax_amount',
+        'jurisdiction_code', 'calculation_policy', 'rounding_policy',
+        'schema_version', 'evidence_fingerprint', 'created_at',
+    }
+    assert 'updated_at' not in snapshots.c
+    assert all(
+        constraint.ondelete == 'RESTRICT'
+        for table in (rules, snapshots)
+        for constraint in table.constraints
+        if isinstance(constraint, ForeignKeyConstraint)
+    )
+    assert not any(
+        'restaurant_order_item_id' in constraint.columns
+        for constraint in snapshots.constraints
+        if isinstance(constraint, UniqueConstraint)
+    )
 
 
 def test_database_tables_enforce_storage_contract(sql_connection) -> None:
@@ -3142,7 +3293,10 @@ def test_0024_upgrade_from_0023_establishes_payment_executor_foundation(
     _run_alembic(database_name, '0024_payment_executor_foundation')
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
-        _assert_database_contract(connection)
+        _assert_database_contract(
+            connection,
+            expected_tables=APPLICATION_TABLES_0024,
+        )
         with connection.cursor() as cursor:
             cursor.execute('SELECT version_num FROM alembic_version')
             assert [row['version_num'] for row in cursor.fetchall()] == [
@@ -3155,7 +3309,10 @@ def test_0024_upgrade_from_0023_establishes_payment_executor_foundation(
     _run_alembic(database_name, '0024_payment_executor_foundation')
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
-        _assert_database_contract(connection)
+        _assert_database_contract(
+            connection,
+            expected_tables=APPLICATION_TABLES_0024,
+        )
         with connection.cursor() as cursor:
             cursor.execute('SELECT version_num FROM alembic_version')
             assert [row['version_num'] for row in cursor.fetchall()] == [
