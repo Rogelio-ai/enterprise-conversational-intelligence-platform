@@ -15,6 +15,8 @@ from app.db.base import Base
 
 
 APPLICATION_TABLES = {
+    'billing_issuances',
+    'billing_issuance_attempts',
     'billing_documents',
     'billing_document_lines',
     'billing_document_line_taxes',
@@ -98,6 +100,8 @@ APPLICATION_TABLES = {
 
 
 APPLICATION_TABLES_0024 = APPLICATION_TABLES - {
+    'billing_issuances',
+    'billing_issuance_attempts',
     'billing_documents',
     'billing_document_lines',
     'billing_document_line_taxes',
@@ -107,7 +111,14 @@ APPLICATION_TABLES_0024 = APPLICATION_TABLES - {
     'restaurant_order_item_tax_snapshots',
 }
 
+APPLICATION_TABLES_0026 = APPLICATION_TABLES - {
+    'billing_issuances',
+    'billing_issuance_attempts',
+}
+
 LEGACY_APPLICATION_TABLES = APPLICATION_TABLES - {
+    'billing_issuances',
+    'billing_issuance_attempts',
     'billing_documents',
     'billing_document_lines',
     'billing_document_line_taxes',
@@ -482,6 +493,16 @@ EXPECTED_INDEX_COLUMNS = {
 }
 
 EXPECTED_DOMAIN_CHECKS = {
+    ('billing_issuances', 'ck_billing_issuances_state'),
+    ('billing_issuances', 'ck_billing_issuances_versions'),
+    ('billing_issuances', 'ck_billing_issuances_claim'),
+    ('billing_issuances', 'ck_billing_issuances_lifecycle'),
+    ('billing_issuances', 'ck_billing_issuances_success'),
+    ('billing_issuance_attempts', 'ck_billing_issuance_attempts_type'),
+    ('billing_issuance_attempts', 'ck_billing_issuance_attempts_result'),
+    ('billing_issuance_attempts', 'ck_billing_issuance_attempts_sequence'),
+    ('billing_issuance_attempts', 'ck_billing_issuance_attempts_lifecycle'),
+    ('billing_issuance_attempts', 'ck_billing_issuance_attempts_actor'),
     ('restaurant_checks', 'ck_restaurant_checks_lifecycle'),
     ('restaurant_checks', 'ck_restaurant_checks_controller_actor'),
     ('restaurant_checks', 'ck_restaurant_checks_created_actor'),
@@ -1087,6 +1108,11 @@ for constraint, table, local_columns, target_table, target_columns in (
     ('fk_billing_document_lines_source_order', 'billing_document_lines', ('source_restaurant_order_id',), 'restaurant_orders', ('id',)),
     ('fk_billing_document_lines_source_order_item', 'billing_document_lines', ('source_restaurant_order_item_id',), 'restaurant_order_items', ('id',)),
     ('fk_billing_document_line_taxes_line', 'billing_document_line_taxes', ('billing_document_line_id',), 'billing_document_lines', ('id',)),
+    ('fk_billing_issuances_tenant', 'billing_issuances', ('tenant_id',), 'tenants', ('id',)),
+    ('fk_billing_issuances_organization_scope', 'billing_issuances', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
+    ('fk_billing_issuances_location_scope', 'billing_issuances', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
+    ('fk_billing_issuances_document_scope', 'billing_issuances', ('billing_document_id', 'tenant_id', 'organization_id', 'location_id'), 'billing_documents', ('id', 'tenant_id', 'organization_id', 'location_id')),
+    ('fk_billing_issuance_attempts_issuance_scope', 'billing_issuance_attempts', ('billing_issuance_id', 'tenant_id', 'organization_id', 'location_id'), 'billing_issuances', ('id', 'tenant_id', 'organization_id', 'location_id')),
     ('fk_restaurant_tax_rules_tenant', 'restaurant_tax_rules', ('tenant_id',), 'tenants', ('id',)),
     ('fk_restaurant_tax_rules_organization_scope', 'restaurant_tax_rules', ('organization_id', 'tenant_id'), 'organizations', ('id', 'tenant_id')),
     ('fk_restaurant_tax_rules_location_scope', 'restaurant_tax_rules', ('location_id', 'tenant_id', 'organization_id'), 'locations', ('id', 'tenant_id', 'organization_id')),
@@ -1142,6 +1168,20 @@ for table, name, columns, non_unique in (
     ('restaurant_order_item_tax_snapshots', 'fk_order_item_tax_snapshots_order_scope', ('restaurant_order_id', 'tenant_id', 'organization_id', 'location_id'), 1),
     ('restaurant_order_item_tax_snapshots', 'fk_order_item_tax_snapshots_item_scope', ('restaurant_order_item_id', 'tenant_id', 'restaurant_order_id'), 1),
     ('restaurant_order_item_tax_snapshots', 'fk_order_item_tax_snapshots_rule_scope', ('source_tax_rule_id', 'tenant_id', 'organization_id'), 1),
+    ('billing_issuances', 'uq_billing_issuances_scope', ('id', 'tenant_id', 'organization_id', 'location_id'), 0),
+    ('billing_issuances', 'uq_billing_issuances_document', ('billing_document_id',), 0),
+    ('billing_issuances', 'uq_billing_issuances_idempotency', ('tenant_id', 'actor_scope', 'idempotency_key'), 0),
+    ('billing_issuances', 'uq_billing_issuances_provider_operation', ('tenant_id', 'provider_key', 'provider_idempotency_key'), 0),
+    ('billing_issuances', 'ix_billing_issuances_state', ('tenant_id', 'state', 'requested_at', 'id'), 1),
+    ('billing_issuances', 'ix_billing_issuances_claim', ('tenant_id', 'state', 'claim_expires_at', 'id'), 1),
+    ('billing_issuances', 'ix_billing_issuances_external', ('tenant_id', 'provider_key', 'external_reference', 'id'), 1),
+    ('billing_issuances', 'fk_billing_issuances_organization_scope', ('organization_id', 'tenant_id'), 1),
+    ('billing_issuances', 'fk_billing_issuances_location_scope', ('location_id', 'tenant_id', 'organization_id'), 1),
+    ('billing_issuances', 'fk_billing_issuances_document_scope', ('billing_document_id', 'tenant_id', 'organization_id', 'location_id'), 1),
+    ('billing_issuance_attempts', 'uq_billing_issuance_attempts_sequence', ('billing_issuance_id', 'attempt_sequence'), 0),
+    ('billing_issuance_attempts', 'uq_billing_issuance_attempts_claim', ('claim_token',), 0),
+    ('billing_issuance_attempts', 'ix_billing_issuance_attempts_ordered', ('tenant_id', 'billing_issuance_id', 'attempt_sequence', 'id'), 1),
+    ('billing_issuance_attempts', 'fk_billing_issuance_attempts_issuance_scope', ('billing_issuance_id', 'tenant_id', 'organization_id', 'location_id'), 1),
 ):
     _index(table, name, columns, non_unique)
 
@@ -1281,6 +1321,7 @@ def _assert_database_contract(
                       , 'restaurant_check_settlements'
                       , 'restaurant_tax_rules'
                       , 'restaurant_order_item_tax_snapshots'
+                      , 'billing_issuances', 'billing_issuance_attempts'
                       , 'location_payment_executor_configurations'
                       , 'location_payment_executor_capabilities'
                   )
@@ -1422,6 +1463,20 @@ def _assert_database_contract(
                   (TABLE_NAME = 'restaurant_check_settlements'
                    AND COLUMN_NAME = 'application_actor_reference')
                   OR
+                  (TABLE_NAME = 'billing_issuances'
+                   AND COLUMN_NAME IN (
+                       'provider_key', 'credential_binding', 'actor_scope',
+                       'idempotency_key', 'request_fingerprint',
+                       'provider_idempotency_key', 'external_reference',
+                       'claim_token', 'last_error_kind'
+                   ))
+                  OR
+                  (TABLE_NAME = 'billing_issuance_attempts'
+                   AND COLUMN_NAME IN (
+                       'claim_token', 'external_reference', 'error_kind',
+                       'result_fingerprint', 'actor_reference', 'correlation_id'
+                   ))
+                  OR
                   (TABLE_NAME = 'products'
                    AND COLUMN_NAME = 'tax_classification_code')
                   OR
@@ -1537,6 +1592,21 @@ def _assert_database_contract(
             ('restaurant_payment_attempts', 'external_reference', 'utf8mb4_bin'),
             ('restaurant_payment_attempts', 'result_fingerprint', 'ascii_bin'),
             ('restaurant_check_settlements', 'application_actor_reference', 'utf8mb4_bin'),
+            ('billing_issuances', 'provider_key', 'utf8mb4_bin'),
+            ('billing_issuances', 'credential_binding', 'utf8mb4_bin'),
+            ('billing_issuances', 'actor_scope', 'ascii_bin'),
+            ('billing_issuances', 'idempotency_key', 'ascii_bin'),
+            ('billing_issuances', 'request_fingerprint', 'ascii_bin'),
+            ('billing_issuances', 'provider_idempotency_key', 'ascii_bin'),
+            ('billing_issuances', 'external_reference', 'utf8mb4_bin'),
+            ('billing_issuances', 'claim_token', 'ascii_bin'),
+            ('billing_issuances', 'last_error_kind', 'ascii_bin'),
+            ('billing_issuance_attempts', 'claim_token', 'ascii_bin'),
+            ('billing_issuance_attempts', 'external_reference', 'utf8mb4_bin'),
+            ('billing_issuance_attempts', 'error_kind', 'ascii_bin'),
+            ('billing_issuance_attempts', 'result_fingerprint', 'ascii_bin'),
+            ('billing_issuance_attempts', 'actor_reference', 'utf8mb4_bin'),
+            ('billing_issuance_attempts', 'correlation_id', 'ascii_bin'),
             ('products', 'tax_classification_code', 'utf8mb4_bin'),
             ('restaurant_tax_rules', 'tax_classification_code', 'utf8mb4_bin'),
             ('restaurant_tax_rules', 'jurisdiction_code', 'utf8mb4_bin'),
@@ -3318,5 +3388,45 @@ def test_0024_upgrade_from_0023_establishes_payment_executor_foundation(
             assert [row['version_num'] for row in cursor.fetchall()] == [
                 '0024_payment_executor_foundation'
             ]
+    finally:
+        connection.close()
+
+
+def test_0027_upgrade_downgrade_reupgrade_is_portable(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    issuance_tables = {'billing_issuances', 'billing_issuance_attempts'}
+
+    _run_alembic(database_name, '0026_authoritative_tax_evidence')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection, expected_tables=APPLICATION_TABLES_0026)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME FROM information_schema.TABLES '
+                'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s)',
+                tuple(sorted(issuance_tables)),
+            )
+            assert {row['TABLE_NAME'] for row in cursor.fetchall()} == set()
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, '0027_fiscal_issuance_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0027_fiscal_issuance_foundation'
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0026_authoritative_tax_evidence')
+    _run_alembic(database_name, '0027_fiscal_issuance_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
     finally:
         connection.close()

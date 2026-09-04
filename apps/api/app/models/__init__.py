@@ -2,6 +2,8 @@ from app.models.billing import (
     BillingDocument,
     BillingDocumentLine,
     BillingDocumentLineTax,
+    BillingIssuance,
+    BillingIssuanceAttempt,
     CustomerFiscalProfile,
     IssuerFiscalProfile,
 )
@@ -88,6 +90,8 @@ __all__ = [
     'BillingDocument',
     'BillingDocumentLine',
     'BillingDocumentLineTax',
+    'BillingIssuance',
+    'BillingIssuanceAttempt',
     'Customer',
     'CustomerExternalIdentity',
     'CustomerFiscalProfile',

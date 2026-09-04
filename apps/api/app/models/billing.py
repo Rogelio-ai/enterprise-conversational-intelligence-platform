@@ -9,6 +9,7 @@ from sqlalchemy import (
     DateTime,
     ForeignKeyConstraint,
     Index,
+    Integer,
     JSON,
     Numeric,
     String,
@@ -283,4 +284,211 @@ class BillingDocumentLineTax(Base):
     tax_treatment: Mapped[str] = mapped_column(String(32), nullable=False)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(), nullable=False, server_default=func.current_timestamp()
+    )
+
+
+class BillingIssuance(TimestampMixin, Base):
+    __tablename__ = 'billing_issuances'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['tenant_id'], ['tenants.id'],
+            name='fk_billing_issuances_tenant', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['organization_id', 'tenant_id'],
+            ['organizations.id', 'organizations.tenant_id'],
+            name='fk_billing_issuances_organization_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['location_id', 'tenant_id', 'organization_id'],
+            ['locations.id', 'locations.tenant_id', 'locations.organization_id'],
+            name='fk_billing_issuances_location_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['billing_document_id', 'tenant_id', 'organization_id', 'location_id'],
+            [
+                'billing_documents.id',
+                'billing_documents.tenant_id',
+                'billing_documents.organization_id',
+                'billing_documents.location_id',
+            ],
+            name='fk_billing_issuances_document_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id',
+            name='uq_billing_issuances_scope',
+        ),
+        UniqueConstraint(
+            'billing_document_id', name='uq_billing_issuances_document',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'actor_scope', 'idempotency_key',
+            name='uq_billing_issuances_idempotency',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'provider_key', 'provider_idempotency_key',
+            name='uq_billing_issuances_provider_operation',
+        ),
+        CheckConstraint(
+            "state IN ('PENDING','IN_PROGRESS','SUCCEEDED','FAILED','REJECTED','UNCERTAIN')",
+            name='ck_billing_issuances_state',
+        ),
+        CheckConstraint(
+            'request_schema_version >= 1 AND attempt_count >= 0',
+            name='ck_billing_issuances_versions',
+        ),
+        CheckConstraint(
+            "(state='IN_PROGRESS' AND claim_token IS NOT NULL AND claim_expires_at IS NOT NULL) OR "
+            "(state<>'IN_PROGRESS' AND claim_token IS NULL AND claim_expires_at IS NULL)",
+            name='ck_billing_issuances_claim',
+        ),
+        CheckConstraint(
+            "(state IN ('SUCCEEDED','REJECTED') AND completed_at IS NOT NULL) OR "
+            "(state NOT IN ('SUCCEEDED','REJECTED') AND completed_at IS NULL)",
+            name='ck_billing_issuances_lifecycle',
+        ),
+        CheckConstraint(
+            "state<>'SUCCEEDED' OR external_reference IS NOT NULL",
+            name='ck_billing_issuances_success',
+        ),
+        Index(
+            'ix_billing_issuances_state',
+            'tenant_id', 'state', 'requested_at', 'id',
+        ),
+        Index(
+            'ix_billing_issuances_claim',
+            'tenant_id', 'state', 'claim_expires_at', 'id',
+        ),
+        Index(
+            'ix_billing_issuances_external',
+            'tenant_id', 'provider_key', 'external_reference', 'id',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    billing_document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    provider_key: Mapped[str] = mapped_column(
+        String(128, collation='utf8mb4_bin'), nullable=False
+    )
+    credential_binding: Mapped[str | None] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=True
+    )
+    state: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='PENDING', server_default=text("'PENDING'")
+    )
+    actor_scope: Mapped[str] = mapped_column(
+        String(200, collation='ascii_bin'), nullable=False
+    )
+    idempotency_key: Mapped[str] = mapped_column(
+        String(128, collation='ascii_bin'), nullable=False
+    )
+    request_schema_version: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=1, server_default=text('1')
+    )
+    request_fingerprint: Mapped[str] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=False
+    )
+    provider_idempotency_key: Mapped[str] = mapped_column(
+        String(128, collation='ascii_bin'), nullable=False
+    )
+    external_reference: Mapped[str | None] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=True
+    )
+    external_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    claim_token: Mapped[str | None] = mapped_column(
+        String(36, collation='ascii_bin'), nullable=True
+    )
+    claim_expires_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    attempt_count: Mapped[int] = mapped_column(
+        Integer, nullable=False, default=0, server_default=text('0')
+    )
+    last_error_kind: Mapped[str | None] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=True
+    )
+    last_error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    requested_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+
+
+class BillingIssuanceAttempt(Base):
+    __tablename__ = 'billing_issuance_attempts'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['billing_issuance_id', 'tenant_id', 'organization_id', 'location_id'],
+            [
+                'billing_issuances.id',
+                'billing_issuances.tenant_id',
+                'billing_issuances.organization_id',
+                'billing_issuances.location_id',
+            ],
+            name='fk_billing_issuance_attempts_issuance_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'billing_issuance_id', 'attempt_sequence',
+            name='uq_billing_issuance_attempts_sequence',
+        ),
+        UniqueConstraint(
+            'claim_token', name='uq_billing_issuance_attempts_claim',
+        ),
+        CheckConstraint(
+            "attempt_type IN ('ISSUE','RETRY','RECOVER')",
+            name='ck_billing_issuance_attempts_type',
+        ),
+        CheckConstraint(
+            "result IS NULL OR result IN ('SUCCEEDED','FAILED','REJECTED','UNCERTAIN')",
+            name='ck_billing_issuance_attempts_result',
+        ),
+        CheckConstraint(
+            'attempt_sequence >= 1', name='ck_billing_issuance_attempts_sequence',
+        ),
+        CheckConstraint(
+            '(result IS NULL AND completed_at IS NULL) OR '
+            '(result IS NOT NULL AND completed_at IS NOT NULL)',
+            name='ck_billing_issuance_attempts_lifecycle',
+        ),
+        CheckConstraint(
+            "actor_type IS NULL OR actor_type IN "
+            "('EMPLOYEE','DINER','SYSTEM','AGENT','EXTERNAL_SYSTEM')",
+            name='ck_billing_issuance_attempts_actor',
+        ),
+        Index(
+            'ix_billing_issuance_attempts_ordered',
+            'tenant_id', 'billing_issuance_id', 'attempt_sequence', 'id',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    billing_issuance_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    attempt_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    attempt_type: Mapped[str] = mapped_column(String(16), nullable=False)
+    claim_token: Mapped[str | None] = mapped_column(
+        String(36, collation='ascii_bin'), nullable=True
+    )
+    started_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    result: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    external_reference: Mapped[str | None] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=True
+    )
+    external_status: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    error_kind: Mapped[str | None] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=True
+    )
+    error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    result_fingerprint: Mapped[str | None] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=True
+    )
+    actor_type: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    actor_reference: Mapped[str | None] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=True
+    )
+    correlation_id: Mapped[str | None] = mapped_column(
+        String(128, collation='ascii_bin'), nullable=True
     )
