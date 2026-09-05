@@ -22,6 +22,9 @@ from app.models import (
     BillingFiscalResult,
     BillingIssuance,
     BillingIssuanceAttempt,
+    RestaurantCheck,
+    RestaurantCheckSettlement,
+    RestaurantPayment,
 )
 from app.restaurant.fiscal_issuance import errors
 from app.restaurant.fiscal_issuance.contracts import (
@@ -44,7 +47,9 @@ from app.restaurant.integrations.fiscal.contracts import (
     FiscalProviderErrorKind,
     FiscalRecoveryOutcome,
     FiscalRecoveryResult,
+    FrozenFiscalPaymentEvidence,
     FrozenFiscalPartySnapshot,
+    FrozenFiscalSettlementEvidence,
 )
 from app.restaurant.integrations.fiscal.artifact_storage import (
     FiscalArtifactStoragePort,
@@ -59,7 +64,7 @@ from app.restaurant.integrations.fiscal.ports import FiscalIssuancePort
 from app.restaurant.integrations.fiscal.registry import FiscalProviderRegistry
 
 
-REQUEST_SCHEMA_VERSION = 1
+REQUEST_SCHEMA_VERSION = 2
 CLAIM_LEASE = timedelta(seconds=30)
 logger = logging.getLogger('ecip.fiscal_issuance')
 
@@ -277,6 +282,62 @@ async def _canonical_request(
         provider_key=command.provider_key,
         credential_binding=command.credential_binding,
     )
+    check = await db.scalar(select(RestaurantCheck).where(
+        RestaurantCheck.id == document.restaurant_check_id,
+        RestaurantCheck.tenant_id == document.tenant_id,
+        RestaurantCheck.organization_id == document.organization_id,
+        RestaurantCheck.location_id == document.location_id,
+    ))
+    if check is None:
+        raise errors.FiscalCanonicalEvidenceInvalidError(
+            'Canonical settlement source is unavailable'
+        )
+    payment_rows = tuple((await db.execute(
+        select(RestaurantPayment)
+        .where(
+            RestaurantPayment.check_id == check.id,
+            RestaurantPayment.tenant_id == document.tenant_id,
+        )
+        .order_by(RestaurantPayment.id)
+    )).scalars().all())
+    settled_amounts = tuple((await db.execute(
+        select(RestaurantCheckSettlement.amount)
+        .where(RestaurantCheckSettlement.check_id == check.id)
+        .order_by(RestaurantCheckSettlement.id)
+    )).scalars().all())
+    reserving_states = {'RESERVED', 'IN_PROGRESS'}
+    settlement_values = {
+        'restaurant_check_id': check.id,
+        'check_status': check.status,
+        'check_version': check.version,
+        'check_fingerprint': check.current_fingerprint,
+        'currency': check.currency,
+        'liability_total': _decimal(check.liability_total),
+        'confirmed_settlement': _decimal(sum(
+            (Decimal(value) for value in settled_amounts), start=Decimal('0')
+        )),
+        'reserved_financial_exposure': _decimal(sum(
+            (
+                Decimal(payment.amount)
+                for payment in payment_rows
+                if payment.state in reserving_states
+            ),
+            start=Decimal('0'),
+        )),
+        'uncertain_exposure': _decimal(sum(
+            (
+                Decimal(payment.amount)
+                for payment in payment_rows
+                if payment.state == 'UNCERTAIN'
+            ),
+            start=Decimal('0'),
+        )),
+        'payments': tuple({
+            'method_category': payment.method_category,
+            'amount': _decimal(payment.amount),
+            'state': payment.state,
+        } for payment in payment_rows),
+    }
     canonical_lines = tuple(
         {
             'billing_document_line_id': line.id,
@@ -295,7 +356,37 @@ async def _canonical_request(
                 'rate': _decimal(tax.tax_rate),
                 'taxable_base': _decimal(tax.taxable_base),
                 'amount': _decimal(tax.tax_amount),
+                'jurisdiction_code': tax.jurisdiction_code,
+                'tax_effect': tax.tax_effect,
+                'source_tax_evidence_fingerprint': (
+                    tax.source_tax_evidence_fingerprint
+                ),
             } for tax in taxes_by_line[line.id]),
+            'fiscal_product_classification_scheme': (
+                line.fiscal_product_classification_scheme
+            ),
+            'fiscal_product_classification_code': (
+                line.fiscal_product_classification_code
+            ),
+            'fiscal_unit_classification_scheme': (
+                line.fiscal_unit_classification_scheme
+            ),
+            'fiscal_unit_classification_code': line.fiscal_unit_classification_code,
+            'fiscal_unit_value': (
+                _decimal(line.fiscal_unit_value)
+                if line.fiscal_unit_value is not None else None
+            ),
+            'fiscal_line_amount': (
+                _decimal(line.fiscal_line_amount)
+                if line.fiscal_line_amount is not None else None
+            ),
+            'fiscal_discount_amount': (
+                _decimal(line.fiscal_discount_amount)
+                if line.fiscal_discount_amount is not None else None
+            ),
+            'source_fiscal_evidence_fingerprint': (
+                line.source_fiscal_evidence_fingerprint
+            ),
         }
         for line in lines
     )
@@ -317,6 +408,7 @@ async def _canonical_request(
         'issuer_snapshot': document.issuer_snapshot,
         'recipient_snapshot': document.recipient_snapshot,
         'lines': canonical_lines,
+        'settlement': settlement_values,
         'operation_reference': operation_reference,
         'provider_key': command.provider_key,
         'credential_binding': command.credential_binding,
@@ -340,6 +432,26 @@ async def _canonical_request(
             total=Decimal(document.total),
             issuer=_party_snapshot(document.issuer_snapshot, recipient=False),
             recipient=_party_snapshot(document.recipient_snapshot, recipient=True),
+            source_check_version=document.source_check_version,
+            source_check_fingerprint=document.source_check_fingerprint,
+            readiness_evidence_fingerprint=(
+                document.readiness_evidence_fingerprint
+            ),
+            settlement=FrozenFiscalSettlementEvidence(
+                restaurant_check_id=settlement_values['restaurant_check_id'],
+                check_status=settlement_values['check_status'],
+                check_version=settlement_values['check_version'],
+                check_fingerprint=settlement_values['check_fingerprint'],
+                currency=settlement_values['currency'],
+                liability_total=settlement_values['liability_total'],
+                confirmed_settlement=settlement_values['confirmed_settlement'],
+                reserved_financial_exposure=(
+                    settlement_values['reserved_financial_exposure']
+                ),
+                uncertain_exposure=settlement_values['uncertain_exposure'],
+                payments=tuple(FrozenFiscalPaymentEvidence(**payment)
+                               for payment in settlement_values['payments']),
+            ),
             lines=tuple(FiscalIssuanceLine(
                 billing_document_line_id=line.id,
                 description=line.description,
@@ -355,7 +467,28 @@ async def _canonical_request(
                     rate=Decimal(tax.tax_rate),
                     taxable_base=Decimal(tax.taxable_base),
                     amount=Decimal(tax.tax_amount),
+                    jurisdiction_code=tax.jurisdiction_code,
+                    tax_effect=tax.tax_effect,
+                    source_tax_evidence_fingerprint=(
+                        tax.source_tax_evidence_fingerprint
+                    ),
                 ) for tax in taxes_by_line[line.id]),
+                fiscal_product_classification_scheme=(
+                    line.fiscal_product_classification_scheme
+                ),
+                fiscal_product_classification_code=(
+                    line.fiscal_product_classification_code
+                ),
+                fiscal_unit_classification_scheme=(
+                    line.fiscal_unit_classification_scheme
+                ),
+                fiscal_unit_classification_code=line.fiscal_unit_classification_code,
+                fiscal_unit_value=line.fiscal_unit_value,
+                fiscal_line_amount=line.fiscal_line_amount,
+                fiscal_discount_amount=line.fiscal_discount_amount,
+                source_fiscal_evidence_fingerprint=(
+                    line.source_fiscal_evidence_fingerprint
+                ),
             ) for line in lines),
         )
     except (KeyError, TypeError, ValueError, ValidationError):
@@ -1063,7 +1196,11 @@ async def _fail_resolution(
     )
 
 
-def _recovery_request(issuance: BillingIssuance) -> FiscalIssuanceRecoveryRequest:
+async def _recovery_request(
+    db: AsyncSession,
+    issuance: BillingIssuance,
+) -> FiscalIssuanceRecoveryRequest:
+    original_request = await _retry_request(db, issuance=issuance)
     return FiscalIssuanceRecoveryRequest(
         tenant_id=issuance.tenant_id,
         organization_id=issuance.organization_id,
@@ -1078,6 +1215,7 @@ def _recovery_request(issuance: BillingIssuance) -> FiscalIssuanceRecoveryReques
         request_schema_version=issuance.request_schema_version,
         external_reference=issuance.external_reference,
         external_status=issuance.external_status,
+        original_request=original_request,
     )
 
 
@@ -1108,7 +1246,10 @@ async def _retry_request(
         raise errors.FiscalProviderBindingMismatchError(
             'Durable fiscal issuance evidence no longer matches its provider binding'
         )
-    return request
+    return request.model_copy(update={
+        'issued_at': issuance.requested_at,
+        'is_retry': True,
+    })
 
 
 def _complete_stale_attempt(
@@ -1336,6 +1477,8 @@ async def initiate_fiscal_issuance(
     if token is None:
         return await _projection(db, issuance), True
 
+    request = request.model_copy(update={'issued_at': issuance.requested_at})
+
     try:
         provider = provider_registry.resolve(issuance.provider_key)
         if not isinstance(provider, FiscalIssuancePort):
@@ -1429,7 +1572,23 @@ async def recover_fiscal_issuance(
     if token is None:
         return await _projection(db, issuance)
 
-    request = _recovery_request(issuance)
+    try:
+        request = await _recovery_request(db, issuance)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        await _finish(
+            db,
+            tenant_id=issuance.tenant_id,
+            issuance_id=issuance.id,
+            token=token,
+            state='UNCERTAIN',
+            external_reference=issuance.external_reference,
+            external_status='PROVIDER_BINDING_MISMATCH',
+            error_kind='PROVIDER_BINDING_MISMATCH',
+            error_message='Durable fiscal issuance evidence failed binding validation',
+        )
+        raise
     try:
         provider = provider_registry.resolve(issuance.provider_key)
         if not isinstance(provider, FiscalIssuancePort):

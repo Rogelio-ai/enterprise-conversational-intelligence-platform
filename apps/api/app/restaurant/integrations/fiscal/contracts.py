@@ -85,6 +85,11 @@ class FiscalIssuanceLineTax(FiscalContractValue):
     rate: TaxRate
     taxable_base: ExactAmount
     amount: ExactAmount
+    jurisdiction_code: str | None = Field(default=None, min_length=1, max_length=64)
+    tax_effect: str | None = Field(default=None, min_length=1, max_length=32)
+    source_tax_evidence_fingerprint: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$'
+    )
 
 
 class FiscalIssuanceLine(FiscalContractValue):
@@ -96,6 +101,45 @@ class FiscalIssuanceLine(FiscalContractValue):
     discount_amount: ExactAmount
     total: ExactAmount
     taxes: tuple[FiscalIssuanceLineTax, ...] = ()
+    fiscal_product_classification_scheme: str | None = Field(
+        default=None, min_length=1, max_length=128
+    )
+    fiscal_product_classification_code: str | None = Field(
+        default=None, min_length=1, max_length=64
+    )
+    fiscal_unit_classification_scheme: str | None = Field(
+        default=None, min_length=1, max_length=128
+    )
+    fiscal_unit_classification_code: str | None = Field(
+        default=None, min_length=1, max_length=64
+    )
+    fiscal_unit_value: ExactAmount | None = None
+    fiscal_line_amount: ExactAmount | None = None
+    fiscal_discount_amount: ExactAmount | None = None
+    source_fiscal_evidence_fingerprint: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$'
+    )
+
+
+class FrozenFiscalPaymentEvidence(FiscalContractValue):
+    method_category: str = Field(min_length=1, max_length=32)
+    amount: ExactAmount
+    state: str = Field(min_length=1, max_length=32)
+
+
+class FrozenFiscalSettlementEvidence(FiscalContractValue):
+    restaurant_check_id: int = Field(gt=0)
+    check_status: str = Field(min_length=1, max_length=32)
+    check_version: int = Field(ge=1)
+    check_fingerprint: str = Field(
+        min_length=64, max_length=64, pattern='^[0-9a-f]{64}$'
+    )
+    currency: str = Field(min_length=3, max_length=3)
+    liability_total: ExactAmount
+    confirmed_settlement: ExactAmount
+    reserved_financial_exposure: ExactAmount
+    uncertain_exposure: ExactAmount
+    payments: tuple[FrozenFiscalPaymentEvidence, ...]
 
 
 class FiscalIssuanceRequest(FiscalContractValue):
@@ -118,6 +162,16 @@ class FiscalIssuanceRequest(FiscalContractValue):
     issuer: FrozenFiscalPartySnapshot
     recipient: FrozenFiscalPartySnapshot
     lines: tuple[FiscalIssuanceLine, ...] = Field(min_length=1)
+    source_check_version: int | None = Field(default=None, ge=1)
+    source_check_fingerprint: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$'
+    )
+    readiness_evidence_fingerprint: str | None = Field(
+        default=None, min_length=64, max_length=64, pattern='^[0-9a-f]{64}$'
+    )
+    settlement: FrozenFiscalSettlementEvidence | None = None
+    issued_at: datetime | None = None
+    is_retry: bool = False
 
     @field_validator('currency', mode='before')
     @classmethod
@@ -145,6 +199,7 @@ class FiscalIssuanceRecoveryRequest(FiscalContractValue):
     request_schema_version: int = Field(ge=1)
     external_reference: str | None = Field(default=None, min_length=1, max_length=200)
     external_status: str | None = Field(default=None, min_length=1, max_length=64)
+    original_request: FiscalIssuanceRequest | None = None
 
 
 class SafeFiscalProviderEvidence(FiscalContractValue):

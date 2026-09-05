@@ -60,6 +60,18 @@ class Settings(BaseSettings):
         default=120, alias='PREPARATION_DISPATCH_CLAIM_LEASE_SECONDS', ge=30, le=600
     )
     password_min_length: int = Field(default=12, alias='PASSWORD_MIN_LENGTH', ge=8, le=128)
+    finkok_environment: Literal['demo', 'production'] = Field(
+        default='demo', alias='FINKOK_ENVIRONMENT'
+    )
+    finkok_wsdl_endpoint: str | None = Field(
+        default=None, alias='FINKOK_WSDL_ENDPOINT', min_length=1
+    )
+    finkok_connect_timeout_seconds: float = Field(
+        default=5.0, alias='FINKOK_CONNECT_TIMEOUT_SECONDS', gt=0, le=60
+    )
+    finkok_read_timeout_seconds: float = Field(
+        default=20.0, alias='FINKOK_READ_TIMEOUT_SECONDS', gt=0, le=120
+    )
 
     @field_validator('app_env', mode='before')
     @classmethod
@@ -70,6 +82,11 @@ class Settings(BaseSettings):
     @classmethod
     def normalize_log_level(cls, value: object) -> object:
         return value.upper() if isinstance(value, str) else value
+
+    @field_validator('finkok_environment', mode='before')
+    @classmethod
+    def normalize_finkok_environment(cls, value: object) -> object:
+        return value.lower() if isinstance(value, str) else value
 
     @field_validator('mysql_password')
     @classmethod
@@ -106,6 +123,22 @@ class Settings(BaseSettings):
     @property
     def sync_database_url(self) -> URL:
         return self.async_database_url.set(drivername='mysql+pymysql')
+
+    @property
+    def resolved_finkok_wsdl_endpoint(self) -> str:
+        if self.finkok_wsdl_endpoint is not None:
+            return self.finkok_wsdl_endpoint
+        host = (
+            'demo-facturacion.finkok.com'
+            if self.finkok_environment == 'demo'
+            else 'facturacion.finkok.com'
+        )
+        return f'https://{host}/servicios/soap/stamp.wsdl'
+
+    @property
+    def finkok_service_endpoint(self) -> str:
+        endpoint = self.resolved_finkok_wsdl_endpoint
+        return endpoint[:-5] if endpoint.endswith('.wsdl') else endpoint
 
 
 @lru_cache(maxsize=1)

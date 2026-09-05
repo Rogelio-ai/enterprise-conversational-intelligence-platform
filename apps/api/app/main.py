@@ -47,6 +47,10 @@ from app.restaurant.integrations.fiscal.credentials import (
 )
 from app.restaurant.integrations.fiscal.artifact_storage import FiscalArtifactStoragePort
 from app.restaurant.integrations.fiscal.registry import FiscalProviderRegistry
+from app.restaurant.integrations.fiscal.finkok import (
+    FinkokFiscalIssuanceAdapter,
+    HttpxFinkokSoapTransport,
+)
 
 
 class DatabaseLifecycle(Protocol):
@@ -93,9 +97,27 @@ def create_app(
         payment_executor_registry or PaymentExecutorRegistry(payment_executors)
     )
     app.state.merchant_credential_resolver = merchant_credential_resolver
-    app.state.fiscal_provider_registry = (
-        fiscal_provider_registry or FiscalProviderRegistry(fiscal_providers)
-    )
+    if fiscal_provider_registry is not None:
+        app.state.fiscal_provider_registry = fiscal_provider_registry
+    else:
+        configured_fiscal_providers = dict(fiscal_providers or {})
+        configured_fiscal_providers.setdefault(
+            'FINKOK',
+            FinkokFiscalIssuanceAdapter(
+                transport=HttpxFinkokSoapTransport(
+                    endpoint=runtime_settings.finkok_service_endpoint,
+                    connect_timeout_seconds=(
+                        runtime_settings.finkok_connect_timeout_seconds
+                    ),
+                    read_timeout_seconds=(
+                        runtime_settings.finkok_read_timeout_seconds
+                    ),
+                )
+            ),
+        )
+        app.state.fiscal_provider_registry = FiscalProviderRegistry(
+            configured_fiscal_providers
+        )
     app.state.fiscal_credential_resolver = fiscal_credential_resolver
     app.state.fiscal_artifact_storage = fiscal_artifact_storage
     app.add_middleware(RuntimeMiddleware)

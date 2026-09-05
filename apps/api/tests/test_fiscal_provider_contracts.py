@@ -123,14 +123,16 @@ def test_contracts_are_immutable_ordered_and_only_carry_frozen_evidence() -> Non
         'operation_reference', 'provider_idempotency_key', 'request_fingerprint',
         'request_schema_version', 'document_type', 'currency', 'subtotal',
         'discount_total', 'tax_total', 'total', 'issuer', 'recipient', 'lines',
+        'source_check_version', 'source_check_fingerprint',
+        'readiness_evidence_fingerprint', 'settlement', 'issued_at', 'is_retry',
     }
-    forbidden_names = ('product', 'tax_rule', 'payment', 'settlement', 'live_profile')
+    forbidden_names = ('product', 'tax_rule', 'live_profile')
     assert not any(token in name for name in field_names for token in forbidden_names)
     source = inspect.getsource(contracts)
     assert 'app.models' not in source
     assert 'RestaurantTaxRule' not in source
-    assert 'Payment' not in source
-    assert 'Settlement' not in source
+    assert 'RestaurantPayment' not in source
+    assert 'RestaurantCheckSettlement' not in source
 
 
 def test_fiscal_port_and_credential_resolver_protocols_are_async_compatible() -> None:

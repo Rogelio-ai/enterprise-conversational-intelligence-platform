@@ -12,6 +12,7 @@ from app.restaurant.fiscal.mexico.cfdi40.contracts import (
     MexicoCfdi40TaxSummaryTransfer,
 )
 from app.restaurant.fiscal.mexico.cfdi40.mapper import MexicoCfdi40Mapper
+from app.restaurant.fiscal.mexico.cfdi40.serializer import MexicoCfdi40XmlSerializer
 from app.restaurant.fiscal.mexico.cfdi40.validator import MexicoCfdi40Validator
 
 __all__ = (
@@ -26,4 +27,5 @@ __all__ = (
     'MexicoCfdi40TaxSummary',
     'MexicoCfdi40TaxSummaryTransfer',
     'MexicoCfdi40Validator',
+    'MexicoCfdi40XmlSerializer',
 )
