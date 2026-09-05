@@ -1,0 +1,1 @@
+"""Restaurant cash-management foundation."""

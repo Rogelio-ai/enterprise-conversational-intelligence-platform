@@ -52,6 +52,8 @@ CORE_PERMISSIONS = {
     'restaurant_payment.read': 'Read canonical Restaurant Payments and settlements.',
     'restaurant_payment.manage': 'Initiate and confirm canonical Restaurant Payments.',
     'restaurant_payment.recover': 'Recover uncertain Restaurant Payment execution.',
+    'cash_management.read': 'Read cash-management sessions.',
+    'cash_session.manage': 'Open and manage cash sessions.',
     'pos_submission.read': 'Read POS order submission state and history.',
     'pos_submission.submit': 'Submit accepted Restaurant Orders to a POS.',
     'pos_submission.retry': 'Retry safely retryable POS order submissions.',

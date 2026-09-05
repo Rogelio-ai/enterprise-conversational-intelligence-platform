@@ -10,6 +10,7 @@ from fastapi import FastAPI
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.billing import router as billing_router
+from app.api.routes.cash_sessions import router as cash_sessions_router
 from app.api.routes.connector_admin import router as connector_admin_router
 from app.api.routes.connector_api import router as connector_api_router
 from app.api.routes.connector_auth import router as connector_auth_router
@@ -131,6 +132,7 @@ def create_app(
     app.include_router(organizations_router)
     app.include_router(locations_router)
     app.include_router(resources_router)
+    app.include_router(cash_sessions_router)
     app.include_router(restaurant_service_sessions_router)
     app.include_router(diner_sessions_router)
     app.include_router(restaurant_orders_router)

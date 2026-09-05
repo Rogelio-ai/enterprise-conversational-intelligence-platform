@@ -243,6 +243,11 @@ def sql_connection(integration_settings: Settings):
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),
             )
+            cursor.execute(
+                'DELETE FROM cash_sessions WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
             for table in ('promotion_locations', 'promotion_products', 'promotions', 'product_prices'):
                 cursor.execute(
                     f'DELETE FROM {table} WHERE tenant_id IN '

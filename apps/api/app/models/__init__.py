@@ -9,6 +9,7 @@ from app.models.billing import (
     CustomerFiscalProfile,
     IssuerFiscalProfile,
 )
+from app.models.cash_management import CashSession
 from app.models.customer import Customer, CustomerExternalIdentity
 from app.models.fiscal_product import (
     ProductFiscalClassification,
@@ -100,6 +101,7 @@ __all__ = [
     'BillingFiscalResult',
     'BillingIssuance',
     'BillingIssuanceAttempt',
+    'CashSession',
     'Customer',
     'CustomerExternalIdentity',
     'CustomerFiscalProfile',

@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+from datetime import datetime
+
 from sqlalchemy import (
     BigInteger,
     CHAR,
     CheckConstraint,
+    DateTime,
     ForeignKeyConstraint,
     Index,
     String,
@@ -96,3 +99,6 @@ class Location(TimestampMixin, Base):
     country_code: Mapped[str | None] = mapped_column(CHAR(2), nullable=True)
     phone: Mapped[str | None] = mapped_column(String(32), nullable=True)
     email: Mapped[str | None] = mapped_column(String(320), nullable=True)
+    cash_management_activated_at: Mapped[datetime | None] = mapped_column(
+        DateTime(), nullable=True
+    )

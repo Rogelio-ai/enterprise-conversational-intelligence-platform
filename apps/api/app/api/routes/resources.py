@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
-from datetime import datetime
+from datetime import UTC, datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
@@ -16,7 +16,10 @@ from app.core.middleware import get_correlation_id
 from app.models import Location, Resource
 
 
-ResourceType = Literal['AREA', 'TABLE', 'WORKSTATION', 'EQUIPMENT', 'VEHICLE', 'DEVICE']
+ResourceType = Literal[
+    'AREA', 'TABLE', 'WORKSTATION', 'EQUIPMENT', 'VEHICLE', 'DEVICE',
+    'CASH_REGISTER',
+]
 ResourceStatus = Literal['ACTIVE', 'INACTIVE']
 
 router = APIRouter(prefix='/resources', tags=['resources'])
@@ -104,6 +107,11 @@ def _inactive_parent() -> HTTPException:
     )
 
 
+def _activate_cash_management(location: Location) -> None:
+    if location.cash_management_activated_at is None:
+        location.cash_management_activated_at = datetime.now(UTC).replace(tzinfo=None)
+
+
 def _duplicate_code() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT,
@@ -179,6 +187,8 @@ async def create_resource(
     )
     if location.status != 'ACTIVE':
         raise _inactive_parent()
+    if payload.resource_type == 'CASH_REGISTER':
+        _activate_cash_management(location)
 
     resource = Resource(
         tenant_id=context.tenant_id,
@@ -245,7 +255,10 @@ async def update_resource(
         raise _resource_not_found()
 
     updates = payload.model_dump(exclude_unset=True)
-    if updates.get('status') == 'ACTIVE':
+    if (
+        updates.get('status') == 'ACTIVE'
+        or updates.get('resource_type') == 'CASH_REGISTER'
+    ):
         location = await _get_location(
             db,
             location_id=resource.location_id,
@@ -254,6 +267,8 @@ async def update_resource(
         )
         if location.status != 'ACTIVE':
             raise _inactive_parent()
+        if updates.get('resource_type') == 'CASH_REGISTER':
+            _activate_cash_management(location)
     for field, value in updates.items():
         setattr(resource, field, value)
     try:

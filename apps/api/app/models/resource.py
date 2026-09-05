@@ -39,7 +39,7 @@ class Resource(TimestampMixin, Base):
         ),
         UniqueConstraint('location_id', 'code', name='uq_resources_location_code'),
         CheckConstraint(
-            "resource_type IN ('AREA', 'TABLE', 'WORKSTATION', 'EQUIPMENT', 'VEHICLE', 'DEVICE')",
+            "resource_type IN ('AREA', 'TABLE', 'WORKSTATION', 'EQUIPMENT', 'VEHICLE', 'DEVICE', 'CASH_REGISTER')",
             name='ck_resources_type',
         ),
         CheckConstraint(
