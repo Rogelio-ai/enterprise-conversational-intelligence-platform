@@ -21,6 +21,7 @@ from app.models import (
     RestaurantCheckVersion,
     RestaurantOrder,
     RestaurantOrderItem,
+    RestaurantOrderItemFiscalSnapshot,
     RestaurantOrderItemTaxSnapshot,
 )
 from app.restaurant.billing import errors
@@ -36,6 +37,7 @@ from app.restaurant.payments import service as payment_service
 
 ZERO = Decimal('0.0000')
 REQUEST_SCHEMA_VERSION = 1
+READINESS_SCHEMA_VERSION = 1
 
 
 @dataclass(frozen=True, slots=True)
@@ -48,6 +50,14 @@ class _CommercialLineEvidence:
     base_amount: Decimal
     discount_amount: Decimal
     commercial_total: Decimal
+    fiscal_product_classification_scheme: str
+    fiscal_product_classification_code: str
+    fiscal_unit_classification_scheme: str
+    fiscal_unit_classification_code: str
+    fiscal_unit_value: Decimal
+    fiscal_line_amount: Decimal
+    fiscal_discount_amount: Decimal
+    source_fiscal_evidence_fingerprint: str
     taxes: tuple['_TaxEvidence', ...]
 
 
@@ -58,6 +68,9 @@ class _TaxEvidence:
     taxable_base: Decimal
     tax_amount: Decimal
     tax_treatment: str
+    jurisdiction_code: str
+    tax_effect: str
+    source_tax_evidence_fingerprint: str
 
 
 def _sha(value: object) -> str:
@@ -125,6 +138,8 @@ def _document_projection(document: BillingDocument) -> BillingDocumentProjection
         total=Decimal(document.total),
         issuer_snapshot=dict(document.issuer_snapshot),
         recipient_snapshot=dict(document.recipient_snapshot),
+        issuer_fiscal_postal_code=document.issuer_fiscal_postal_code,
+        readiness_evidence_fingerprint=document.readiness_evidence_fingerprint,
         created_at=document.created_at,
         updated_at=document.updated_at,
     )
@@ -169,6 +184,9 @@ async def get_billing_document(
                 taxable_base=Decimal(tax.taxable_base),
                 tax_amount=Decimal(tax.tax_amount),
                 tax_treatment=tax.tax_treatment,
+                jurisdiction_code=tax.jurisdiction_code,
+                tax_effect=tax.tax_effect,
+                source_tax_evidence_fingerprint=tax.source_tax_evidence_fingerprint,
                 created_at=tax.created_at,
             )
         )
@@ -184,6 +202,27 @@ async def get_billing_document(
             base_amount=Decimal(line.base_amount),
             discount_amount=Decimal(line.discount_amount),
             commercial_total=Decimal(line.commercial_total),
+            fiscal_product_classification_scheme=(
+                line.fiscal_product_classification_scheme
+            ),
+            fiscal_product_classification_code=line.fiscal_product_classification_code,
+            fiscal_unit_classification_scheme=line.fiscal_unit_classification_scheme,
+            fiscal_unit_classification_code=line.fiscal_unit_classification_code,
+            fiscal_unit_value=(
+                Decimal(line.fiscal_unit_value)
+                if line.fiscal_unit_value is not None else None
+            ),
+            fiscal_line_amount=(
+                Decimal(line.fiscal_line_amount)
+                if line.fiscal_line_amount is not None else None
+            ),
+            fiscal_discount_amount=(
+                Decimal(line.fiscal_discount_amount)
+                if line.fiscal_discount_amount is not None else None
+            ),
+            source_fiscal_evidence_fingerprint=(
+                line.source_fiscal_evidence_fingerprint
+            ),
             created_at=line.created_at,
             taxes=tuple(taxes_by_line[line.id]),
         ) for line in lines),
@@ -393,6 +432,39 @@ async def _commercial_evidence(
             'Allocated Restaurant Order line evidence is incomplete'
         )
     item_ids = tuple(item.id for item in items)
+    fiscal_rows = tuple((await db.execute(
+        select(RestaurantOrderItemFiscalSnapshot).where(
+            RestaurantOrderItemFiscalSnapshot.tenant_id == check.tenant_id,
+            RestaurantOrderItemFiscalSnapshot.organization_id == check.organization_id,
+            RestaurantOrderItemFiscalSnapshot.location_id == check.location_id,
+            RestaurantOrderItemFiscalSnapshot.restaurant_order_id.in_(order_ids),
+            RestaurantOrderItemFiscalSnapshot.restaurant_order_item_id.in_(item_ids),
+        ).order_by(
+            RestaurantOrderItemFiscalSnapshot.restaurant_order_item_id,
+            RestaurantOrderItemFiscalSnapshot.id,
+        ).with_for_update()
+    )).scalars().all())
+    fiscal_by_item = {
+        fiscal.restaurant_order_item_id: fiscal for fiscal in fiscal_rows
+    }
+    if (
+        len(fiscal_rows) != len(items)
+        or set(fiscal_by_item) != set(item_ids)
+        or any(
+            not value
+            for fiscal in fiscal_rows
+            for value in (
+                fiscal.product_classification_scheme,
+                fiscal.product_classification_code,
+                fiscal.unit_classification_scheme,
+                fiscal.unit_classification_code,
+                fiscal.evidence_fingerprint,
+            )
+        )
+    ):
+        raise errors.BillingFiscalEvidenceUnavailableError(
+            'Accepted Restaurant Order fiscal product evidence is incomplete'
+        )
     tax_rows = tuple((await db.execute(
         select(RestaurantOrderItemTaxSnapshot).where(
             RestaurantOrderItemTaxSnapshot.tenant_id == check.tenant_id,
@@ -405,8 +477,25 @@ async def _commercial_evidence(
             RestaurantOrderItemTaxSnapshot.id,
         ).with_for_update()
     )).scalars().all())
+    tax_rows_by_item = {
+        tax.restaurant_order_item_id: tax for tax in tax_rows
+    }
     taxes_by_item: dict[int, list[_TaxEvidence]] = {item_id: [] for item_id in item_ids}
     for tax in tax_rows:
+        if any(
+            value is None or (isinstance(value, str) and not value.strip())
+            for value in (
+                tax.fiscal_unit_value,
+                tax.fiscal_line_amount,
+                tax.fiscal_discount_amount,
+                tax.jurisdiction_code,
+                tax.tax_effect,
+                tax.evidence_fingerprint,
+            )
+        ):
+            raise errors.BillingFiscalEvidenceUnavailableError(
+                'Accepted Restaurant Order fiscal monetary or tax-effect evidence is incomplete'
+            )
         taxes_by_item[tax.restaurant_order_item_id].append(
             _TaxEvidence(
                 tax_category=tax.tax_category,
@@ -414,11 +503,18 @@ async def _commercial_evidence(
                 taxable_base=Decimal(tax.taxable_base),
                 tax_amount=Decimal(tax.tax_amount),
                 tax_treatment=tax.tax_treatment,
+                jurisdiction_code=tax.jurisdiction_code,
+                tax_effect=tax.tax_effect,
+                source_tax_evidence_fingerprint=tax.evidence_fingerprint,
             )
         )
     if any(not taxes_by_item[item_id] for item_id in item_ids):
         raise errors.BillingTaxEvidenceUnavailableError(
             'At least one accepted Restaurant Order item lacks authoritative tax evidence'
+        )
+    if any(len(taxes_by_item[item_id]) != 1 for item_id in item_ids):
+        raise errors.BillingUnsupportedFiscalComponentError(
+            'The initial fiscal readiness scope requires one tax snapshot per line'
         )
     return tuple(
         _CommercialLineEvidence(
@@ -430,13 +526,38 @@ async def _commercial_evidence(
             base_amount=Decimal(item.base_amount),
             discount_amount=Decimal(item.discount_amount),
             commercial_total=Decimal(item.commercial_amount),
+            fiscal_product_classification_scheme=(
+                fiscal_by_item[item.id].product_classification_scheme
+            ),
+            fiscal_product_classification_code=(
+                fiscal_by_item[item.id].product_classification_code
+            ),
+            fiscal_unit_classification_scheme=(
+                fiscal_by_item[item.id].unit_classification_scheme
+            ),
+            fiscal_unit_classification_code=(
+                fiscal_by_item[item.id].unit_classification_code
+            ),
+            fiscal_unit_value=Decimal(
+                tax_rows_by_item[item.id].fiscal_unit_value
+            ),
+            fiscal_line_amount=Decimal(
+                tax_rows_by_item[item.id].fiscal_line_amount
+            ),
+            fiscal_discount_amount=Decimal(
+                tax_rows_by_item[item.id].fiscal_discount_amount
+            ),
+            source_fiscal_evidence_fingerprint=(
+                fiscal_by_item[item.id].evidence_fingerprint
+            ),
             taxes=tuple(taxes_by_item[item.id]),
         )
         for item in items
     )
 
 
-def _require_authoritative_tax_evidence(
+def _require_cfdi_readiness(
+    check: RestaurantCheck,
     lines: tuple[_CommercialLineEvidence, ...],
 ) -> None:
     if not lines:
@@ -445,6 +566,124 @@ def _require_authoritative_tax_evidence(
         raise errors.BillingTaxEvidenceUnavailableError(
             'Accepted Restaurant Orders do not contain authoritative line-tax decomposition'
         )
+    if check.currency != 'MXN':
+        raise errors.BillingUnsupportedFiscalComponentError(
+            'The initial fiscal readiness scope supports MXN only'
+        )
+    if Decimal(check.gratuity_total) != ZERO:
+        raise errors.BillingUnsupportedFiscalComponentError(
+            'Gratuity has no authoritative fiscal line evidence'
+        )
+    consumption_total = sum((line.commercial_total for line in lines), start=ZERO)
+    if (
+        consumption_total != Decimal(check.consumption_total)
+        or consumption_total != Decimal(check.liability_total)
+    ):
+        raise errors.BillingUnsupportedFiscalComponentError(
+            'Check liability cannot be represented by authoritative fiscal lines'
+        )
+    for line in lines:
+        tax = line.taxes[0]
+        if (
+            tax.tax_effect != 'TRANSFERRED'
+            or tax.tax_treatment not in {'TAXABLE', 'ZERO_RATE', 'EXEMPT'}
+        ):
+            raise errors.BillingFiscalEvidenceUnavailableError(
+                'Tax effect or treatment is unsupported for fiscal readiness'
+            )
+        values = (
+            line.fiscal_unit_value,
+            line.fiscal_line_amount,
+            line.fiscal_discount_amount,
+            tax.tax_rate,
+            tax.taxable_base,
+            tax.tax_amount,
+        )
+        if any(not value.is_finite() or value < ZERO for value in values):
+            raise errors.BillingFiscalArithmeticError(
+                'Fiscal monetary evidence contains invalid values'
+            )
+        if (
+            line.fiscal_line_amount - line.fiscal_discount_amount
+            != tax.taxable_base
+            or tax.taxable_base + tax.tax_amount != line.commercial_total
+            or (
+                tax.tax_treatment in {'ZERO_RATE', 'EXEMPT'}
+                and (tax.tax_rate != ZERO or tax.tax_amount != ZERO)
+            )
+            or (tax.tax_treatment == 'TAXABLE' and tax.tax_rate <= ZERO)
+        ):
+            raise errors.BillingFiscalArithmeticError(
+                'Fiscal line and tax evidence is arithmetically inconsistent'
+            )
+        fingerprints = (
+            line.source_fiscal_evidence_fingerprint,
+            tax.source_tax_evidence_fingerprint,
+        )
+        if any(
+            len(value) != 64
+            or any(character not in '0123456789abcdef' for character in value)
+            for value in fingerprints
+        ):
+            raise errors.BillingFiscalEvidenceUnavailableError(
+                'Fiscal evidence provenance is invalid'
+            )
+
+
+def _readiness_fingerprint(
+    *,
+    check: RestaurantCheck,
+    issuer_snapshot: dict[str, str],
+    recipient_snapshot: dict[str, str],
+    lines: tuple[_CommercialLineEvidence, ...],
+) -> str:
+    return _sha({
+        'schema_version': READINESS_SCHEMA_VERSION,
+        'source_check_version': check.version,
+        'source_check_fingerprint': check.current_fingerprint,
+        'currency': check.currency,
+        'issuer_snapshot': issuer_snapshot,
+        'recipient_snapshot': recipient_snapshot,
+        'issuer_fiscal_postal_code': issuer_snapshot['fiscal_postal_code'],
+        'lines': [
+            {
+                'source_restaurant_order_id': line.source_restaurant_order_id,
+                'source_restaurant_order_item_id': line.source_restaurant_order_item_id,
+                'fiscal_product_classification_scheme': (
+                    line.fiscal_product_classification_scheme
+                ),
+                'fiscal_product_classification_code': (
+                    line.fiscal_product_classification_code
+                ),
+                'fiscal_unit_classification_scheme': (
+                    line.fiscal_unit_classification_scheme
+                ),
+                'fiscal_unit_classification_code': line.fiscal_unit_classification_code,
+                'fiscal_unit_value': format(line.fiscal_unit_value, 'f'),
+                'fiscal_line_amount': format(line.fiscal_line_amount, 'f'),
+                'fiscal_discount_amount': format(line.fiscal_discount_amount, 'f'),
+                'source_fiscal_evidence_fingerprint': (
+                    line.source_fiscal_evidence_fingerprint
+                ),
+                'taxes': [
+                    {
+                        'jurisdiction_code': tax.jurisdiction_code,
+                        'tax_category': tax.tax_category,
+                        'tax_treatment': tax.tax_treatment,
+                        'tax_effect': tax.tax_effect,
+                        'tax_rate': format(tax.tax_rate, 'f'),
+                        'taxable_base': format(tax.taxable_base, 'f'),
+                        'tax_amount': format(tax.tax_amount, 'f'),
+                        'source_tax_evidence_fingerprint': (
+                            tax.source_tax_evidence_fingerprint
+                        ),
+                    }
+                    for tax in line.taxes
+                ],
+            }
+            for line in lines
+        ],
+    })
 
 
 async def create_billing_document(
@@ -499,10 +738,16 @@ async def create_billing_document(
         recipient = await _active_recipient(
             db, check=check, profile_id=command.recipient_fiscal_profile_id
         )
-        _issuer_snapshot(issuer)
-        _recipient_snapshot(recipient)
+        issuer_snapshot = _issuer_snapshot(issuer)
+        recipient_snapshot = _recipient_snapshot(recipient)
         lines = await _commercial_evidence(db, check=check)
-        _require_authoritative_tax_evidence(lines)
+        _require_cfdi_readiness(check, lines)
+        readiness_fingerprint = _readiness_fingerprint(
+            check=check,
+            issuer_snapshot=issuer_snapshot,
+            recipient_snapshot=recipient_snapshot,
+            lines=lines,
+        )
         document = BillingDocument(
             tenant_id=check.tenant_id,
             organization_id=check.organization_id,
@@ -519,8 +764,10 @@ async def create_billing_document(
                 (tax.tax_amount for line in lines for tax in line.taxes), start=ZERO
             ),
             total=Decimal(check.liability_total),
-            issuer_snapshot=_issuer_snapshot(issuer),
-            recipient_snapshot=_recipient_snapshot(recipient),
+            issuer_snapshot=issuer_snapshot,
+            recipient_snapshot=recipient_snapshot,
+            issuer_fiscal_postal_code=issuer_snapshot['fiscal_postal_code'],
+            readiness_evidence_fingerprint=readiness_fingerprint,
             actor_scope=_actor_scope(context),
             idempotency_key=command.idempotency_key,
             request_fingerprint=fingerprint,
@@ -538,6 +785,22 @@ async def create_billing_document(
                 base_amount=line.base_amount,
                 discount_amount=line.discount_amount,
                 commercial_total=line.commercial_total,
+                fiscal_product_classification_scheme=(
+                    line.fiscal_product_classification_scheme
+                ),
+                fiscal_product_classification_code=(
+                    line.fiscal_product_classification_code
+                ),
+                fiscal_unit_classification_scheme=(
+                    line.fiscal_unit_classification_scheme
+                ),
+                fiscal_unit_classification_code=line.fiscal_unit_classification_code,
+                fiscal_unit_value=line.fiscal_unit_value,
+                fiscal_line_amount=line.fiscal_line_amount,
+                fiscal_discount_amount=line.fiscal_discount_amount,
+                source_fiscal_evidence_fingerprint=(
+                    line.source_fiscal_evidence_fingerprint
+                ),
             )
             db.add(billing_line)
             await db.flush()
@@ -550,6 +813,11 @@ async def create_billing_document(
                         taxable_base=tax.taxable_base,
                         tax_amount=tax.tax_amount,
                         tax_treatment=tax.tax_treatment,
+                        jurisdiction_code=tax.jurisdiction_code,
+                        tax_effect=tax.tax_effect,
+                        source_tax_evidence_fingerprint=(
+                            tax.source_tax_evidence_fingerprint
+                        ),
                     )
                 )
         await db.flush()

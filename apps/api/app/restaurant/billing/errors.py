@@ -33,6 +33,18 @@ class BillingTaxEvidenceUnavailableError(RestaurantBillingError):
     code = 'BILLING_TAX_EVIDENCE_UNAVAILABLE'
 
 
+class BillingFiscalEvidenceUnavailableError(RestaurantBillingError):
+    code = 'BILLING_FISCAL_EVIDENCE_UNAVAILABLE'
+
+
+class BillingFiscalArithmeticError(RestaurantBillingError):
+    code = 'BILLING_FISCAL_ARITHMETIC_INCONSISTENT'
+
+
+class BillingUnsupportedFiscalComponentError(RestaurantBillingError):
+    code = 'BILLING_UNSUPPORTED_FISCAL_COMPONENT'
+
+
 class BillingIdempotencyConflictError(RestaurantBillingError):
     code = 'BILLING_IDEMPOTENCY_CONFLICT'
 

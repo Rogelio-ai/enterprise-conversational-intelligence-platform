@@ -132,6 +132,8 @@ def _projection() -> BillingDocumentProjection:
             'fiscal_postal_code': '02000',
             'invoice_usage': 'GENERAL_EXPENSE',
         },
+        issuer_fiscal_postal_code='01000',
+        readiness_evidence_fingerprint='c' * 64,
         created_at=recorded_at,
         updated_at=recorded_at,
     )
@@ -275,6 +277,14 @@ def _persisted_evidence():
         base_amount=Decimal('100.0000'),
         discount_amount=Decimal('0.0000'),
         commercial_total=Decimal('100.0000'),
+        fiscal_product_classification_scheme='TEST-PRODUCT-SCHEME',
+        fiscal_product_classification_code='TEST-PRODUCT',
+        fiscal_unit_classification_scheme='TEST-UNIT-SCHEME',
+        fiscal_unit_classification_code='EACH',
+        fiscal_unit_value=Decimal('100.0000'),
+        fiscal_line_amount=Decimal('100.0000'),
+        fiscal_discount_amount=Decimal('0.0000'),
+        source_fiscal_evidence_fingerprint='d' * 64,
         created_at=created_at,
     )
     tax = BillingDocumentLineTax(
@@ -285,6 +295,9 @@ def _persisted_evidence():
         taxable_base=Decimal('100.0000'),
         tax_amount=Decimal('0.0000'),
         tax_treatment='EXEMPT',
+        jurisdiction_code='TEST-JURISDICTION',
+        tax_effect='TRANSFERRED',
+        source_tax_evidence_fingerprint='e' * 64,
         created_at=created_at,
     )
     return document, (line,), (tax,)
@@ -303,8 +316,13 @@ def test_get_returns_authorized_immutable_stored_evidence(settings, database) ->
     body = response.json()
     assert body['issuer_snapshot'] == document.issuer_snapshot
     assert body['recipient_snapshot'] == document.recipient_snapshot
+    assert body['issuer_fiscal_postal_code'] == '01000'
+    assert body['readiness_evidence_fingerprint'] == 'c' * 64
     assert body['lines'][0]['description'] == lines[0].description
+    assert body['lines'][0]['fiscal_product_classification_code'] == 'TEST-PRODUCT'
+    assert body['lines'][0]['fiscal_unit_classification_code'] == 'EACH'
     assert body['lines'][0]['taxes'][0]['tax_category'] == taxes[0].tax_category
+    assert body['lines'][0]['taxes'][0]['tax_effect'] == 'TRANSFERRED'
     assert 'actor_scope' not in response.text
     assert 'idempotency_key' not in response.text
     assert 'request_fingerprint' not in response.text

@@ -33,6 +33,8 @@ class BillingDocumentProjection:
     total: Decimal
     issuer_snapshot: dict
     recipient_snapshot: dict
+    issuer_fiscal_postal_code: str | None
+    readiness_evidence_fingerprint: str | None
     created_at: datetime
     updated_at: datetime
 
@@ -45,6 +47,9 @@ class BillingDocumentLineTaxProjection:
     taxable_base: Decimal
     tax_amount: Decimal
     tax_treatment: str
+    jurisdiction_code: str | None
+    tax_effect: str | None
+    source_tax_evidence_fingerprint: str | None
     created_at: datetime
 
 
@@ -59,6 +64,14 @@ class BillingDocumentLineProjection:
     base_amount: Decimal
     discount_amount: Decimal
     commercial_total: Decimal
+    fiscal_product_classification_scheme: str | None
+    fiscal_product_classification_code: str | None
+    fiscal_unit_classification_scheme: str | None
+    fiscal_unit_classification_code: str | None
+    fiscal_unit_value: Decimal | None
+    fiscal_line_amount: Decimal | None
+    fiscal_discount_amount: Decimal | None
+    source_fiscal_evidence_fingerprint: str | None
     created_at: datetime
     taxes: tuple[BillingDocumentLineTaxProjection, ...]
 

@@ -164,6 +164,12 @@ class BillingDocument(TimestampMixin, Base):
             'subtotal >= 0 AND discount_total >= 0 AND tax_total >= 0 AND total >= 0',
             name='ck_billing_documents_money',
         ),
+        CheckConstraint(
+            '(issuer_fiscal_postal_code IS NULL AND readiness_evidence_fingerprint IS NULL) '
+            'OR (issuer_fiscal_postal_code IS NOT NULL '
+            'AND readiness_evidence_fingerprint IS NOT NULL)',
+            name='ck_billing_documents_fiscal_readiness',
+        ),
         Index(
             'ix_billing_documents_check_history',
             'tenant_id', 'restaurant_check_id', 'created_at', 'id',
@@ -198,6 +204,12 @@ class BillingDocument(TimestampMixin, Base):
     total: Mapped[Decimal] = mapped_column(Numeric(19, 4), nullable=False)
     issuer_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
     recipient_snapshot: Mapped[dict] = mapped_column(JSON, nullable=False)
+    issuer_fiscal_postal_code: Mapped[str | None] = mapped_column(
+        String(32), nullable=True
+    )
+    readiness_evidence_fingerprint: Mapped[str | None] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=True
+    )
     actor_scope: Mapped[str] = mapped_column(
         String(200, collation='ascii_bin'), nullable=False
     )
@@ -237,6 +249,25 @@ class BillingDocumentLine(Base):
             'commercial_total = base_amount - discount_amount',
             name='ck_billing_document_lines_arithmetic',
         ),
+        CheckConstraint(
+            '(fiscal_product_classification_scheme IS NULL '
+            'AND fiscal_product_classification_code IS NULL '
+            'AND fiscal_unit_classification_scheme IS NULL '
+            'AND fiscal_unit_classification_code IS NULL '
+            'AND fiscal_unit_value IS NULL AND fiscal_line_amount IS NULL '
+            'AND fiscal_discount_amount IS NULL '
+            'AND source_fiscal_evidence_fingerprint IS NULL) OR '
+            '(fiscal_product_classification_scheme IS NOT NULL '
+            'AND fiscal_product_classification_code IS NOT NULL '
+            'AND fiscal_unit_classification_scheme IS NOT NULL '
+            'AND fiscal_unit_classification_code IS NOT NULL '
+            'AND fiscal_unit_value IS NOT NULL AND fiscal_line_amount IS NOT NULL '
+            'AND fiscal_discount_amount IS NOT NULL '
+            'AND source_fiscal_evidence_fingerprint IS NOT NULL '
+            'AND fiscal_unit_value >= 0 AND fiscal_line_amount >= 0 '
+            'AND fiscal_discount_amount >= 0)',
+            name='ck_billing_document_lines_fiscal_evidence',
+        ),
         Index(
             'ix_billing_document_lines_document',
             'billing_document_id', 'id',
@@ -253,6 +284,30 @@ class BillingDocumentLine(Base):
     base_amount: Mapped[Decimal] = mapped_column(Numeric(19, 4), nullable=False)
     discount_amount: Mapped[Decimal] = mapped_column(Numeric(19, 4), nullable=False)
     commercial_total: Mapped[Decimal] = mapped_column(Numeric(19, 4), nullable=False)
+    fiscal_product_classification_scheme: Mapped[str | None] = mapped_column(
+        String(64, collation='utf8mb4_bin'), nullable=True
+    )
+    fiscal_product_classification_code: Mapped[str | None] = mapped_column(
+        String(64, collation='utf8mb4_bin'), nullable=True
+    )
+    fiscal_unit_classification_scheme: Mapped[str | None] = mapped_column(
+        String(64, collation='utf8mb4_bin'), nullable=True
+    )
+    fiscal_unit_classification_code: Mapped[str | None] = mapped_column(
+        String(64, collation='utf8mb4_bin'), nullable=True
+    )
+    fiscal_unit_value: Mapped[Decimal | None] = mapped_column(
+        Numeric(19, 4), nullable=True
+    )
+    fiscal_line_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(19, 4), nullable=True
+    )
+    fiscal_discount_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(19, 4), nullable=True
+    )
+    source_fiscal_evidence_fingerprint: Mapped[str | None] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(), nullable=False, server_default=func.current_timestamp()
     )
@@ -269,6 +324,14 @@ class BillingDocumentLineTax(Base):
             'tax_rate >= 0 AND taxable_base >= 0 AND tax_amount >= 0',
             name='ck_billing_document_line_taxes_values',
         ),
+        CheckConstraint(
+            '(jurisdiction_code IS NULL AND tax_effect IS NULL '
+            'AND source_tax_evidence_fingerprint IS NULL) OR '
+            '(jurisdiction_code IS NOT NULL AND tax_effect IS NOT NULL '
+            'AND source_tax_evidence_fingerprint IS NOT NULL '
+            "AND tax_effect IN ('TRANSFERRED','WITHHELD'))",
+            name='ck_billing_document_line_taxes_fiscal_evidence',
+        ),
         Index(
             'ix_billing_document_line_taxes_line',
             'billing_document_line_id', 'id',
@@ -282,6 +345,13 @@ class BillingDocumentLineTax(Base):
     taxable_base: Mapped[Decimal] = mapped_column(Numeric(19, 4), nullable=False)
     tax_amount: Mapped[Decimal] = mapped_column(Numeric(19, 4), nullable=False)
     tax_treatment: Mapped[str] = mapped_column(String(32), nullable=False)
+    jurisdiction_code: Mapped[str | None] = mapped_column(
+        String(64, collation='utf8mb4_bin'), nullable=True
+    )
+    tax_effect: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    source_tax_evidence_fingerprint: Mapped[str | None] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=True
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(), nullable=False, server_default=func.current_timestamp()
     )

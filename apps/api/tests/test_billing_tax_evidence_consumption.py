@@ -73,11 +73,29 @@ def _source(
     treatment='TAXABLE',
     rate='0.160000',
     two_items: bool = False,
+    gratuity: str | None = None,
+    discount_percent: str | None = None,
 ) -> BillingSource:
     scope = _scope(connection, prefix)
     _grant(connection, scope.tenant_id, configure_executor=False)
     _, diner_headers = _open_and_join(client, scope)
     product_id = _product(connection, scope, amount=amount)
+    if discount_percent is not None:
+        promotion_id = _execute(
+            connection,
+            "INSERT INTO promotions (tenant_id,organization_id,name,promotion_type,"
+            "benefit_value,starts_at,ends_at,applies_to_all_locations,is_combinable,"
+            "priority,status,source) VALUES (%s,%s,'Fiscal discount',"
+            "'PERCENTAGE_DISCOUNT',%s,CURRENT_TIMESTAMP - INTERVAL 1 DAY,"
+            "CURRENT_TIMESTAMP + INTERVAL 1 DAY,1,0,1,'ACTIVE','PLATFORM')",
+            (scope.tenant_id, scope.organization_id, discount_percent),
+        )
+        _execute(
+            connection,
+            "INSERT INTO promotion_products (tenant_id,organization_id,promotion_id,"
+            "product_id,status) VALUES (%s,%s,%s,%s,'ACTIVE')",
+            (scope.tenant_id, scope.organization_id, promotion_id, product_id),
+        )
     connection.cursor().execute(
         'UPDATE restaurant_tax_rules SET tax_treatment=%s,tax_rate=%s '
         'WHERE tenant_id=%s AND organization_id=%s AND tax_classification_code='
@@ -102,6 +120,18 @@ def _source(
     assert accepted.status_code == 201, accepted.text
     order_id = accepted.json()['id']
     check = _check(client, diner_headers, 'billing-source-check')
+    if gratuity is not None:
+        response = client.put(
+            f"/diner/restaurant-checks/{check['id']}/gratuity",
+            headers={**diner_headers, 'Idempotency-Key': 'billing-source-gratuity'},
+            json={
+                'expected_version': check['version'],
+                'input_type': 'FIXED_AMOUNT',
+                'input_value': gratuity,
+            },
+        )
+        assert response.status_code == 200, response.text
+        check = response.json()
     diner_id = client.get('/diner-session', headers=diner_headers).json()['id']
     paid = client.post(
         f"/restaurant-checks/{check['id']}/payments",
@@ -192,36 +222,51 @@ def test_billing_copies_authoritative_tax_evidence_exactly(
     billed = _bill(client, source, key=f'billing-{treatment}')
     assert billed.status_code == 201, billed.text
     detail = _detail(client, source, billed.json()['id'])
+    line = detail['lines'][0]
+    assert detail['issuer_fiscal_postal_code'] == '01000'
+    assert len(detail['readiness_evidence_fingerprint']) == 64
+    assert line['fiscal_product_classification_scheme'] == 'TEST-PRODUCT-SCHEME'
+    assert line['fiscal_product_classification_code'] == f'FISCAL-{source.product_id}'
+    assert line['fiscal_unit_classification_scheme'] == 'TEST-UNIT-SCHEME'
+    assert line['fiscal_unit_classification_code'] == 'EACH'
+    assert Decimal(line['fiscal_unit_value']) == Decimal(expected_base)
+    assert Decimal(line['fiscal_line_amount']) == Decimal(expected_base)
+    assert Decimal(line['fiscal_discount_amount']) == Decimal('0.0000')
+    assert len(line['source_fiscal_evidence_fingerprint']) == 64
     tax = detail['lines'][0]['taxes'][0]
     assert tax['tax_category'] == 'SALES_TAX'
     assert Decimal(tax['tax_rate']) == Decimal(rate)
     assert Decimal(tax['taxable_base']) == Decimal(expected_base)
     assert Decimal(tax['tax_amount']) == Decimal(expected_tax)
     assert tax['tax_treatment'] == treatment
+    assert tax['tax_effect'] == 'TRANSFERRED'
+    assert tax['jurisdiction_code'] == 'TEST-JURISDICTION'
+    assert len(tax['source_tax_evidence_fingerprint']) == 64
     assert Decimal(detail['tax_total']) == Decimal(expected_tax)
 
 
-def test_multiple_snapshots_create_multiple_line_taxes_and_authoritative_total(
+def test_multiple_tax_snapshots_are_outside_initial_readiness_scope(
     client, sql_connection,
 ) -> None:
     connection, prefix = sql_connection
     source = _source(client, connection, prefix)
-    original = None
     with connection.cursor() as cursor:
         cursor.execute(
             'SELECT * FROM restaurant_order_item_tax_snapshots '
             'WHERE restaurant_order_item_id=%s',
             (source.order_item_id,),
         )
-        original = cursor.fetchone()
+        cursor.fetchone()
     _execute(
         connection,
         "INSERT INTO restaurant_order_item_tax_snapshots (tenant_id,organization_id,"
         "location_id,restaurant_order_id,restaurant_order_item_id,source_tax_rule_id,"
-        "tax_category,tax_treatment,tax_rate,taxable_base,tax_amount,jurisdiction_code,"
+        "tax_category,tax_treatment,tax_effect,tax_rate,fiscal_unit_value,"
+        "fiscal_line_amount,fiscal_discount_amount,taxable_base,tax_amount,jurisdiction_code,"
         "calculation_policy,rounding_policy,schema_version,evidence_fingerprint) "
-        "VALUES (%s,%s,%s,%s,%s,%s,'SECONDARY','ZERO_RATE',0.000000,116.0000,0.0000,"
-        "'SECONDARY','INCLUDED_PRICE_SINGLE_TAX','DECIMAL_4_HALF_UP',1,%s)",
+        "VALUES (%s,%s,%s,%s,%s,%s,'SECONDARY','ZERO_RATE','TRANSFERRED',0.000000,"
+        "116.0000,116.0000,0.0000,116.0000,0.0000,'SECONDARY',"
+        "'INCLUDED_PRICE_SINGLE_TAX','DECIMAL_4_HALF_UP',2,%s)",
         (
             source.scope.tenant_id,
             source.scope.organization_id,
@@ -233,11 +278,8 @@ def test_multiple_snapshots_create_multiple_line_taxes_and_authoritative_total(
         ),
     )
     billed = _bill(client, source)
-    assert billed.status_code == 201, billed.text
-    detail = _detail(client, source, billed.json()['id'])
-    assert len(detail['lines'][0]['taxes']) == 2
-    assert Decimal(detail['tax_total']) == Decimal(original['tax_amount'])
-    assert Decimal(detail['total']) == Decimal('116.0000')
+    assert billed.status_code == 409
+    assert billed.json()['error']['code'] == 'BILLING_UNSUPPORTED_FISCAL_COMPONENT'
 
 
 @pytest.mark.parametrize('missing', ['all', 'one_of_mixed'])
@@ -276,13 +318,19 @@ def test_billing_uses_historical_snapshot_after_product_and_rule_changes(
     source = _source(client, connection, prefix)
     with connection.cursor() as cursor:
         cursor.execute(
-            'SELECT tax_rate,taxable_base,tax_amount,tax_treatment FROM '
+            'SELECT tax_rate,taxable_base,tax_amount,tax_treatment,tax_effect,'
+            'evidence_fingerprint FROM '
             'restaurant_order_item_tax_snapshots WHERE restaurant_order_item_id=%s',
             (source.order_item_id,),
         )
         accepted_tax = cursor.fetchone()
         cursor.execute(
             "UPDATE products SET tax_classification_code='CHANGED' WHERE id=%s",
+            (source.product_id,),
+        )
+        cursor.execute(
+            "UPDATE product_fiscal_classifications SET product_classification_code='CHANGED',"
+            "unit_classification_code='CHANGED' WHERE product_id=%s",
             (source.product_id,),
         )
         cursor.execute(
@@ -298,10 +346,87 @@ def test_billing_uses_historical_snapshot_after_product_and_rule_changes(
     billed = _bill(client, source)
     assert billed.status_code == 201, billed.text
     tax = _detail(client, source, billed.json()['id'])['lines'][0]['taxes'][0]
+    detail = _detail(client, source, billed.json()['id'])
+    line = detail['lines'][0]
+    assert line['fiscal_product_classification_code'] == f'FISCAL-{source.product_id}'
+    assert line['fiscal_unit_classification_code'] == 'EACH'
     assert Decimal(tax['tax_rate']) == accepted_tax['tax_rate']
     assert Decimal(tax['taxable_base']) == accepted_tax['taxable_base']
     assert Decimal(tax['tax_amount']) == accepted_tax['tax_amount']
     assert tax['tax_treatment'] == accepted_tax['tax_treatment']
+    assert tax['tax_effect'] == accepted_tax['tax_effect']
+    assert tax['source_tax_evidence_fingerprint'] == accepted_tax['evidence_fingerprint']
+
+
+def test_billing_freezes_discounted_fiscal_line_evidence(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    source = _source(
+        client, connection, prefix, amount='116.0000', discount_percent='50'
+    )
+    billed = _bill(client, source, key='discounted-fiscal-line')
+    assert billed.status_code == 201, billed.text
+    line = _detail(client, source, billed.json()['id'])['lines'][0]
+    assert Decimal(line['fiscal_unit_value']) == Decimal('100.0000')
+    assert Decimal(line['fiscal_line_amount']) == Decimal('100.0000')
+    assert Decimal(line['fiscal_discount_amount']) == Decimal('50.0000')
+    assert Decimal(line['taxes'][0]['taxable_base']) == Decimal('50.0000')
+
+
+def test_missing_e2_fiscal_product_evidence_fails_closed(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    source = _source(client, connection, prefix)
+    connection.cursor().execute(
+        'DELETE FROM restaurant_order_item_fiscal_snapshots '
+        'WHERE restaurant_order_item_id=%s',
+        (source.order_item_id,),
+    )
+    rejected = _bill(client, source, key='missing-e2')
+    assert rejected.status_code == 409
+    assert rejected.json()['error']['code'] == 'BILLING_FISCAL_EVIDENCE_UNAVAILABLE'
+
+
+def test_missing_e3_fiscal_monetary_evidence_fails_closed(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    source = _source(client, connection, prefix)
+    connection.cursor().execute(
+        'UPDATE restaurant_order_item_tax_snapshots SET tax_effect=NULL,'
+        'fiscal_unit_value=NULL,fiscal_line_amount=NULL,fiscal_discount_amount=NULL '
+        'WHERE restaurant_order_item_id=%s',
+        (source.order_item_id,),
+    )
+    rejected = _bill(client, source, key='missing-e3')
+    assert rejected.status_code == 409
+    assert rejected.json()['error']['code'] == 'BILLING_FISCAL_EVIDENCE_UNAVAILABLE'
+
+
+def test_unsupported_gratuity_fails_closed(client, sql_connection) -> None:
+    connection, prefix = sql_connection
+    source = _source(client, connection, prefix, gratuity='10.0000')
+    rejected = _bill(client, source, key='unsupported-gratuity')
+    assert rejected.status_code == 409
+    assert rejected.json()['error']['code'] == 'BILLING_UNSUPPORTED_FISCAL_COMPONENT'
+
+
+def test_fiscal_arithmetic_inconsistency_fails_closed(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    source = _source(client, connection, prefix)
+    connection.cursor().execute(
+        'UPDATE restaurant_order_item_tax_snapshots SET '
+        'fiscal_line_amount=99.0000,taxable_base=99.0000 '
+        'WHERE restaurant_order_item_id=%s',
+        (source.order_item_id,),
+    )
+    rejected = _bill(client, source, key='inconsistent-fiscal-arithmetic')
+    assert rejected.status_code == 409
+    assert rejected.json()['error']['code'] == 'BILLING_FISCAL_ARITHMETIC_INCONSISTENT'
 
 
 def test_billing_idempotency_does_not_duplicate_document_lines_or_taxes(
@@ -315,9 +440,16 @@ def test_billing_idempotency_does_not_duplicate_document_lines_or_taxes(
             cursor.execute(f'SELECT COUNT(*) AS count FROM {table} WHERE tenant_id=%s', (source.scope.tenant_id,))
             before[table] = cursor.fetchone()['count']
     first = _bill(client, source, key='same-billing')
+    original_detail = _detail(client, source, first.json()['id'])
+    connection.cursor().execute(
+        "UPDATE issuer_fiscal_profiles SET fiscal_postal_code='99999' WHERE id=%s",
+        (source.issuer_profile_id,),
+    )
     replay = _bill(client, source, key='same-billing')
     assert first.status_code == 201 and replay.status_code == 200
     assert first.json()['id'] == replay.json()['id']
+    assert replay.json()['issuer_fiscal_postal_code'] == '01000'
+    assert _detail(client, source, first.json()['id']) == original_detail
     with connection.cursor() as cursor:
         for table in ('billing_documents', 'billing_document_lines', 'billing_document_line_taxes'):
             cursor.execute(f'SELECT COUNT(*) AS count FROM {table}')
