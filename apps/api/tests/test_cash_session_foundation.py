@@ -340,7 +340,7 @@ def test_tenant_isolation_and_scoped_foreign_keys(client, sql_connection) -> Non
                 second.membership_id, second.membership_id, '0' * 64,
             ),
         )
-    with pytest.raises(pymysql.err.IntegrityError):
+    with pytest.raises((pymysql.err.IntegrityError, pymysql.err.OperationalError)):
         _execute(
             connection,
             'INSERT INTO cash_sessions '
@@ -358,15 +358,9 @@ def test_tenant_isolation_and_scoped_foreign_keys(client, sql_connection) -> Non
         )
 
 
-def test_b1_does_not_change_payment_or_add_cash_ledger_tables(sql_connection) -> None:
+def test_cash_management_does_not_change_payment(sql_connection) -> None:
     connection, _ = sql_connection
     with connection.cursor() as cursor:
         cursor.execute('SHOW COLUMNS FROM restaurant_payments')
         payment_columns = {row['Field'] for row in cursor.fetchall()}
-        cursor.execute(
-            "SELECT table_name FROM information_schema.tables "
-            "WHERE table_schema=DATABASE() AND table_name IN ('cash_movements','cash_counts')"
-        )
-        forbidden_tables = cursor.fetchall()
     assert 'cash_session_id' not in payment_columns
-    assert forbidden_tables == ()

@@ -43,3 +43,51 @@ class InvalidCashSessionRequestError(CashManagementError):
 
 class CashSessionPermissionError(CashManagementError):
     code = 'CASH_SESSION_PERMISSION_DENIED'
+
+
+class CashSessionClosedError(CashManagementError):
+    code = 'CASH_SESSION_CLOSED'
+
+
+class InvalidCashMovementError(CashManagementError):
+    code = 'INVALID_CASH_MOVEMENT'
+
+
+class DuplicateOpeningFloatError(CashManagementError):
+    code = 'DUPLICATE_OPENING_FLOAT'
+
+
+class CashMovementIdempotencyConflictError(CashManagementError):
+    code = 'CASH_MOVEMENT_IDEMPOTENCY_CONFLICT'
+
+
+class InvalidCashCountError(CashManagementError):
+    code = 'INVALID_CASH_COUNT'
+
+
+class CashCountNotFoundError(CashManagementError):
+    code = 'CASH_COUNT_NOT_FOUND'
+
+
+class CashCountSessionConflictError(CashManagementError):
+    code = 'CASH_COUNT_SESSION_CONFLICT'
+
+
+class CashCountIdempotencyConflictError(CashManagementError):
+    code = 'CASH_COUNT_IDEMPOTENCY_CONFLICT'
+
+
+class StaleCashCountError(CashManagementError):
+    code = 'STALE_CASH_COUNT'
+
+
+class CashSessionCloseConflictError(CashManagementError):
+    code = 'CASH_SESSION_CLOSE_CONFLICT'
+
+
+class CashSessionCloseIdempotencyConflictError(CashManagementError):
+    code = 'CASH_SESSION_CLOSE_IDEMPOTENCY_CONFLICT'
+
+
+class CashSessionVarianceReasonRequiredError(CashManagementError):
+    code = 'CASH_SESSION_VARIANCE_REASON_REQUIRED'
