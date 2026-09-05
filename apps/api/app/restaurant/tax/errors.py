@@ -22,6 +22,10 @@ class TaxTreatmentUnsupportedError(RestaurantTaxError):
     pass
 
 
+class TaxEffectUnsupportedError(RestaurantTaxError):
+    pass
+
+
 class TaxCalculationError(RestaurantTaxError):
     pass
 

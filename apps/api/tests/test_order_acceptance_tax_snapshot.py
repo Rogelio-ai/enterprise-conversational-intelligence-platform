@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.main import create_app
 from app.restaurant.orders import acceptance
-from app.restaurant.tax.contracts import ResolvedTaxEvidence, TaxTreatment
+from app.restaurant.tax.contracts import ResolvedTaxEvidence, TaxEffect, TaxTreatment
 from test_canonical_order_commercial_acceptance import (
     _confirm,
     _execute,
@@ -105,7 +105,11 @@ def test_acceptance_persists_explicit_tax_treatment_evidence(
     snapshot = _snapshot(connection, accepted.json()['id'])
     assert snapshot['source_tax_rule_id'] == rule['id']
     assert snapshot['tax_treatment'] == treatment
+    assert snapshot['tax_effect'] == 'TRANSFERRED'
     assert snapshot['tax_rate'] == Decimal(rate)
+    assert snapshot['fiscal_unit_value'] == Decimal(expected_base)
+    assert snapshot['fiscal_line_amount'] == Decimal(expected_base)
+    assert snapshot['fiscal_discount_amount'] == Decimal('0.0000')
     assert snapshot['taxable_base'] == Decimal(expected_base)
     assert snapshot['tax_amount'] == Decimal(expected_tax)
     assert snapshot['jurisdiction_code'] == rule['jurisdiction_code']
@@ -203,13 +207,17 @@ def test_resolver_fingerprint_and_single_acceptance_instant_are_persisted(
             source_tax_rule_id=rule_id,
             tax_category='SALES_TAX',
             tax_treatment=TaxTreatment.EXEMPT,
+            tax_effect=TaxEffect.TRANSFERRED,
             tax_rate=Decimal('0.000000'),
+            fiscal_unit_value=candidate.unit_price,
+            fiscal_line_amount=candidate.base_amount,
+            fiscal_discount_amount=candidate.discount_amount,
             taxable_base=candidate.commercial_amount,
             tax_amount=Decimal('0.0000'),
             jurisdiction_code='TEST-JURISDICTION',
             calculation_policy='INCLUDED_PRICE_SINGLE_TAX',
             rounding_policy='DECIMAL_4_HALF_UP',
-            schema_version=1,
+            schema_version=2,
             evidence_fingerprint=next(fingerprints),
         )
 
@@ -229,14 +237,24 @@ def test_resolver_fingerprint_and_single_acceptance_instant_are_persisted(
             (accepted.json()['id'],),
         )
         order = cursor.fetchone()
+        cursor.execute(
+            'SELECT evidence_fingerprint FROM restaurant_order_item_fiscal_snapshots '
+            'WHERE restaurant_order_id=%s ORDER BY restaurant_order_item_id',
+            (accepted.json()['id'],),
+        )
+        fiscal_snapshots = cursor.fetchall()
     assert [value['evidence_fingerprint'] for value in snapshots] == ['a' * 64, 'b' * 64]
     assert {value['created_at'] for value in snapshots} == {order['accepted_at']}
-    assert order['fingerprint_schema_version'] == 2
+    assert order['fingerprint_schema_version'] == 3
     assert order['commercial_fingerprint'] == acceptance._accepted_fingerprint(
         preview['commercial_fingerprint'],
         tuple(
             (line['draft_item_id'], fingerprint)
             for line, fingerprint in zip(preview['lines'], ('a' * 64, 'b' * 64))
+        ),
+        tuple(
+            (line['draft_item_id'], snapshot['evidence_fingerprint'])
+            for line, snapshot in zip(preview['lines'], fiscal_snapshots)
         ),
     )
 
@@ -246,15 +264,22 @@ def test_replay_does_not_duplicate_tax_snapshot(client, sql_connection) -> None:
     scope = _scope(connection, prefix)
     _, preview, accepted, diner_headers = _accept(client, connection, scope)
     assert accepted.status_code == 201, accepted.text
+    original = _snapshot(connection, accepted.json()['id'])
     replay = _confirm(client, diner_headers, preview, 'tax-accept')
     assert replay.status_code == 200
+    assert _snapshot(connection, accepted.json()['id']) == original
     with connection.cursor() as cursor:
         cursor.execute(
-            'SELECT COUNT(*) AS count FROM restaurant_order_item_tax_snapshots '
+            'SELECT COUNT(*) AS count,MIN(evidence_fingerprint) AS fingerprint, '
+            'MIN(fiscal_line_amount) AS fiscal_line_amount '
+            'FROM restaurant_order_item_tax_snapshots '
             'WHERE restaurant_order_id=%s',
             (accepted.json()['id'],),
         )
-        assert cursor.fetchone()['count'] == 1
+        frozen = cursor.fetchone()
+        assert frozen['count'] == 1
+        assert frozen['fingerprint']
+        assert frozen['fiscal_line_amount'] is not None
 
 
 def test_promotion_discount_is_the_taxable_commercial_basis(client, sql_connection) -> None:
@@ -282,8 +307,14 @@ def test_promotion_discount_is_the_taxable_commercial_basis(client, sql_connecti
     accepted = _confirm(client, diner_headers, preview, 'discounted-tax')
     assert accepted.status_code == 201, accepted.text
     snapshot = _snapshot(connection, accepted.json()['id'])
+    assert snapshot['fiscal_unit_value'] == Decimal('100.0000')
+    assert snapshot['fiscal_line_amount'] == Decimal('100.0000')
+    assert snapshot['fiscal_discount_amount'] == Decimal('10.0000')
     assert snapshot['taxable_base'] == Decimal('90.0000')
     assert snapshot['tax_amount'] == Decimal('14.4000')
+    assert snapshot['fiscal_line_amount'] - snapshot['fiscal_discount_amount'] == (
+        snapshot['taxable_base']
+    )
 
 
 def test_new_acceptance_does_not_mutate_historical_tax_evidence_or_other_domains(

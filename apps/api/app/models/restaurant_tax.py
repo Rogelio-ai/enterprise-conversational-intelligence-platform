@@ -23,6 +23,7 @@ from app.models.identity import TimestampMixin
 
 
 _ACTIVE_DEFAULT = text("'ACTIVE'")
+_TRANSFERRED_DEFAULT = text("'TRANSFERRED'")
 
 
 class RestaurantTaxRule(TimestampMixin, Base):
@@ -61,6 +62,10 @@ class RestaurantTaxRule(TimestampMixin, Base):
             "status IN ('ACTIVE', 'INACTIVE')",
             name='ck_restaurant_tax_rules_status',
         ),
+        CheckConstraint(
+            "tax_effect IN ('TRANSFERRED', 'WITHHELD')",
+            name='ck_restaurant_tax_rules_effect',
+        ),
         Index(
             'ix_restaurant_tax_rules_resolution',
             'tenant_id',
@@ -86,6 +91,10 @@ class RestaurantTaxRule(TimestampMixin, Base):
     )
     tax_category: Mapped[str] = mapped_column(String(64), nullable=False)
     tax_treatment: Mapped[str] = mapped_column(String(32), nullable=False)
+    tax_effect: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='TRANSFERRED',
+        server_default=_TRANSFERRED_DEFAULT,
+    )
     tax_rate: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False)
     calculation_policy: Mapped[str] = mapped_column(
         String(64, collation='utf8mb4_bin'), nullable=False
@@ -159,6 +168,20 @@ class RestaurantOrderItemTaxSnapshot(Base):
         CheckConstraint(
             'schema_version >= 1', name='ck_order_item_tax_snapshots_schema_version'
         ),
+        CheckConstraint(
+            "tax_effect IS NULL OR tax_effect IN ('TRANSFERRED', 'WITHHELD')",
+            name='ck_order_item_tax_snapshots_effect',
+        ),
+        CheckConstraint(
+            '(fiscal_unit_value IS NULL AND fiscal_line_amount IS NULL '
+            'AND fiscal_discount_amount IS NULL AND tax_effect IS NULL) OR '
+            '(fiscal_unit_value IS NOT NULL AND fiscal_line_amount IS NOT NULL '
+            'AND fiscal_discount_amount IS NOT NULL AND tax_effect IS NOT NULL '
+            'AND fiscal_unit_value >= 0 AND fiscal_line_amount >= 0 '
+            'AND fiscal_discount_amount >= 0 '
+            'AND fiscal_line_amount - fiscal_discount_amount = taxable_base)',
+            name='ck_order_item_tax_snapshots_fiscal_money',
+        ),
         Index(
             'ix_order_item_tax_snapshots_item',
             'tenant_id',
@@ -177,7 +200,17 @@ class RestaurantOrderItemTaxSnapshot(Base):
     source_tax_rule_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     tax_category: Mapped[str] = mapped_column(String(64), nullable=False)
     tax_treatment: Mapped[str] = mapped_column(String(32), nullable=False)
+    tax_effect: Mapped[str | None] = mapped_column(String(16), nullable=True)
     tax_rate: Mapped[Decimal] = mapped_column(Numeric(9, 6), nullable=False)
+    fiscal_unit_value: Mapped[Decimal | None] = mapped_column(
+        Numeric(19, 4), nullable=True
+    )
+    fiscal_line_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(19, 4), nullable=True
+    )
+    fiscal_discount_amount: Mapped[Decimal | None] = mapped_column(
+        Numeric(19, 4), nullable=True
+    )
     taxable_base: Mapped[Decimal] = mapped_column(Numeric(19, 4), nullable=False)
     tax_amount: Mapped[Decimal] = mapped_column(Numeric(19, 4), nullable=False)
     jurisdiction_code: Mapped[str] = mapped_column(

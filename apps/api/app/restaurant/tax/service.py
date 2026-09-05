@@ -12,11 +12,13 @@ from app.models import Location, Product, RestaurantTaxRule
 from app.restaurant.tax.contracts import (
     RestaurantTaxLineCandidate,
     ResolvedTaxEvidence,
+    TaxEffect,
     TaxTreatment,
 )
 from app.restaurant.tax.errors import (
     TaxCalculationError,
     TaxClassificationUnavailableError,
+    TaxEffectUnsupportedError,
     TaxPolicyUnsupportedError,
     TaxRuleAmbiguousError,
     TaxRuleUnavailableError,
@@ -27,7 +29,7 @@ from app.restaurant.tax.errors import (
 
 CALCULATION_POLICY = 'INCLUDED_PRICE_SINGLE_TAX'
 ROUNDING_POLICY = 'DECIMAL_4_HALF_UP'
-EVIDENCE_SCHEMA_VERSION = 1
+EVIDENCE_SCHEMA_VERSION = 2
 MONEY_UNIT = Decimal('0.0001')
 RATE_UNIT = Decimal('0.000001')
 MAX_MONEY = Decimal('999999999999999.9999')
@@ -144,20 +146,41 @@ def _select_rule(
     return candidates[0]
 
 
-def _calculate(
-    *, commercial_amount: Decimal, tax_rate: Decimal, treatment: TaxTreatment
-) -> tuple[Decimal, Decimal]:
+def _pre_tax(amount: Decimal, tax_rate: Decimal, treatment: TaxTreatment) -> Decimal:
     if treatment in (TaxTreatment.ZERO_RATE, TaxTreatment.EXEMPT):
-        return commercial_amount, Decimal('0.0000')
+        return amount
     with localcontext() as context:
         context.prec = 50
-        taxable_base = (commercial_amount / (Decimal('1') + tax_rate)).quantize(
+        return (amount / (Decimal('1') + tax_rate)).quantize(
             MONEY_UNIT, rounding=ROUND_HALF_UP
         )
-    tax_amount = commercial_amount - taxable_base
-    if taxable_base < 0 or tax_amount < 0 or taxable_base + tax_amount != commercial_amount:
+
+
+def _calculate(
+    *, money: dict[str, Decimal], tax_rate: Decimal, treatment: TaxTreatment
+) -> tuple[Decimal, Decimal, Decimal, Decimal, Decimal]:
+    fiscal_unit_value = _pre_tax(money['unit_price'], tax_rate, treatment)
+    fiscal_line_amount = _pre_tax(money['base_amount'], tax_rate, treatment)
+    taxable_base = _pre_tax(money['commercial_amount'], tax_rate, treatment)
+    fiscal_discount_amount = fiscal_line_amount - taxable_base
+    tax_amount = money['commercial_amount'] - taxable_base
+    if (
+        fiscal_unit_value < 0
+        or fiscal_line_amount < 0
+        or fiscal_discount_amount < 0
+        or taxable_base < 0
+        or tax_amount < 0
+        or fiscal_line_amount - fiscal_discount_amount != taxable_base
+        or taxable_base + tax_amount != money['commercial_amount']
+    ):
         raise TaxCalculationError('Included-price tax decomposition is inconsistent')
-    return taxable_base, tax_amount
+    return (
+        fiscal_unit_value,
+        fiscal_line_amount,
+        fiscal_discount_amount,
+        taxable_base,
+        tax_amount,
+    )
 
 
 async def resolve_tax_evidence(
@@ -232,11 +255,23 @@ async def resolve_tax_evidence(
         treatment = TaxTreatment(rule.tax_treatment)
     except (TypeError, ValueError) as exc:
         raise TaxTreatmentUnsupportedError('Configured tax treatment is unsupported') from exc
+    try:
+        tax_effect = TaxEffect(rule.tax_effect)
+    except (TypeError, ValueError) as exc:
+        raise TaxEffectUnsupportedError('Configured tax effect is unsupported') from exc
+    if tax_effect is not TaxEffect.TRANSFERRED:
+        raise TaxEffectUnsupportedError(
+            'Configured tax effect has no supported calculation policy'
+        )
     tax_rate = _rate(rule, treatment)
-    taxable_base, tax_amount = _calculate(
-        commercial_amount=money['commercial_amount'],
-        tax_rate=tax_rate,
-        treatment=treatment,
+    (
+        fiscal_unit_value,
+        fiscal_line_amount,
+        fiscal_discount_amount,
+        taxable_base,
+        tax_amount,
+    ) = _calculate(
+        money=money, tax_rate=tax_rate, treatment=treatment
     )
 
     fingerprint = _fingerprint(
@@ -259,7 +294,11 @@ async def resolve_tax_evidence(
             'source_tax_rule_id': rule.id,
             'tax_category': rule.tax_category,
             'tax_treatment': treatment.value,
+            'tax_effect': tax_effect.value,
             'tax_rate': _decimal(tax_rate),
+            'fiscal_unit_value': _decimal(fiscal_unit_value),
+            'fiscal_line_amount': _decimal(fiscal_line_amount),
+            'fiscal_discount_amount': _decimal(fiscal_discount_amount),
             'taxable_base': _decimal(taxable_base),
             'tax_amount': _decimal(tax_amount),
             'jurisdiction_code': rule.jurisdiction_code,
@@ -271,7 +310,11 @@ async def resolve_tax_evidence(
         source_tax_rule_id=rule.id,
         tax_category=rule.tax_category,
         tax_treatment=treatment,
+        tax_effect=tax_effect,
         tax_rate=tax_rate,
+        fiscal_unit_value=fiscal_unit_value,
+        fiscal_line_amount=fiscal_line_amount,
+        fiscal_discount_amount=fiscal_discount_amount,
         taxable_base=taxable_base,
         tax_amount=tax_amount,
         jurisdiction_code=rule.jurisdiction_code,

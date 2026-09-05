@@ -12,6 +12,11 @@ class TaxTreatment(str, Enum):
     EXEMPT = 'EXEMPT'
 
 
+class TaxEffect(str, Enum):
+    TRANSFERRED = 'TRANSFERRED'
+    WITHHELD = 'WITHHELD'
+
+
 @dataclass(frozen=True, slots=True)
 class RestaurantTaxLineCandidate:
     tenant_id: int
@@ -34,7 +39,11 @@ class ResolvedTaxEvidence:
     source_tax_rule_id: int
     tax_category: str
     tax_treatment: TaxTreatment
+    tax_effect: TaxEffect
     tax_rate: Decimal
+    fiscal_unit_value: Decimal
+    fiscal_line_amount: Decimal
+    fiscal_discount_amount: Decimal
     taxable_base: Decimal
     tax_amount: Decimal
     jurisdiction_code: str

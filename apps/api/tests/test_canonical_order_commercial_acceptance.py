@@ -50,7 +50,7 @@ def _scope(connection, prefix: str, *, order_read: bool = True) -> Scope:
             permission_id = int(cursor.fetchone()['id'])
         _execute(connection, 'INSERT INTO role_permissions (role_id,permission_id) VALUES (%s,%s)', (role_id, permission_id))
     organization_id = _execute(connection, "INSERT INTO organizations (tenant_id,code,name,status) VALUES (%s,%s,'Organization','ACTIVE')", (tenant_id, f'ORG-{uuid4().hex[:12]}'))
-    location_id = _execute(connection, "INSERT INTO locations (tenant_id,organization_id,code,name,timezone,status) VALUES (%s,%s,%s,'Location','America/Mexico_City','ACTIVE')", (tenant_id, organization_id, f'LOC-{uuid4().hex[:12]}'))
+    location_id = _execute(connection, "INSERT INTO locations (tenant_id,organization_id,code,name,timezone,country_code,status) VALUES (%s,%s,%s,'Location','America/Mexico_City','MX','ACTIVE')", (tenant_id, organization_id, f'LOC-{uuid4().hex[:12]}'))
     resource_id = _execute(connection, "INSERT INTO resources (tenant_id,location_id,code,name,resource_type,status) VALUES (%s,%s,%s,'Table','TABLE','ACTIVE')", (tenant_id, location_id, f'T-{uuid4().hex[:12]}'))
     return Scope(tenant_id, organization_id, location_id, resource_id, email)
 
@@ -87,11 +87,20 @@ def _product(connection, scope: Scope, *, name: str = 'Hamburguesa Especial', am
     _execute(
         connection,
         "INSERT INTO restaurant_tax_rules (tenant_id,organization_id,location_id,"
-        "tax_classification_code,jurisdiction_code,tax_category,tax_treatment,tax_rate,"
+        "tax_classification_code,jurisdiction_code,tax_category,tax_treatment,tax_effect,tax_rate,"
         "calculation_policy,rounding_policy,effective_from,effective_to,status) "
-        "VALUES (%s,%s,NULL,%s,'TEST-JURISDICTION','SALES_TAX','TAXABLE',0.160000,"
+        "VALUES (%s,%s,NULL,%s,'TEST-JURISDICTION','SALES_TAX','TAXABLE','TRANSFERRED',0.160000,"
         "'INCLUDED_PRICE_SINGLE_TAX','DECIMAL_4_HALF_UP',CURRENT_TIMESTAMP - INTERVAL 1 DAY,NULL,'ACTIVE')",
         (scope.tenant_id, scope.organization_id, classification),
+    )
+    _execute(
+        connection,
+        "INSERT INTO product_fiscal_classifications (tenant_id,organization_id,product_id,"
+        "fiscal_jurisdiction_code,product_classification_scheme,"
+        "product_classification_code,unit_classification_scheme,unit_classification_code,"
+        "effective_from,effective_to,status) VALUES (%s,%s,%s,'MX','TEST-PRODUCT-SCHEME',"
+        "%s,'TEST-UNIT-SCHEME','EACH',CURRENT_TIMESTAMP - INTERVAL 1 DAY,NULL,'ACTIVE')",
+        (scope.tenant_id, scope.organization_id, product_id, f'FISCAL-{product_id}'),
     )
     menu_id = _execute(connection, "INSERT INTO menus (tenant_id,organization_id,name,status) VALUES (%s,%s,'Menu','ACTIVE')", (scope.tenant_id, scope.organization_id))
     _execute(connection, "INSERT INTO menu_locations (tenant_id,organization_id,menu_id,location_id,status) VALUES (%s,%s,%s,%s,'ACTIVE')", (scope.tenant_id, scope.organization_id, menu_id, scope.location_id))

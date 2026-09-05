@@ -6,6 +6,10 @@ class TaxEvidenceUnavailableError(DraftNotConfirmableError):
     pass
 
 
+class FiscalProductEvidenceUnavailableError(DraftNotConfirmableError):
+    pass
+
+
 class ConfirmationStaleError(RuntimeError):
     pass
 

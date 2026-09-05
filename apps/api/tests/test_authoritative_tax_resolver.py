@@ -8,9 +8,14 @@ from decimal import Decimal
 import pytest
 
 from app.models import Location, Product, RestaurantTaxRule
-from app.restaurant.tax.contracts import RestaurantTaxLineCandidate, TaxTreatment
+from app.restaurant.tax.contracts import (
+    RestaurantTaxLineCandidate,
+    TaxEffect,
+    TaxTreatment,
+)
 from app.restaurant.tax.errors import (
     TaxClassificationUnavailableError,
+    TaxEffectUnsupportedError,
     TaxPolicyUnsupportedError,
     TaxRuleAmbiguousError,
     TaxRuleUnavailableError,
@@ -79,6 +84,7 @@ def _rule(
     effective_to: datetime | None = None,
     calculation_policy: str = CALCULATION_POLICY,
     rounding_policy: str = ROUNDING_POLICY,
+    effect: str | None = 'TRANSFERRED',
 ) -> RestaurantTaxRule:
     return RestaurantTaxRule(
         id=rule_id,
@@ -89,6 +95,7 @@ def _rule(
         jurisdiction_code='JURISDICTION-A',
         tax_category='SALES_TAX',
         tax_treatment=treatment,
+        tax_effect=effect,
         tax_rate=Decimal(rate),
         calculation_policy=calculation_policy,
         rounding_policy=rounding_policy,
@@ -103,8 +110,16 @@ def _candidate(
     classification: str | None = 'FOOD',
     effective_at: datetime = NOW,
     amount: str = '116.0000',
+    quantity: str = '1.0000',
+    unit_price: str | None = None,
+    discount: str = '0.0000',
 ) -> RestaurantTaxLineCandidate:
-    value = Decimal(amount)
+    base_amount = Decimal(amount)
+    quantity_value = Decimal(quantity)
+    unit_price_value = (
+        Decimal(unit_price) if unit_price is not None else base_amount / quantity_value
+    )
+    discount_amount = Decimal(discount)
     return RestaurantTaxLineCandidate(
         tenant_id=10,
         organization_id=20,
@@ -113,11 +128,11 @@ def _candidate(
         product_tax_classification_code=classification,
         effective_at=effective_at,
         tax_mode='INCLUDED',
-        quantity=Decimal('1.0000'),
-        unit_price=value,
-        base_amount=value,
-        discount_amount=Decimal('0.0000'),
-        commercial_amount=value,
+        quantity=quantity_value,
+        unit_price=unit_price_value,
+        base_amount=base_amount,
+        discount_amount=discount_amount,
+        commercial_amount=base_amount - discount_amount,
     )
 
 
@@ -172,7 +187,11 @@ def test_ambiguous_same_precedence_rules_fail_closed() -> None:
 def test_taxable_included_price_has_deterministic_base_and_tax() -> None:
     evidence, _ = _resolve(rules=(_rule(1),))
     assert evidence.tax_treatment is TaxTreatment.TAXABLE
+    assert evidence.tax_effect is TaxEffect.TRANSFERRED
     assert evidence.tax_rate == Decimal('0.160000')
+    assert evidence.fiscal_unit_value == Decimal('100.0000')
+    assert evidence.fiscal_line_amount == Decimal('100.0000')
+    assert evidence.fiscal_discount_amount == Decimal('0.0000')
     assert evidence.taxable_base == Decimal('100.0000')
     assert evidence.tax_amount == Decimal('16.0000')
     assert evidence.taxable_base + evidence.tax_amount == Decimal('116.0000')
@@ -184,6 +203,9 @@ def test_zero_rate_preserves_taxable_basis_and_produces_zero_tax() -> None:
         rules=(_rule(1, treatment='ZERO_RATE', rate='0.000000'),),
     )
     assert evidence.tax_treatment is TaxTreatment.ZERO_RATE
+    assert evidence.fiscal_unit_value == Decimal('100.0000')
+    assert evidence.fiscal_line_amount == Decimal('100.0000')
+    assert evidence.fiscal_discount_amount == Decimal('0.0000')
     assert evidence.taxable_base == Decimal('100.0000')
     assert evidence.tax_amount == Decimal('0.0000')
 
@@ -194,6 +216,9 @@ def test_exempt_preserves_explicit_treatment_and_produces_zero_tax() -> None:
         rules=(_rule(1, treatment='EXEMPT', rate='0.000000'),),
     )
     assert evidence.tax_treatment is TaxTreatment.EXEMPT
+    assert evidence.fiscal_unit_value == Decimal('100.0000')
+    assert evidence.fiscal_line_amount == Decimal('100.0000')
+    assert evidence.fiscal_discount_amount == Decimal('0.0000')
     assert evidence.taxable_base == Decimal('100.0000')
     assert evidence.tax_amount == Decimal('0.0000')
 
@@ -215,6 +240,49 @@ def test_tax_rate_comes_from_rule_and_is_not_inferred_from_gross() -> None:
     second, _ = _resolve(rules=(_rule(2, rate='0.250000'),))
     assert first.tax_rate == Decimal('0.100000')
     assert first.tax_amount != second.tax_amount
+
+
+def test_discounted_included_price_freezes_pre_tax_fiscal_values() -> None:
+    evidence, _ = _resolve(
+        _candidate(amount='116.0000', discount='11.6000'), rules=(_rule(1),)
+    )
+    assert evidence.fiscal_unit_value == Decimal('100.0000')
+    assert evidence.fiscal_line_amount == Decimal('100.0000')
+    assert evidence.fiscal_discount_amount == Decimal('10.0000')
+    assert evidence.taxable_base == Decimal('90.0000')
+    assert evidence.fiscal_line_amount - evidence.fiscal_discount_amount == (
+        evidence.taxable_base
+    )
+
+
+def test_quantity_greater_than_one_preserves_deterministic_fiscal_unit_value() -> None:
+    candidate = _candidate(
+        amount='348.0000', quantity='3.0000', unit_price='116.0000'
+    )
+    first, _ = _resolve(candidate, rules=(_rule(1),))
+    second, _ = _resolve(candidate, rules=(_rule(1),))
+    assert first.fiscal_unit_value == Decimal('100.0000')
+    assert first.fiscal_line_amount == Decimal('300.0000')
+    assert first == second
+
+
+def test_fingerprint_changes_with_fiscal_monetary_evidence() -> None:
+    undiscounted, _ = _resolve(
+        _candidate(amount='116.0000'), rules=(_rule(1),)
+    )
+    discounted, _ = _resolve(
+        _candidate(amount='232.0000', discount='116.0000'), rules=(_rule(1),)
+    )
+    assert undiscounted.taxable_base == discounted.taxable_base
+    assert undiscounted.fiscal_line_amount != discounted.fiscal_line_amount
+    assert undiscounted.fiscal_discount_amount != discounted.fiscal_discount_amount
+    assert undiscounted.evidence_fingerprint != discounted.evidence_fingerprint
+
+
+@pytest.mark.parametrize('effect', [None, 'INVALID', 'WITHHELD'])
+def test_missing_invalid_or_uncalculable_tax_effect_fails_closed(effect) -> None:
+    with pytest.raises(TaxEffectUnsupportedError):
+        _resolve(rules=(_rule(1, effect=effect),))
 
 
 def test_output_fingerprint_is_deterministic_and_evidence_is_immutable() -> None:

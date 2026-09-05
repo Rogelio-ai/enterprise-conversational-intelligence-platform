@@ -8,6 +8,10 @@ from app.models.billing import (
     IssuerFiscalProfile,
 )
 from app.models.customer import Customer, CustomerExternalIdentity
+from app.models.fiscal_product import (
+    ProductFiscalClassification,
+    RestaurantOrderItemFiscalSnapshot,
+)
 from app.models.conversation import Conversation, ConversationMessage, ConversationParticipant
 from app.models.identity import (
     MembershipRole,
@@ -119,6 +123,7 @@ __all__ = [
     'ProductComponent',
     'ProductComposition',
     'ProductExternalMapping',
+    'ProductFiscalClassification',
     'ProductPrice',
     'Promotion',
     'PromotionLocation',
@@ -130,6 +135,7 @@ __all__ = [
     'RestaurantOrder',
     'RestaurantOrderItem',
     'RestaurantOrderItemComponent',
+    'RestaurantOrderItemFiscalSnapshot',
     'RestaurantOrderPromotion',
     'RestaurantCheck',
     'RestaurantCheckAllocation',

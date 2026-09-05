@@ -189,6 +189,7 @@ def sql_connection(integration_settings: Settings):
                     (f'{prefix}%',),
                 )
             for table in (
+                'restaurant_order_item_fiscal_snapshots',
                 'restaurant_order_item_tax_snapshots',
                 'restaurant_order_promotions',
                 'restaurant_order_item_components',
@@ -272,6 +273,11 @@ def sql_connection(integration_settings: Settings):
             )
             cursor.execute(
                 'DELETE FROM menus WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM product_fiscal_classifications WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),
             )

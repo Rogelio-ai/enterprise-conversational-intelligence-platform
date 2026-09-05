@@ -10,16 +10,21 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
+    Location,
     OrderDraft,
     Product,
     RestaurantOrder,
     RestaurantOrderItem,
     RestaurantOrderItemComponent,
+    RestaurantOrderItemFiscalSnapshot,
     RestaurantOrderItemTaxSnapshot,
     RestaurantOrderPromotion,
 )
 from app.restaurant.catalog import structure
 from app.restaurant.commercial import service as commercial_service
+from app.restaurant.fiscal_product import service as fiscal_product_service
+from app.restaurant.fiscal_product.contracts import FiscalProductClassificationCandidate
+from app.restaurant.fiscal_product.errors import FiscalProductEvidenceError
 from app.restaurant.orders import acceptance_errors as errors
 from app.restaurant.orders import service as draft_service
 from app.restaurant.orders.acceptance_contracts import (
@@ -36,12 +41,13 @@ from app.restaurant.tax.errors import RestaurantTaxError
 
 
 logger = logging.getLogger('ecip.restaurant_orders')
-ACCEPTED_FINGERPRINT_SCHEMA_VERSION = 2
+ACCEPTED_FINGERPRINT_SCHEMA_VERSION = 3
 
 
 def _accepted_fingerprint(
     commercial_fingerprint: str,
     tax_evidence: tuple[tuple[int, str], ...],
+    fiscal_product_evidence: tuple[tuple[int, str], ...],
 ) -> str:
     value = {
         'fingerprint_schema_version': ACCEPTED_FINGERPRINT_SCHEMA_VERSION,
@@ -49,6 +55,10 @@ def _accepted_fingerprint(
         'tax_evidence': [
             {'draft_item_id': item_id, 'evidence_fingerprint': fingerprint}
             for item_id, fingerprint in tax_evidence
+        ],
+        'fiscal_product_evidence': [
+            {'draft_item_id': item_id, 'evidence_fingerprint': fingerprint}
+            for item_id, fingerprint in fiscal_product_evidence
         ],
     }
     encoded = json.dumps(
@@ -249,6 +259,17 @@ async def confirm_current_order(
             raise errors.ConfirmationStaleError('Commercial confirmation expectation is stale')
 
         accepted_at = datetime.now(UTC).replace(tzinfo=None)
+        location = await db.scalar(
+            select(Location).where(
+                Location.id == diner.location_id,
+                Location.tenant_id == tenant_id,
+                Location.organization_id == diner.organization_id,
+            ).with_for_update()
+        )
+        if location is None or location.country_code is None:
+            raise errors.FiscalProductEvidenceUnavailableError(
+                'Fiscal product jurisdiction is unavailable for this Location'
+            )
         draft_projection = await draft_service.evaluate_draft(
             db, tenant_id=tenant_id, draft_id=draft.id, correlation_id=correlation_id
         )
@@ -308,17 +329,39 @@ async def confirm_current_order(
                         component_tax_classification_codes=component_classifications,
                     ),
                 )
-                resolved_lines.append((line, draft_item, graph, evidence))
+                fiscal_product_evidence = (
+                    await fiscal_product_service.resolve_fiscal_product_evidence(
+                        db,
+                        FiscalProductClassificationCandidate(
+                            tenant_id=tenant_id,
+                            organization_id=diner.organization_id,
+                            product_id=line.product_id,
+                            fiscal_jurisdiction_code=location.country_code,
+                            effective_at=accepted_at,
+                        ),
+                    )
+                )
+                resolved_lines.append(
+                    (line, draft_item, graph, evidence, fiscal_product_evidence)
+                )
         except RestaurantTaxError as exc:
             raise errors.TaxEvidenceUnavailableError(
                 'Authoritative tax evidence is unavailable for order acceptance'
+            ) from exc
+        except FiscalProductEvidenceError as exc:
+            raise errors.FiscalProductEvidenceUnavailableError(
+                'Authoritative fiscal product evidence is unavailable for order acceptance'
             ) from exc
 
         accepted_fingerprint = _accepted_fingerprint(
             preview.commercial_fingerprint,
             tuple(
                 (line.draft_item_id, evidence.evidence_fingerprint)
-                for line, _, _, evidence in resolved_lines
+                for line, _, _, evidence, _ in resolved_lines
+            ),
+            tuple(
+                (line.draft_item_id, evidence.evidence_fingerprint)
+                for line, _, _, _, evidence in resolved_lines
             ),
         )
         order = RestaurantOrder(
@@ -349,7 +392,7 @@ async def confirm_current_order(
         )
         db.add(order)
         await db.flush()
-        for line, draft_item, graph, evidence in resolved_lines:
+        for line, draft_item, graph, tax_evidence, fiscal_product_evidence in resolved_lines:
             order_item = RestaurantOrderItem(
                 tenant_id=tenant_id,
                 organization_id=diner.organization_id,
@@ -418,17 +461,51 @@ async def confirm_current_order(
                     location_id=diner.location_id,
                     restaurant_order_id=order.id,
                     restaurant_order_item_id=order_item.id,
-                    source_tax_rule_id=evidence.source_tax_rule_id,
-                    tax_category=evidence.tax_category,
-                    tax_treatment=evidence.tax_treatment.value,
-                    tax_rate=evidence.tax_rate,
-                    taxable_base=evidence.taxable_base,
-                    tax_amount=evidence.tax_amount,
-                    jurisdiction_code=evidence.jurisdiction_code,
-                    calculation_policy=evidence.calculation_policy,
-                    rounding_policy=evidence.rounding_policy,
-                    schema_version=evidence.schema_version,
-                    evidence_fingerprint=evidence.evidence_fingerprint,
+                    source_tax_rule_id=tax_evidence.source_tax_rule_id,
+                    tax_category=tax_evidence.tax_category,
+                    tax_treatment=tax_evidence.tax_treatment.value,
+                    tax_effect=tax_evidence.tax_effect.value,
+                    tax_rate=tax_evidence.tax_rate,
+                    fiscal_unit_value=tax_evidence.fiscal_unit_value,
+                    fiscal_line_amount=tax_evidence.fiscal_line_amount,
+                    fiscal_discount_amount=tax_evidence.fiscal_discount_amount,
+                    taxable_base=tax_evidence.taxable_base,
+                    tax_amount=tax_evidence.tax_amount,
+                    jurisdiction_code=tax_evidence.jurisdiction_code,
+                    calculation_policy=tax_evidence.calculation_policy,
+                    rounding_policy=tax_evidence.rounding_policy,
+                    schema_version=tax_evidence.schema_version,
+                    evidence_fingerprint=tax_evidence.evidence_fingerprint,
+                    created_at=accepted_at,
+                )
+            )
+            db.add(
+                RestaurantOrderItemFiscalSnapshot(
+                    tenant_id=tenant_id,
+                    organization_id=diner.organization_id,
+                    location_id=diner.location_id,
+                    restaurant_order_id=order.id,
+                    restaurant_order_item_id=order_item.id,
+                    source_product_fiscal_classification_id=(
+                        fiscal_product_evidence.source_product_fiscal_classification_id
+                    ),
+                    fiscal_jurisdiction_code=(
+                        fiscal_product_evidence.fiscal_jurisdiction_code
+                    ),
+                    product_classification_scheme=(
+                        fiscal_product_evidence.product_classification_scheme
+                    ),
+                    product_classification_code=(
+                        fiscal_product_evidence.product_classification_code
+                    ),
+                    unit_classification_scheme=(
+                        fiscal_product_evidence.unit_classification_scheme
+                    ),
+                    unit_classification_code=(
+                        fiscal_product_evidence.unit_classification_code
+                    ),
+                    schema_version=fiscal_product_evidence.schema_version,
+                    evidence_fingerprint=fiscal_product_evidence.evidence_fingerprint,
                     created_at=accepted_at,
                 )
             )
