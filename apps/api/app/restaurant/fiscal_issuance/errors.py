@@ -59,3 +59,11 @@ class FiscalProviderBindingMismatchError(FiscalIssuanceError):
 
 class FiscalRecoveryInconclusiveError(FiscalIssuanceError):
     code = 'FISCAL_RECOVERY_INCONCLUSIVE'
+
+
+class FiscalResultConflictError(FiscalIssuanceError):
+    code = 'FISCAL_RESULT_CONFLICT'
+
+
+class FiscalArtifactConflictError(FiscalIssuanceError):
+    code = 'FISCAL_ARTIFACT_CONFLICT'

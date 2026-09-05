@@ -95,6 +95,16 @@ def sql_connection(integration_settings: Settings):
     finally:
         with connection.cursor() as cursor:
             cursor.execute(
+                'DELETE FROM billing_fiscal_artifacts WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM billing_fiscal_results WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
                 'DELETE FROM billing_issuance_attempts WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),

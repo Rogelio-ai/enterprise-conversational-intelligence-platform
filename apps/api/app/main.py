@@ -45,6 +45,7 @@ from app.restaurant.integrations.payments.registry import PaymentExecutorRegistr
 from app.restaurant.integrations.fiscal.credentials import (
     FiscalProviderCredentialResolver,
 )
+from app.restaurant.integrations.fiscal.artifact_storage import FiscalArtifactStoragePort
 from app.restaurant.integrations.fiscal.registry import FiscalProviderRegistry
 
 
@@ -64,6 +65,7 @@ def create_app(
     fiscal_providers: Mapping[str, object] | None = None,
     fiscal_provider_registry: FiscalProviderRegistry | None = None,
     fiscal_credential_resolver: FiscalProviderCredentialResolver | None = None,
+    fiscal_artifact_storage: FiscalArtifactStoragePort | None = None,
 ) -> FastAPI:
     runtime_settings = settings or get_settings()
     runtime_database = database or DatabaseManager(runtime_settings)
@@ -95,6 +97,7 @@ def create_app(
         fiscal_provider_registry or FiscalProviderRegistry(fiscal_providers)
     )
     app.state.fiscal_credential_resolver = fiscal_credential_resolver
+    app.state.fiscal_artifact_storage = fiscal_artifact_storage
     app.add_middleware(RuntimeMiddleware)
     register_error_handlers(app)
     app.include_router(health_router)

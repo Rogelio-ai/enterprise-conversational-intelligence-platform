@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from uuid import uuid4
@@ -16,6 +18,8 @@ from app.models import (
     BillingDocument,
     BillingDocumentLine,
     BillingDocumentLineTax,
+    BillingFiscalArtifact,
+    BillingFiscalResult,
     BillingIssuance,
     BillingIssuanceAttempt,
 )
@@ -29,6 +33,7 @@ from app.restaurant.fiscal_issuance.contracts import (
 )
 from app.restaurant.integrations.fiscal import errors as integration_errors
 from app.restaurant.integrations.fiscal.contracts import (
+    AuthoritativeFiscalResult,
     EphemeralFiscalProviderCredential,
     FiscalIssuanceLine,
     FiscalIssuanceLineTax,
@@ -41,6 +46,11 @@ from app.restaurant.integrations.fiscal.contracts import (
     FiscalRecoveryResult,
     FrozenFiscalPartySnapshot,
 )
+from app.restaurant.integrations.fiscal.artifact_storage import (
+    FiscalArtifactStoragePort,
+    FiscalArtifactStorageReceipt,
+    FiscalArtifactStorageRequest,
+)
 from app.restaurant.integrations.fiscal.credentials import (
     FiscalProviderCredentialBinding,
     FiscalProviderCredentialResolver,
@@ -51,6 +61,22 @@ from app.restaurant.integrations.fiscal.registry import FiscalProviderRegistry
 
 REQUEST_SCHEMA_VERSION = 1
 CLAIM_LEASE = timedelta(seconds=30)
+logger = logging.getLogger('ecip.fiscal_issuance')
+
+
+@dataclass(frozen=True, slots=True)
+class _StoredFiscalArtifact:
+    artifact_kind: str
+    media_type: str
+    storage_strategy: str
+    storage_reference: str
+    content_hash: str
+    byte_size: int
+    provider_artifact_reference: str | None
+
+
+class _ArtifactStorageFailure(RuntimeError):
+    pass
 
 
 def _now() -> datetime:
@@ -590,6 +616,216 @@ def _safe_result_values(
     return state, error_kind, error_message
 
 
+def _normalized_issued_at(value: datetime) -> datetime:
+    if value.tzinfo is not None:
+        return value.astimezone(UTC).replace(tzinfo=None)
+    return value
+
+
+def _result_fingerprint(
+    issuance: BillingIssuance,
+    *,
+    external_reference: str,
+    result: AuthoritativeFiscalResult,
+) -> str:
+    return _sha({
+        'schema_version': 1,
+        'tenant_id': issuance.tenant_id,
+        'organization_id': issuance.organization_id,
+        'location_id': issuance.location_id,
+        'billing_document_id': issuance.billing_document_id,
+        'billing_issuance_id': issuance.id,
+        'provider_key': issuance.provider_key,
+        'external_fiscal_identifier': result.external_fiscal_identifier,
+        'provider_external_reference': external_reference,
+        'fiscal_document_type': result.fiscal_document_type,
+        'fiscal_document_version': result.fiscal_document_version,
+        'issued_at': _normalized_issued_at(result.issued_at).isoformat(
+            timespec='microseconds'
+        ),
+    })
+
+
+async def _prepare_artifacts(
+    issuance: BillingIssuance,
+    result: AuthoritativeFiscalResult,
+    *,
+    storage: FiscalArtifactStoragePort | None,
+) -> tuple[_StoredFiscalArtifact, ...]:
+    prepared = []
+    for artifact in result.artifacts:
+        if artifact.content is None:
+            assert artifact.storage_strategy is not None
+            assert artifact.storage_reference is not None
+            assert artifact.content_hash is not None
+            assert artifact.byte_size is not None
+            prepared.append(_StoredFiscalArtifact(
+                artifact_kind=artifact.artifact_kind,
+                media_type=artifact.media_type,
+                storage_strategy=artifact.storage_strategy,
+                storage_reference=artifact.storage_reference,
+                content_hash=artifact.content_hash,
+                byte_size=artifact.byte_size,
+                provider_artifact_reference=artifact.provider_artifact_reference,
+            ))
+            continue
+        if storage is None or not isinstance(storage, FiscalArtifactStoragePort):
+            raise _ArtifactStorageFailure()
+        content_hash = hashlib.sha256(artifact.content).hexdigest()
+        byte_size = len(artifact.content)
+        request = FiscalArtifactStorageRequest(
+            tenant_id=issuance.tenant_id,
+            organization_id=issuance.organization_id,
+            location_id=issuance.location_id,
+            billing_issuance_id=issuance.id,
+            external_fiscal_identifier=result.external_fiscal_identifier,
+            artifact_kind=artifact.artifact_kind,
+            media_type=artifact.media_type,
+            content=artifact.content,
+            content_hash=content_hash,
+            byte_size=byte_size,
+        )
+        try:
+            receipt = await storage.store(request=request)
+        except Exception:
+            raise _ArtifactStorageFailure() from None
+        if not isinstance(receipt, FiscalArtifactStorageReceipt) or (
+            receipt.content_hash != content_hash or receipt.byte_size != byte_size
+        ):
+            raise _ArtifactStorageFailure()
+        prepared.append(_StoredFiscalArtifact(
+            artifact_kind=artifact.artifact_kind,
+            media_type=artifact.media_type,
+            storage_strategy=receipt.storage_strategy,
+            storage_reference=receipt.storage_reference,
+            content_hash=content_hash,
+            byte_size=byte_size,
+            provider_artifact_reference=artifact.provider_artifact_reference,
+        ))
+    return tuple(prepared)
+
+
+async def _persist_fiscal_result(
+    db: AsyncSession,
+    issuance: BillingIssuance,
+    attempt: BillingIssuanceAttempt,
+    *,
+    external_reference: str,
+    result: AuthoritativeFiscalResult,
+    artifacts: tuple[_StoredFiscalArtifact, ...],
+) -> BillingFiscalResult:
+    fingerprint = _result_fingerprint(
+        issuance, external_reference=external_reference, result=result
+    )
+    fiscal_result = await db.scalar(
+        select(BillingFiscalResult)
+        .where(BillingFiscalResult.billing_issuance_id == issuance.id)
+        .with_for_update()
+    )
+    issued_at = _normalized_issued_at(result.issued_at)
+    expected = (
+        issuance.tenant_id,
+        issuance.organization_id,
+        issuance.location_id,
+        issuance.billing_document_id,
+        issuance.provider_key,
+        result.external_fiscal_identifier,
+        external_reference,
+        result.fiscal_document_type,
+        result.fiscal_document_version,
+        issued_at,
+        fingerprint,
+    )
+    if fiscal_result is None:
+        fiscal_result = BillingFiscalResult(
+            tenant_id=issuance.tenant_id,
+            organization_id=issuance.organization_id,
+            location_id=issuance.location_id,
+            billing_document_id=issuance.billing_document_id,
+            billing_issuance_id=issuance.id,
+            successful_attempt_sequence=attempt.attempt_sequence,
+            provider_key=issuance.provider_key,
+            external_fiscal_identifier=result.external_fiscal_identifier,
+            provider_external_reference=external_reference,
+            fiscal_document_type=result.fiscal_document_type,
+            fiscal_document_version=result.fiscal_document_version,
+            issued_at=issued_at,
+            result_fingerprint=fingerprint,
+        )
+        db.add(fiscal_result)
+        await db.flush()
+    else:
+        actual = (
+            fiscal_result.tenant_id,
+            fiscal_result.organization_id,
+            fiscal_result.location_id,
+            fiscal_result.billing_document_id,
+            fiscal_result.provider_key,
+            fiscal_result.external_fiscal_identifier,
+            fiscal_result.provider_external_reference,
+            fiscal_result.fiscal_document_type,
+            fiscal_result.fiscal_document_version,
+            fiscal_result.issued_at,
+            fiscal_result.result_fingerprint,
+        )
+        if actual != expected:
+            raise errors.FiscalResultConflictError(
+                'Authoritative fiscal result conflicts with durable evidence'
+            )
+
+    for value in artifacts:
+        existing = await db.scalar(
+            select(BillingFiscalArtifact)
+            .where(
+                BillingFiscalArtifact.fiscal_result_id == fiscal_result.id,
+                BillingFiscalArtifact.artifact_kind == value.artifact_kind,
+            )
+            .with_for_update()
+        )
+        expected_artifact = (
+            issuance.tenant_id,
+            issuance.organization_id,
+            issuance.location_id,
+            value.media_type,
+            value.storage_strategy,
+            value.storage_reference,
+            value.content_hash,
+            value.byte_size,
+            value.provider_artifact_reference,
+        )
+        if existing is None:
+            db.add(BillingFiscalArtifact(
+                tenant_id=issuance.tenant_id,
+                organization_id=issuance.organization_id,
+                location_id=issuance.location_id,
+                fiscal_result_id=fiscal_result.id,
+                artifact_kind=value.artifact_kind,
+                media_type=value.media_type,
+                storage_strategy=value.storage_strategy,
+                storage_reference=value.storage_reference,
+                content_hash=value.content_hash,
+                byte_size=value.byte_size,
+                provider_artifact_reference=value.provider_artifact_reference,
+            ))
+        else:
+            actual_artifact = (
+                existing.tenant_id,
+                existing.organization_id,
+                existing.location_id,
+                existing.media_type,
+                existing.storage_strategy,
+                existing.storage_reference,
+                existing.content_hash,
+                existing.byte_size,
+                existing.provider_artifact_reference,
+            )
+            if actual_artifact != expected_artifact:
+                raise errors.FiscalArtifactConflictError(
+                    'Fiscal artifact conflicts with immutable durable evidence'
+                )
+    return fiscal_result
+
+
 async def _finish(
     db: AsyncSession,
     *,
@@ -601,6 +837,8 @@ async def _finish(
     external_status: str | None,
     error_kind: str | None,
     error_message: str | None,
+    fiscal_result: AuthoritativeFiscalResult | None = None,
+    artifacts: tuple[_StoredFiscalArtifact, ...] = (),
 ) -> BillingIssuance:
     try:
         issuance = await db.scalar(
@@ -636,6 +874,26 @@ async def _finish(
                 'Fiscal issuance attempt is not current'
             )
 
+        if state == 'SUCCEEDED' and (
+            fiscal_result is None or external_reference is None or not artifacts
+        ):
+            raise errors.FiscalIssuanceStateConflictError(
+                'Fiscal issuance cannot succeed without durable result and artifact evidence'
+            )
+        if fiscal_result is not None:
+            if external_reference is None:
+                raise errors.FiscalIssuanceStateConflictError(
+                    'Fiscal result requires a provider external reference'
+                )
+            await _persist_fiscal_result(
+                db,
+                issuance,
+                attempt,
+                external_reference=external_reference,
+                result=fiscal_result,
+                artifacts=artifacts,
+            )
+
         now = _now()
         issuance.state = state
         issuance.claim_token = None
@@ -660,12 +918,100 @@ async def _finish(
         })
         await db.commit()
         return issuance
+    except IntegrityError as exc:
+        await db.rollback()
+        raise errors.FiscalResultConflictError(
+            'Fiscal result or artifact violates immutable durable identity'
+        ) from exc
     except OperationalError as exc:
         await db.rollback()
         _translate_operational(exc)
     except Exception:
         await db.rollback()
         raise
+
+
+async def _finish_authoritative_success(
+    db: AsyncSession,
+    *,
+    issuance: BillingIssuance,
+    token: str,
+    external_reference: str,
+    external_status: str | None,
+    fiscal_result: AuthoritativeFiscalResult,
+    artifact_storage: FiscalArtifactStoragePort | None,
+) -> BillingIssuance:
+    issuance_tenant_id = issuance.tenant_id
+    issuance_id = issuance.id
+    try:
+        artifacts = await _prepare_artifacts(
+            issuance, fiscal_result, storage=artifact_storage
+        )
+    except _ArtifactStorageFailure:
+        logger.warning(
+            'Fiscal artifact persistence failed after authoritative provider success',
+            extra={
+                'event': 'fiscal_artifact_persistence_failed',
+                'tenant_id': issuance_tenant_id,
+                'organization_id': issuance.organization_id,
+                'location_id': issuance.location_id,
+                'billing_issuance_id': issuance_id,
+            },
+        )
+        return await _finish(
+            db,
+            tenant_id=issuance_tenant_id,
+            issuance_id=issuance_id,
+            token=token,
+            state='UNCERTAIN',
+            external_reference=external_reference,
+            external_status='ARTIFACT_PERSISTENCE_FAILED',
+            error_kind='ARTIFACT_PERSISTENCE_FAILED',
+            error_message=(
+                'Authoritative fiscal result exists but artifact persistence failed; '
+                'provider recovery is required'
+            ),
+            fiscal_result=fiscal_result,
+        )
+    try:
+        completed = await _finish(
+            db,
+            tenant_id=issuance_tenant_id,
+            issuance_id=issuance_id,
+            token=token,
+            state='SUCCEEDED',
+            external_reference=external_reference,
+            external_status=external_status,
+            error_kind=None,
+            error_message=None,
+            fiscal_result=fiscal_result,
+            artifacts=artifacts,
+        )
+    except (errors.FiscalResultConflictError, errors.FiscalArtifactConflictError):
+        await _finish(
+            db,
+            tenant_id=issuance_tenant_id,
+            issuance_id=issuance_id,
+            token=token,
+            state='UNCERTAIN',
+            external_reference=external_reference,
+            external_status='FISCAL_RESULT_CONFLICT',
+            error_kind='FISCAL_RESULT_CONFLICT',
+            error_message='Provider result conflicts with immutable fiscal evidence',
+        )
+        raise
+    logger.info(
+        'Authoritative fiscal result and artifact metadata persisted',
+        extra={
+            'event': 'fiscal_result_persisted',
+            'tenant_id': issuance_tenant_id,
+            'organization_id': issuance.organization_id,
+            'location_id': issuance.location_id,
+            'billing_issuance_id': issuance_id,
+            'artifact_count': len(artifacts),
+        },
+    )
+    return completed
 
 
 async def _credential(
@@ -972,6 +1318,7 @@ async def initiate_fiscal_issuance(
     command: InitiateFiscalIssuanceCommand,
     provider_registry: FiscalProviderRegistry,
     credential_resolver: FiscalProviderCredentialResolver | None = None,
+    artifact_storage: FiscalArtifactStoragePort | None = None,
 ) -> tuple[BillingIssuanceProjection, bool]:
     """Reserve, commit, and execute exactly one initial fiscal ISSUE attempt."""
 
@@ -1032,17 +1379,30 @@ async def initiate_fiscal_issuance(
         )
 
     state, error_kind, error_message = _safe_result_values(result)
-    issuance = await _finish(
-        db,
-        tenant_id=issuance.tenant_id,
-        issuance_id=issuance.id,
-        token=token,
-        state=state,
-        external_reference=result.external_reference,
-        external_status=result.external_status,
-        error_kind=error_kind,
-        error_message=error_message,
-    )
+    if state == 'SUCCEEDED':
+        assert result.external_reference is not None
+        assert result.fiscal_result is not None
+        issuance = await _finish_authoritative_success(
+            db,
+            issuance=issuance,
+            token=token,
+            external_reference=result.external_reference,
+            external_status=result.external_status,
+            fiscal_result=result.fiscal_result,
+            artifact_storage=artifact_storage,
+        )
+    else:
+        issuance = await _finish(
+            db,
+            tenant_id=issuance.tenant_id,
+            issuance_id=issuance.id,
+            token=token,
+            state=state,
+            external_reference=result.external_reference,
+            external_status=result.external_status,
+            error_kind=error_kind,
+            error_message=error_message,
+        )
     return await _projection(db, issuance), replay
 
 
@@ -1053,6 +1413,7 @@ async def recover_fiscal_issuance(
     command: RecoverFiscalIssuanceCommand,
     provider_registry: FiscalProviderRegistry,
     credential_resolver: FiscalProviderCredentialResolver | None = None,
+    artifact_storage: FiscalArtifactStoragePort | None = None,
 ) -> BillingIssuanceProjection:
     """Recover one uncertain issuance without ever invoking issue()."""
 
@@ -1120,21 +1481,35 @@ async def recover_fiscal_issuance(
         )
 
     state, error_kind, error_message = _safe_recovery_values(result)
-    issuance = await _finish(
-        db,
-        tenant_id=issuance.tenant_id,
-        issuance_id=issuance.id,
-        token=token,
-        state=state,
-        external_reference=result.external_reference,
-        external_status=(
-            result.outcome.value
-            if result.outcome is FiscalRecoveryOutcome.DEFINITE_ABSENCE
-            else result.external_status or result.outcome.value
-        ),
-        error_kind=error_kind,
-        error_message=error_message,
+    final_external_status = (
+        result.outcome.value
+        if result.outcome is FiscalRecoveryOutcome.DEFINITE_ABSENCE
+        else result.external_status or result.outcome.value
     )
+    if state == 'SUCCEEDED':
+        assert result.external_reference is not None
+        assert result.fiscal_result is not None
+        issuance = await _finish_authoritative_success(
+            db,
+            issuance=issuance,
+            token=token,
+            external_reference=result.external_reference,
+            external_status=final_external_status,
+            fiscal_result=result.fiscal_result,
+            artifact_storage=artifact_storage,
+        )
+    else:
+        issuance = await _finish(
+            db,
+            tenant_id=issuance.tenant_id,
+            issuance_id=issuance.id,
+            token=token,
+            state=state,
+            external_reference=result.external_reference,
+            external_status=final_external_status,
+            error_kind=error_kind,
+            error_message=error_message,
+        )
     return await _projection(db, issuance)
 
 
@@ -1145,6 +1520,7 @@ async def retry_fiscal_issuance(
     command: RetryFiscalIssuanceCommand,
     provider_registry: FiscalProviderRegistry,
     credential_resolver: FiscalProviderCredentialResolver | None = None,
+    artifact_storage: FiscalArtifactStoragePort | None = None,
 ) -> BillingIssuanceProjection:
     """Explicitly retry the original provider operation when durable evidence is safe."""
 
@@ -1231,15 +1607,28 @@ async def retry_fiscal_issuance(
         )
 
     state, error_kind, error_message = _safe_result_values(result)
-    issuance = await _finish(
-        db,
-        tenant_id=issuance.tenant_id,
-        issuance_id=issuance.id,
-        token=token,
-        state=state,
-        external_reference=result.external_reference,
-        external_status=result.external_status,
-        error_kind=error_kind,
-        error_message=error_message,
-    )
+    if state == 'SUCCEEDED':
+        assert result.external_reference is not None
+        assert result.fiscal_result is not None
+        issuance = await _finish_authoritative_success(
+            db,
+            issuance=issuance,
+            token=token,
+            external_reference=result.external_reference,
+            external_status=result.external_status,
+            fiscal_result=result.fiscal_result,
+            artifact_storage=artifact_storage,
+        )
+    else:
+        issuance = await _finish(
+            db,
+            tenant_id=issuance.tenant_id,
+            issuance_id=issuance.id,
+            token=token,
+            state=state,
+            external_reference=result.external_reference,
+            external_status=result.external_status,
+            error_kind=error_kind,
+            error_message=error_message,
+        )
     return await _projection(db, issuance)

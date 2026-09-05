@@ -562,3 +562,131 @@ class BillingIssuanceAttempt(Base):
     correlation_id: Mapped[str | None] = mapped_column(
         String(128, collation='ascii_bin'), nullable=True
     )
+
+
+class BillingFiscalResult(Base):
+    __tablename__ = 'billing_fiscal_results'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['billing_issuance_id', 'tenant_id', 'organization_id', 'location_id'],
+            [
+                'billing_issuances.id',
+                'billing_issuances.tenant_id',
+                'billing_issuances.organization_id',
+                'billing_issuances.location_id',
+            ],
+            name='fk_billing_fiscal_results_issuance_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['billing_document_id', 'tenant_id', 'organization_id', 'location_id'],
+            [
+                'billing_documents.id',
+                'billing_documents.tenant_id',
+                'billing_documents.organization_id',
+                'billing_documents.location_id',
+            ],
+            name='fk_billing_fiscal_results_document_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['billing_issuance_id', 'successful_attempt_sequence'],
+            [
+                'billing_issuance_attempts.billing_issuance_id',
+                'billing_issuance_attempts.attempt_sequence',
+            ],
+            name='fk_billing_fiscal_results_success_attempt', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id',
+            name='uq_billing_fiscal_results_scope',
+        ),
+        UniqueConstraint(
+            'billing_issuance_id', name='uq_billing_fiscal_results_issuance',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'provider_key', 'external_fiscal_identifier',
+            name='uq_billing_fiscal_results_external_identity',
+        ),
+        CheckConstraint(
+            'successful_attempt_sequence >= 1',
+            name='ck_billing_fiscal_results_attempt_sequence',
+        ),
+        Index(
+            'ix_billing_fiscal_results_document',
+            'tenant_id', 'billing_document_id', 'id',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    billing_document_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    billing_issuance_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    successful_attempt_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    provider_key: Mapped[str] = mapped_column(
+        String(128, collation='utf8mb4_bin'), nullable=False
+    )
+    external_fiscal_identifier: Mapped[str] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=False
+    )
+    provider_external_reference: Mapped[str] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=False
+    )
+    fiscal_document_type: Mapped[str] = mapped_column(String(64), nullable=False)
+    fiscal_document_version: Mapped[str] = mapped_column(String(32), nullable=False)
+    issued_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    result_fingerprint: Mapped[str] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.current_timestamp()
+    )
+
+
+class BillingFiscalArtifact(Base):
+    __tablename__ = 'billing_fiscal_artifacts'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['fiscal_result_id', 'tenant_id', 'organization_id', 'location_id'],
+            [
+                'billing_fiscal_results.id',
+                'billing_fiscal_results.tenant_id',
+                'billing_fiscal_results.organization_id',
+                'billing_fiscal_results.location_id',
+            ],
+            name='fk_billing_fiscal_artifacts_result_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'fiscal_result_id', 'artifact_kind',
+            name='uq_billing_fiscal_artifacts_kind',
+        ),
+        CheckConstraint(
+            'byte_size > 0', name='ck_billing_fiscal_artifacts_byte_size',
+        ),
+        Index(
+            'ix_billing_fiscal_artifacts_result',
+            'tenant_id', 'fiscal_result_id', 'id',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    fiscal_result_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    artifact_kind: Mapped[str] = mapped_column(String(64), nullable=False)
+    media_type: Mapped[str] = mapped_column(String(128), nullable=False)
+    storage_strategy: Mapped[str] = mapped_column(String(64), nullable=False)
+    storage_reference: Mapped[str] = mapped_column(
+        String(500, collation='utf8mb4_bin'), nullable=False
+    )
+    content_hash: Mapped[str] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=False
+    )
+    byte_size: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    provider_artifact_reference: Mapped[str | None] = mapped_column(
+        String(500, collation='utf8mb4_bin'), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.current_timestamp()
+    )

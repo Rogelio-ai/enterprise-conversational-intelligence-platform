@@ -131,6 +131,7 @@ async def initiate_fiscal_issuance(
             ),
             provider_registry=db.info['fiscal_provider_registry'],
             credential_resolver=db.info.get('fiscal_credential_resolver'),
+            artifact_storage=db.info.get('fiscal_artifact_storage'),
         )
     except Exception as exc:
         raise _error(exc) from exc
@@ -164,6 +165,7 @@ async def recover_fiscal_issuance(
             ),
             provider_registry=db.info['fiscal_provider_registry'],
             credential_resolver=db.info.get('fiscal_credential_resolver'),
+            artifact_storage=db.info.get('fiscal_artifact_storage'),
         )
     except Exception as exc:
         raise _error(exc) from exc
@@ -194,6 +196,7 @@ async def retry_fiscal_issuance(
             ),
             provider_registry=db.info['fiscal_provider_registry'],
             credential_resolver=db.info.get('fiscal_credential_resolver'),
+            artifact_storage=db.info.get('fiscal_artifact_storage'),
         )
     except Exception as exc:
         raise _error(exc) from exc

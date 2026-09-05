@@ -1,13 +1,17 @@
 from __future__ import annotations
 
 from collections import deque
+from datetime import UTC, datetime
+import hashlib
 
 from app.restaurant.integrations.fiscal.contracts import (
+    AuthoritativeFiscalResult,
     EphemeralFiscalProviderCredential,
     FiscalIssuanceOutcome,
     FiscalIssuanceRecoveryRequest,
     FiscalIssuanceRequest,
     FiscalIssuanceResult,
+    FiscalArtifactEvidence,
     FiscalProviderErrorKind,
     FiscalRecoveryOutcome,
     FiscalRecoveryResult,
@@ -39,6 +43,26 @@ class DeterministicFiscalProvider:
     def _reference(request_fingerprint: str) -> str:
         return f'fake-fiscal-{request_fingerprint[:24]}'
 
+    @staticmethod
+    def _fiscal_result(request_fingerprint: str) -> AuthoritativeFiscalResult:
+        content = f'<fake-fiscal>{request_fingerprint}</fake-fiscal>'.encode()
+        reference = DeterministicFiscalProvider._reference(request_fingerprint)
+        return AuthoritativeFiscalResult(
+            external_fiscal_identifier=f'fake-id-{request_fingerprint[:24]}',
+            fiscal_document_type='INVOICE',
+            fiscal_document_version='TEST-1',
+            issued_at=datetime(2026, 1, 1, tzinfo=UTC),
+            artifacts=(FiscalArtifactEvidence(
+                artifact_kind='STAMPED_FISCAL_DOCUMENT',
+                media_type='application/xml',
+                storage_strategy='FAKE_PROVIDER_REFERENCE',
+                storage_reference=f'fake://fiscal/{reference}',
+                content_hash=hashlib.sha256(content).hexdigest(),
+                byte_size=len(content),
+                provider_artifact_reference=reference,
+            ),),
+        )
+
     async def issue(
         self,
         *,
@@ -61,6 +85,7 @@ class DeterministicFiscalProvider:
                 outcome=outcome,
                 external_reference=self._reference(request.request_fingerprint),
                 external_status=outcome.value,
+                fiscal_result=self._fiscal_result(request.request_fingerprint),
             )
         else:
             error_kind = {
@@ -105,6 +130,7 @@ class DeterministicFiscalProvider:
                     or self._reference(request.request_fingerprint)
                 ),
                 external_status=outcome.value,
+                fiscal_result=self._fiscal_result(request.request_fingerprint),
             )
         if outcome is FiscalRecoveryOutcome.DEFINITE_ABSENCE:
             self._operations.pop(request.provider_idempotency_key, None)
