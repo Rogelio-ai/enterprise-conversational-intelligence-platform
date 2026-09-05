@@ -17,6 +17,7 @@ from app.api.routes.customers import router as customers_router
 from app.api.routes.diner_sessions import router as diner_sessions_router
 from app.api.routes.conversations import router as conversations_router
 from app.api.routes.health import router as health_router
+from app.api.routes.fiscal_issuance import router as fiscal_issuance_router
 from app.api.routes.locations import router as locations_router
 from app.api.routes.menus import router as menus_router
 from app.api.routes.organizations import router as organizations_router
@@ -41,6 +42,10 @@ from app.core.middleware import RuntimeMiddleware
 from app.db.session import DatabaseManager
 from app.restaurant.integrations.payments.credentials import MerchantCredentialResolver
 from app.restaurant.integrations.payments.registry import PaymentExecutorRegistry
+from app.restaurant.integrations.fiscal.credentials import (
+    FiscalProviderCredentialResolver,
+)
+from app.restaurant.integrations.fiscal.registry import FiscalProviderRegistry
 
 
 class DatabaseLifecycle(Protocol):
@@ -56,6 +61,9 @@ def create_app(
     payment_executors: Mapping[str, object] | None = None,
     payment_executor_registry: PaymentExecutorRegistry | None = None,
     merchant_credential_resolver: MerchantCredentialResolver | None = None,
+    fiscal_providers: Mapping[str, object] | None = None,
+    fiscal_provider_registry: FiscalProviderRegistry | None = None,
+    fiscal_credential_resolver: FiscalProviderCredentialResolver | None = None,
 ) -> FastAPI:
     runtime_settings = settings or get_settings()
     runtime_database = database or DatabaseManager(runtime_settings)
@@ -83,6 +91,10 @@ def create_app(
         payment_executor_registry or PaymentExecutorRegistry(payment_executors)
     )
     app.state.merchant_credential_resolver = merchant_credential_resolver
+    app.state.fiscal_provider_registry = (
+        fiscal_provider_registry or FiscalProviderRegistry(fiscal_providers)
+    )
+    app.state.fiscal_credential_resolver = fiscal_credential_resolver
     app.add_middleware(RuntimeMiddleware)
     register_error_handlers(app)
     app.include_router(health_router)
@@ -100,6 +112,7 @@ def create_app(
     app.include_router(restaurant_checks_router)
     app.include_router(restaurant_payments_router)
     app.include_router(billing_router)
+    app.include_router(fiscal_issuance_router)
     app.include_router(pos_submissions_router)
     app.include_router(preparation_router)
     app.include_router(preparation_delivery_router)

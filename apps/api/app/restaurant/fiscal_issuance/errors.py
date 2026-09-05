@@ -13,6 +13,10 @@ class FiscalBillingDocumentNotFoundError(FiscalIssuanceError):
     code = 'FISCAL_BILLING_DOCUMENT_NOT_FOUND'
 
 
+class FiscalIssuanceNotFoundError(FiscalIssuanceError):
+    code = 'FISCAL_ISSUANCE_NOT_FOUND'
+
+
 class FiscalCanonicalEvidenceInvalidError(FiscalIssuanceError):
     code = 'FISCAL_CANONICAL_EVIDENCE_INVALID'
 

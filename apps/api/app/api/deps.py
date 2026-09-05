@@ -34,6 +34,12 @@ async def get_db(request: Request) -> AsyncGenerator[AsyncSession, None]:
         session.info['merchant_credential_resolver'] = (
             request.app.state.merchant_credential_resolver
         )
+        session.info['fiscal_provider_registry'] = (
+            request.app.state.fiscal_provider_registry
+        )
+        session.info['fiscal_credential_resolver'] = (
+            request.app.state.fiscal_credential_resolver
+        )
         yield session
 
 

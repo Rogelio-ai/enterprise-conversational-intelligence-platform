@@ -815,9 +815,7 @@ async def _claim_operation(
             .execution_options(populate_existing=True)
         )
         if issuance is None:
-            raise errors.FiscalIssuanceStateConflictError(
-                'Fiscal issuance does not exist in the requested scope'
-            )
+            raise errors.FiscalIssuanceNotFoundError()
 
         now = _now()
         latest = await db.scalar(
@@ -946,6 +944,25 @@ def _translate_operational(exc: OperationalError) -> None:
             'Concurrent fiscal issuance operation lost serialization'
         ) from exc
     raise exc
+
+
+async def get_fiscal_issuance(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    organization_id: int,
+    location_id: int,
+    issuance_id: int,
+) -> BillingIssuanceProjection:
+    issuance = await db.scalar(select(BillingIssuance).where(
+        BillingIssuance.id == issuance_id,
+        BillingIssuance.tenant_id == tenant_id,
+        BillingIssuance.organization_id == organization_id,
+        BillingIssuance.location_id == location_id,
+    ))
+    if issuance is None:
+        raise errors.FiscalIssuanceNotFoundError()
+    return await _projection(db, issuance)
 
 
 async def initiate_fiscal_issuance(
