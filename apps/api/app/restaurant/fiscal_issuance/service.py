@@ -24,6 +24,8 @@ from app.restaurant.fiscal_issuance.contracts import (
     BillingIssuanceAttemptProjection,
     BillingIssuanceProjection,
     InitiateFiscalIssuanceCommand,
+    RecoverFiscalIssuanceCommand,
+    RetryFiscalIssuanceCommand,
 )
 from app.restaurant.integrations.fiscal import errors as integration_errors
 from app.restaurant.integrations.fiscal.contracts import (
@@ -31,9 +33,12 @@ from app.restaurant.integrations.fiscal.contracts import (
     FiscalIssuanceLine,
     FiscalIssuanceLineTax,
     FiscalIssuanceOutcome,
+    FiscalIssuanceRecoveryRequest,
     FiscalIssuanceRequest,
     FiscalIssuanceResult,
     FiscalProviderErrorKind,
+    FiscalRecoveryOutcome,
+    FiscalRecoveryResult,
     FrozenFiscalPartySnapshot,
 )
 from app.restaurant.integrations.fiscal.credentials import (
@@ -112,6 +117,23 @@ def _validate_command(command: InitiateFiscalIssuanceCommand) -> None:
     ):
         raise errors.FiscalIssuanceRequestInvalidError(
             'Fiscal issuance idempotency key is invalid'
+        )
+
+
+def _validate_existing_command(
+    command: RecoverFiscalIssuanceCommand | RetryFiscalIssuanceCommand,
+) -> None:
+    identifiers = (
+        command.organization_id,
+        command.location_id,
+        command.billing_issuance_id,
+    )
+    if any(
+        not isinstance(value, int) or isinstance(value, bool) or value <= 0
+        for value in identifiers
+    ):
+        raise errors.FiscalIssuanceRequestInvalidError(
+            'Fiscal issuance identifiers must be positive integers'
         )
 
 
@@ -592,9 +614,14 @@ async def _finish(
         )
         if issuance is None:
             raise errors.FiscalIssuanceStateConflictError()
-        if issuance.claim_token != token or issuance.state != 'IN_PROGRESS':
-            raise errors.FiscalIssuanceConcurrencyConflictError(
-                'Fiscal issuance result lost ownership of the initial attempt'
+        if (
+            issuance.claim_token != token
+            or issuance.state != 'IN_PROGRESS'
+            or issuance.claim_expires_at is None
+            or issuance.claim_expires_at <= _now()
+        ):
+            raise errors.FiscalIssuanceStaleFenceError(
+                'Fiscal issuance result lost ownership of its attempt'
             )
         attempt = await db.scalar(
             select(BillingIssuanceAttempt)
@@ -606,7 +633,7 @@ async def _finish(
         )
         if attempt is None or attempt.result is not None:
             raise errors.FiscalIssuanceStateConflictError(
-                'Initial fiscal issuance attempt is not current'
+                'Fiscal issuance attempt is not current'
             )
 
         now = _now()
@@ -688,6 +715,228 @@ async def _fail_resolution(
         error_kind=error_kind,
         error_message=error_message,
     )
+
+
+def _recovery_request(issuance: BillingIssuance) -> FiscalIssuanceRecoveryRequest:
+    return FiscalIssuanceRecoveryRequest(
+        tenant_id=issuance.tenant_id,
+        organization_id=issuance.organization_id,
+        location_id=issuance.location_id,
+        billing_document_id=issuance.billing_document_id,
+        operation_reference=(
+            f'fiscal-issuance-v1:{issuance.tenant_id}:'
+            f'{issuance.billing_document_id}'
+        ),
+        provider_idempotency_key=issuance.provider_idempotency_key,
+        request_fingerprint=issuance.request_fingerprint,
+        request_schema_version=issuance.request_schema_version,
+        external_reference=issuance.external_reference,
+        external_status=issuance.external_status,
+    )
+
+
+async def _retry_request(
+    db: AsyncSession,
+    *,
+    issuance: BillingIssuance,
+) -> FiscalIssuanceRequest:
+    command = InitiateFiscalIssuanceCommand(
+        organization_id=issuance.organization_id,
+        location_id=issuance.location_id,
+        billing_document_id=issuance.billing_document_id,
+        provider_key=issuance.provider_key,
+        credential_binding=issuance.credential_binding,
+        idempotency_key=issuance.idempotency_key,
+    )
+    _, request = await _canonical_request(
+        db,
+        tenant_id=issuance.tenant_id,
+        command=command,
+        lock_document=False,
+    )
+    if (
+        request.request_fingerprint != issuance.request_fingerprint
+        or request.provider_idempotency_key != issuance.provider_idempotency_key
+        or request.request_schema_version != issuance.request_schema_version
+    ):
+        raise errors.FiscalProviderBindingMismatchError(
+            'Durable fiscal issuance evidence no longer matches its provider binding'
+        )
+    return request
+
+
+def _complete_stale_attempt(
+    issuance: BillingIssuance,
+    attempt: BillingIssuanceAttempt,
+    *,
+    now: datetime,
+) -> None:
+    attempt.completed_at = now
+    attempt.result = 'UNCERTAIN'
+    attempt.external_reference = issuance.external_reference
+    attempt.external_status = 'CLAIM_EXPIRED'
+    attempt.error_kind = FiscalProviderErrorKind.AMBIGUOUS_RESULT.value
+    attempt.error_message = 'Claim expired after provider interaction may have begun'
+    attempt.result_fingerprint = _sha({
+        'schema_version': 1,
+        'result': attempt.result,
+        'external_reference': attempt.external_reference,
+        'external_status': attempt.external_status,
+        'error_kind': attempt.error_kind,
+    })
+    issuance.state = 'UNCERTAIN'
+    issuance.claim_token = None
+    issuance.claim_expires_at = None
+    issuance.external_status = attempt.external_status
+    issuance.last_error_kind = attempt.error_kind
+    issuance.last_error_message = attempt.error_message
+    issuance.completed_at = None
+
+
+async def _claim_operation(
+    db: AsyncSession,
+    *,
+    execution: ExecutionContext,
+    organization_id: int,
+    location_id: int,
+    issuance_id: int,
+    attempt_type: str,
+) -> tuple[BillingIssuance, str | None]:
+    try:
+        issuance = await db.scalar(
+            select(BillingIssuance)
+            .where(
+                BillingIssuance.id == issuance_id,
+                BillingIssuance.tenant_id == execution.tenant_id,
+                BillingIssuance.organization_id == organization_id,
+                BillingIssuance.location_id == location_id,
+            )
+            .with_for_update()
+            .execution_options(populate_existing=True)
+        )
+        if issuance is None:
+            raise errors.FiscalIssuanceStateConflictError(
+                'Fiscal issuance does not exist in the requested scope'
+            )
+
+        now = _now()
+        latest = await db.scalar(
+            select(BillingIssuanceAttempt)
+            .where(BillingIssuanceAttempt.billing_issuance_id == issuance.id)
+            .order_by(BillingIssuanceAttempt.attempt_sequence.desc())
+            .limit(1)
+            .with_for_update()
+        )
+        if issuance.attempt_count != (latest.attempt_sequence if latest else 0):
+            raise errors.FiscalIssuanceStateConflictError(
+                'Fiscal issuance attempt sequence evidence is inconsistent'
+            )
+
+        if issuance.state == 'IN_PROGRESS':
+            if (
+                issuance.claim_expires_at is not None
+                and issuance.claim_expires_at > now
+            ):
+                raise errors.FiscalIssuanceConcurrencyConflictError(
+                    'Fiscal issuance has an active provider-interaction claim'
+                )
+            if (
+                latest is None
+                or latest.claim_token != issuance.claim_token
+                or latest.result is not None
+            ):
+                raise errors.FiscalIssuanceStateConflictError(
+                    'Expired fiscal issuance claim has inconsistent attempt evidence'
+                )
+            _complete_stale_attempt(issuance, latest, now=now)
+
+        if attempt_type == 'RECOVER':
+            if issuance.state == 'SUCCEEDED':
+                await db.commit()
+                return issuance, None
+            if issuance.state != 'UNCERTAIN':
+                raise errors.FiscalIssuanceRecoveryNotAllowedError(
+                    f'Recovery is not allowed from fiscal issuance state {issuance.state}'
+                )
+        elif attempt_type == 'RETRY':
+            safe_recovery = (
+                latest is not None
+                and latest.attempt_type == 'RECOVER'
+                and latest.result is not None
+                and latest.external_status == FiscalRecoveryOutcome.DEFINITE_ABSENCE.value
+            )
+            definite_retryable_failure = (
+                issuance.state == 'FAILED'
+                and issuance.last_error_kind
+                != FiscalProviderErrorKind.BUSINESS_REJECTION.value
+            )
+            if not (safe_recovery or definite_retryable_failure):
+                raise errors.FiscalIssuanceRetryNotAllowedError(
+                    f'Retry is not allowed from fiscal issuance state {issuance.state}'
+                )
+        else:
+            raise errors.FiscalIssuanceStateConflictError(
+                'Unsupported fiscal issuance attempt type'
+            )
+
+        token = str(uuid4())
+        sequence = issuance.attempt_count + 1
+        issuance.state = 'IN_PROGRESS'
+        issuance.claim_token = token
+        issuance.claim_expires_at = now + CLAIM_LEASE
+        issuance.attempt_count = sequence
+        issuance.last_error_kind = None
+        issuance.last_error_message = None
+        issuance.completed_at = None
+        db.add(BillingIssuanceAttempt(
+            tenant_id=issuance.tenant_id,
+            organization_id=issuance.organization_id,
+            location_id=issuance.location_id,
+            billing_issuance_id=issuance.id,
+            attempt_sequence=sequence,
+            attempt_type=attempt_type,
+            claim_token=token,
+            started_at=now,
+            completed_at=None,
+            result=None,
+            actor_type=execution.actor_type.value,
+            actor_id=execution.principal_id,
+            actor_reference=execution.principal_reference,
+            correlation_id=execution.correlation_id,
+        ))
+        await db.commit()
+        return issuance, token
+    except OperationalError as exc:
+        await db.rollback()
+        _translate_operational(exc)
+    except Exception:
+        await db.rollback()
+        raise
+
+
+def _safe_recovery_values(
+    result: FiscalRecoveryResult,
+) -> tuple[str, str | None, str | None]:
+    state = {
+        FiscalRecoveryOutcome.RECOVERED_SUCCESS: 'SUCCEEDED',
+        FiscalRecoveryOutcome.DEFINITE_ABSENCE: 'FAILED',
+        FiscalRecoveryOutcome.DEFINITE_FAILURE: 'FAILED',
+        FiscalRecoveryOutcome.REJECTED: 'REJECTED',
+        FiscalRecoveryOutcome.STILL_UNCERTAIN: 'UNCERTAIN',
+    }[result.outcome]
+    error_kind = None if result.error_kind is None else result.error_kind.value
+    error_message = {
+        FiscalRecoveryOutcome.RECOVERED_SUCCESS: None,
+        FiscalRecoveryOutcome.DEFINITE_ABSENCE:
+            'Fiscal recovery proved definite absence; explicit retry is authorized',
+        FiscalRecoveryOutcome.DEFINITE_FAILURE:
+            'Fiscal provider reported a definite recovery failure',
+        FiscalRecoveryOutcome.REJECTED:
+            'Fiscal provider reported a definite rejection during recovery',
+        FiscalRecoveryOutcome.STILL_UNCERTAIN:
+            'Fiscal recovery remains inconclusive',
+    }[result.outcome]
+    return state, error_kind, error_message
 
 
 def _translate_operational(exc: OperationalError) -> None:
@@ -778,3 +1027,202 @@ async def initiate_fiscal_issuance(
         error_message=error_message,
     )
     return await _projection(db, issuance), replay
+
+
+async def recover_fiscal_issuance(
+    db: AsyncSession,
+    *,
+    execution: ExecutionContext,
+    command: RecoverFiscalIssuanceCommand,
+    provider_registry: FiscalProviderRegistry,
+    credential_resolver: FiscalProviderCredentialResolver | None = None,
+) -> BillingIssuanceProjection:
+    """Recover one uncertain issuance without ever invoking issue()."""
+
+    _validate_existing_command(command)
+    issuance, token = await _claim_operation(
+        db,
+        execution=execution,
+        organization_id=command.organization_id,
+        location_id=command.location_id,
+        issuance_id=command.billing_issuance_id,
+        attempt_type='RECOVER',
+    )
+    if token is None:
+        return await _projection(db, issuance)
+
+    request = _recovery_request(issuance)
+    try:
+        provider = provider_registry.resolve(issuance.provider_key)
+        if not isinstance(provider, FiscalIssuancePort):
+            raise integration_errors.FiscalProviderNotRegisteredError(
+                'Bound fiscal provider does not implement recovery'
+            )
+    except integration_errors.FiscalProviderRegistryError:
+        await _finish(
+            db,
+            tenant_id=issuance.tenant_id,
+            issuance_id=issuance.id,
+            token=token,
+            state='UNCERTAIN',
+            external_reference=issuance.external_reference,
+            external_status='PROVIDER_UNAVAILABLE',
+            error_kind='PROVIDER_UNAVAILABLE',
+            error_message='Bound fiscal provider is unavailable for recovery',
+        )
+        raise errors.FiscalProviderUnavailableError() from None
+
+    try:
+        credential = await _credential(
+            issuance=issuance,
+            resolver=credential_resolver,
+        )
+    except errors.FiscalCredentialResolutionError:
+        await _finish(
+            db,
+            tenant_id=issuance.tenant_id,
+            issuance_id=issuance.id,
+            token=token,
+            state='UNCERTAIN',
+            external_reference=issuance.external_reference,
+            external_status='CREDENTIAL_RESOLUTION_FAILED',
+            error_kind='CREDENTIAL_RESOLUTION_FAILED',
+            error_message='Fiscal provider credential could not be resolved',
+        )
+        raise
+
+    try:
+        result = await provider.recover(request=request, credential=credential)
+        if not isinstance(result, FiscalRecoveryResult):
+            raise TypeError('Invalid fiscal provider recovery result')
+    except Exception:
+        result = FiscalRecoveryResult(
+            outcome=FiscalRecoveryOutcome.STILL_UNCERTAIN,
+            error_kind=FiscalProviderErrorKind.AMBIGUOUS_RESULT,
+            error_message='Fiscal recovery remains inconclusive',
+        )
+
+    state, error_kind, error_message = _safe_recovery_values(result)
+    issuance = await _finish(
+        db,
+        tenant_id=issuance.tenant_id,
+        issuance_id=issuance.id,
+        token=token,
+        state=state,
+        external_reference=result.external_reference,
+        external_status=(
+            result.outcome.value
+            if result.outcome is FiscalRecoveryOutcome.DEFINITE_ABSENCE
+            else result.external_status or result.outcome.value
+        ),
+        error_kind=error_kind,
+        error_message=error_message,
+    )
+    return await _projection(db, issuance)
+
+
+async def retry_fiscal_issuance(
+    db: AsyncSession,
+    *,
+    execution: ExecutionContext,
+    command: RetryFiscalIssuanceCommand,
+    provider_registry: FiscalProviderRegistry,
+    credential_resolver: FiscalProviderCredentialResolver | None = None,
+) -> BillingIssuanceProjection:
+    """Explicitly retry the original provider operation when durable evidence is safe."""
+
+    _validate_existing_command(command)
+    issuance, token = await _claim_operation(
+        db,
+        execution=execution,
+        organization_id=command.organization_id,
+        location_id=command.location_id,
+        issuance_id=command.billing_issuance_id,
+        attempt_type='RETRY',
+    )
+    assert token is not None
+    issuance_tenant_id = issuance.tenant_id
+    issuance_id = issuance.id
+    prior_external_reference = issuance.external_reference
+
+    try:
+        request = await _retry_request(db, issuance=issuance)
+        await db.commit()
+    except Exception:
+        await db.rollback()
+        await _finish(
+            db,
+            tenant_id=issuance_tenant_id,
+            issuance_id=issuance_id,
+            token=token,
+            state='FAILED',
+            external_reference=prior_external_reference,
+            external_status='PROVIDER_BINDING_MISMATCH',
+            error_kind='PROVIDER_BINDING_MISMATCH',
+            error_message='Durable fiscal issuance evidence failed binding validation',
+        )
+        raise
+
+    try:
+        provider = provider_registry.resolve(issuance.provider_key)
+        if not isinstance(provider, FiscalIssuancePort):
+            raise integration_errors.FiscalProviderNotRegisteredError(
+                'Bound fiscal provider does not implement issuance'
+            )
+    except integration_errors.FiscalProviderRegistryError:
+        await _finish(
+            db,
+            tenant_id=issuance.tenant_id,
+            issuance_id=issuance.id,
+            token=token,
+            state='FAILED',
+            external_reference=issuance.external_reference,
+            external_status='PROVIDER_UNAVAILABLE',
+            error_kind='PROVIDER_UNAVAILABLE',
+            error_message='Bound fiscal provider is unavailable',
+        )
+        raise errors.FiscalProviderUnavailableError() from None
+
+    try:
+        credential = await _credential(
+            issuance=issuance,
+            resolver=credential_resolver,
+        )
+    except errors.FiscalCredentialResolutionError:
+        await _finish(
+            db,
+            tenant_id=issuance.tenant_id,
+            issuance_id=issuance.id,
+            token=token,
+            state='FAILED',
+            external_reference=issuance.external_reference,
+            external_status='CREDENTIAL_RESOLUTION_FAILED',
+            error_kind='CREDENTIAL_RESOLUTION_FAILED',
+            error_message='Fiscal provider credential could not be resolved',
+        )
+        raise
+
+    try:
+        result = await provider.issue(request=request, credential=credential)
+        if not isinstance(result, FiscalIssuanceResult):
+            raise TypeError('Invalid fiscal provider result')
+    except Exception:
+        result = FiscalIssuanceResult(
+            outcome=FiscalIssuanceOutcome.UNCERTAIN,
+            error_kind=FiscalProviderErrorKind.AMBIGUOUS_RESULT,
+            error_message='Fiscal provider result is uncertain',
+        )
+
+    state, error_kind, error_message = _safe_result_values(result)
+    issuance = await _finish(
+        db,
+        tenant_id=issuance.tenant_id,
+        issuance_id=issuance.id,
+        token=token,
+        state=state,
+        external_reference=result.external_reference,
+        external_status=result.external_status,
+        error_kind=error_kind,
+        error_message=error_message,
+    )
+    return await _projection(db, issuance)

@@ -35,3 +35,23 @@ class FiscalProviderUnavailableError(FiscalIssuanceError):
 
 class FiscalCredentialResolutionError(FiscalIssuanceError):
     code = 'FISCAL_CREDENTIAL_RESOLUTION_FAILED'
+
+
+class FiscalIssuanceRecoveryNotAllowedError(FiscalIssuanceError):
+    code = 'FISCAL_ISSUANCE_RECOVERY_NOT_ALLOWED'
+
+
+class FiscalIssuanceRetryNotAllowedError(FiscalIssuanceError):
+    code = 'FISCAL_ISSUANCE_RETRY_NOT_ALLOWED'
+
+
+class FiscalIssuanceStaleFenceError(FiscalIssuanceConcurrencyConflictError):
+    code = 'FISCAL_ISSUANCE_STALE_FENCE'
+
+
+class FiscalProviderBindingMismatchError(FiscalIssuanceError):
+    code = 'FISCAL_PROVIDER_BINDING_MISMATCH'
+
+
+class FiscalRecoveryInconclusiveError(FiscalIssuanceError):
+    code = 'FISCAL_RECOVERY_INCONCLUSIVE'

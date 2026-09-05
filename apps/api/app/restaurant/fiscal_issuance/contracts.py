@@ -15,6 +15,20 @@ class InitiateFiscalIssuanceCommand:
 
 
 @dataclass(frozen=True, slots=True)
+class RecoverFiscalIssuanceCommand:
+    organization_id: int
+    location_id: int
+    billing_issuance_id: int
+
+
+@dataclass(frozen=True, slots=True)
+class RetryFiscalIssuanceCommand:
+    organization_id: int
+    location_id: int
+    billing_issuance_id: int
+
+
+@dataclass(frozen=True, slots=True)
 class BillingIssuanceAttemptProjection:
     sequence: int
     attempt_type: str

@@ -77,7 +77,11 @@ class DeterministicFiscalProvider:
                 error_kind=error_kind,
                 error_message=f'Deterministic {outcome.value.lower()}',
             )
-        self._operations[request.provider_idempotency_key] = result
+        if outcome in (
+            FiscalIssuanceOutcome.SUCCEEDED,
+            FiscalIssuanceOutcome.UNCERTAIN,
+        ):
+            self._operations[request.provider_idempotency_key] = result
         return result
 
     async def recover(

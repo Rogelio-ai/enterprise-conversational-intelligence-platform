@@ -143,6 +143,7 @@ class FiscalIssuanceRecoveryRequest(FiscalContractValue):
     )
     request_schema_version: int = Field(ge=1)
     external_reference: str | None = Field(default=None, min_length=1, max_length=200)
+    external_status: str | None = Field(default=None, min_length=1, max_length=64)
 
 
 class SafeFiscalProviderEvidence(FiscalContractValue):
