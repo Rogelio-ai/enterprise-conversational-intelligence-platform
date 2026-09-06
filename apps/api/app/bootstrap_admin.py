@@ -55,6 +55,8 @@ CORE_PERMISSIONS = {
     'cash_management.read': 'Read cash-management sessions.',
     'cash_session.manage': 'Open and manage cash sessions.',
     'cash_movement.manage': 'Record authorized manual cash movements.',
+    'inventory.read': 'Read location inventory, stock, recipes, and current costs.',
+    'inventory.manage': 'Manage location inventory, recipes, and stock movements.',
     'pos_submission.read': 'Read POS order submission state and history.',
     'pos_submission.submit': 'Submit accepted Restaurant Orders to a POS.',
     'pos_submission.retry': 'Retry safely retryable POS order submissions.',

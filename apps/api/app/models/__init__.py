@@ -26,6 +26,12 @@ from app.models.identity import (
     User,
 )
 from app.models.intelligence import IntelligenceDerivation, RestaurantMessageIntent
+from app.models.inventory import (
+    InventoryItem,
+    ProductConsumptionComponent,
+    ProductConsumptionDefinition,
+    StockMovement,
+)
 from app.models.menu import (
     Menu,
     MenuItem,
@@ -117,6 +123,7 @@ __all__ = [
     'MenuSection',
     'Location',
     'IntelligenceDerivation',
+    'InventoryItem',
     'IssuerFiscalProfile',
     'Organization',
     'OrderDraft',
@@ -130,6 +137,8 @@ __all__ = [
     'ProductChoiceOption',
     'ProductComponent',
     'ProductComposition',
+    'ProductConsumptionComponent',
+    'ProductConsumptionDefinition',
     'ProductExternalMapping',
     'ProductFiscalClassification',
     'ProductPrice',
@@ -181,5 +190,6 @@ __all__ = [
     'RestaurantMessageIntent',
     'Tenant',
     'TenantMembership',
+    'StockMovement',
     'User',
 ]

@@ -260,6 +260,21 @@ def sql_connection(integration_settings: Settings):
                     )
             finally:
                 cursor.execute('SET FOREIGN_KEY_CHECKS=1')
+            cursor.execute('SET FOREIGN_KEY_CHECKS=0')
+            try:
+                for table in (
+                    'stock_movements',
+                    'product_consumption_components',
+                    'product_consumption_definitions',
+                    'inventory_items',
+                ):
+                    cursor.execute(
+                        f'DELETE FROM {table} WHERE tenant_id IN '
+                        '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                        (f'{prefix}%',),
+                    )
+            finally:
+                cursor.execute('SET FOREIGN_KEY_CHECKS=1')
             for table in ('promotion_locations', 'promotion_products', 'promotions', 'product_prices'):
                 cursor.execute(
                     f'DELETE FROM {table} WHERE tenant_id IN '
