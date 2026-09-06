@@ -43,6 +43,7 @@ class PaymentInitiationRequest(BaseModel):
     payer_diner_session_id: int | None = Field(default=None, gt=0)
     payer_reference: str | None = Field(default=None, min_length=1, max_length=200)
     cash_tendered_amount: PositiveMoney | None = None
+    cash_session_id: int | None = Field(default=None, gt=0)
     selection_mode: Literal['EXPLICIT', 'AUTO'] | None = None
     executor_key: str | None = Field(default=None, min_length=1, max_length=128)
     customer_payment_source: SecretStr | None = Field(
@@ -69,6 +70,8 @@ class PaymentInitiationRequest(BaseModel):
             raise ValueError('Supply only customer_payment_source, not its deprecated alias')
         if self.method_category == 'CASH' and self.selection_mode is not None:
             raise ValueError('CASH does not accept executor selection')
+        if self.method_category != 'CASH' and self.cash_session_id is not None:
+            raise ValueError('Only CASH payments may identify a cash session')
         if self.selection_mode == 'EXPLICIT' and not self.executor_key:
             raise ValueError('EXPLICIT selection requires executor_key')
         if self.selection_mode == 'AUTO' and self.executor_key is not None:
@@ -195,7 +198,7 @@ def _error(exc: Exception) -> HTTPException:
 
     if isinstance(exc, errors.PaymentPermissionError):
         return HTTPException(status.HTTP_403_FORBIDDEN, {'code': exc.code, 'message': str(exc)})
-    if isinstance(exc, errors.PaymentNotFoundError):
+    if isinstance(exc, (errors.PaymentNotFoundError, errors.CashSessionNotFoundError)):
         return HTTPException(status.HTTP_404_NOT_FOUND, {'code': exc.code, 'message': str(exc)})
     if isinstance(exc, (
         errors.PaymentExecutorAdapterNotRegisteredError,
@@ -242,6 +245,7 @@ async def _initiate(
         payer_diner_session_id=payload.payer_diner_session_id,
         payer_reference=payload.payer_reference,
         cash_tendered_amount=payload.cash_tendered_amount,
+        cash_session_id=payload.cash_session_id,
         executor_key=payload.executor_key, idempotency_key=idempotency_key,
         selection_mode=_selection_mode(payload),
         executor_registry=db.info['payment_executor_registry'],

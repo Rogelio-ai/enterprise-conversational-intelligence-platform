@@ -14,6 +14,10 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.execution import ActorType, ExecutionContext
 from app.models import (
+    CashMovement,
+    CashSession,
+    Location,
+    Resource,
     RestaurantCheck,
     RestaurantCheckAllocation,
     RestaurantCheckMember,
@@ -107,7 +111,8 @@ def _request_fingerprint(
     *, check_id: int, expected_version: int, expected_fingerprint: str, amount: Decimal,
     currency: str, method_category: str, payer_type: str,
     payer_diner_session_id: int | None, payer_reference: str | None,
-    cash_tendered_amount: Decimal | None, executor_key: str | None,
+    cash_tendered_amount: Decimal | None, cash_session_id: int | None,
+    executor_key: str | None,
 ) -> str:
     return _sha({
         'schema_version': REQUEST_SCHEMA_VERSION,
@@ -123,6 +128,7 @@ def _request_fingerprint(
             'reference': payer_reference,
         },
         'cash_tendered_amount': None if cash_tendered_amount is None else _money(cash_tendered_amount),
+        'cash_session_id': cash_session_id,
         'executor_key': executor_key,
     })
 
@@ -354,6 +360,99 @@ async def _apply_success(
             db, check=check, context=context,
             settlement_reference=f'PAYMENT:{payment.id}', now=now,
         )
+
+
+async def _cash_session_for_payment(
+    db: AsyncSession, *, check: RestaurantCheck, currency: str,
+    cash_session_id: int | None,
+) -> CashSession | None:
+    location = await db.scalar(select(Location).where(
+        Location.id == check.location_id,
+        Location.tenant_id == check.tenant_id,
+        Location.organization_id == check.organization_id,
+    ).with_for_update())
+    if location is None:
+        raise errors.CheckNotPayableError('Restaurant Check location was not found')
+    if location.cash_management_activated_at is None:
+        return None
+    if cash_session_id is None:
+        raise errors.CashSessionRequiredError(
+            'Cash Management is active and requires an OPEN CashSession'
+        )
+    session = await db.scalar(select(CashSession).where(
+        CashSession.id == cash_session_id,
+        CashSession.tenant_id == check.tenant_id,
+    ).with_for_update())
+    if session is None:
+        raise errors.CashSessionNotFoundError()
+    if (
+        session.organization_id != check.organization_id
+        or session.location_id != check.location_id
+    ):
+        raise errors.InvalidCashSessionError(
+            'CashSession does not belong to the Restaurant Check location'
+        )
+    if session.status != 'OPEN':
+        raise errors.InvalidCashSessionError('CashSession is not OPEN')
+    if session.currency != currency:
+        raise errors.InvalidCashSessionError(
+            'CashSession currency differs from payment currency'
+        )
+    resource_type = await db.scalar(select(Resource.resource_type).where(
+        Resource.id == session.resource_id,
+        Resource.tenant_id == session.tenant_id,
+        Resource.location_id == session.location_id,
+    ))
+    if resource_type != 'CASH_REGISTER':
+        raise errors.InvalidCashSessionError(
+            'CashSession does not belong to a CASH_REGISTER'
+        )
+    return session
+
+
+def _record_cash_payment_movements(
+    db: AsyncSession, *, session: CashSession, payment: RestaurantPayment,
+    context: ExecutionContext, now: datetime,
+) -> None:
+    evidence = [('CUSTOMER_TENDER', payment.cash_tendered_amount)]
+    if payment.cash_change_due is not None and payment.cash_change_due > ZERO:
+        evidence.append(('CUSTOMER_CHANGE', -payment.cash_change_due))
+    for movement_type, amount in evidence:
+        assert amount is not None
+        movement = CashMovement(
+            tenant_id=session.tenant_id,
+            organization_id=session.organization_id,
+            location_id=session.location_id,
+            cash_session_id=session.id,
+            restaurant_payment_id=payment.id,
+            movement_type=movement_type,
+            amount=amount,
+            currency=session.currency,
+            reason=(
+                'Customer cash tender'
+                if movement_type == 'CUSTOMER_TENDER'
+                else 'Customer cash change'
+            ),
+            reference=f'PAYMENT:{payment.id}',
+            recorded_at=now,
+            actor_type=context.actor_type.value,
+            actor_id=context.principal_id,
+            actor_reference=context.principal_reference,
+            authorized_by_actor_type=context.actor_type.value,
+            authorized_by_actor_id=context.principal_id,
+            authorized_by_actor_reference=context.principal_reference,
+            opening_float_slot=None,
+            idempotency_actor_scope=f'PAYMENT:{payment.id}',
+            idempotency_key=movement_type,
+            request_schema_version=REQUEST_SCHEMA_VERSION,
+            request_fingerprint=_sha({
+                'payment_request_fingerprint': payment.request_fingerprint,
+                'movement_type': movement_type,
+                'amount': _money(amount),
+            }),
+        )
+        db.add(movement)
+        session.movement_version += 1
 
 
 def _copy_evidence(payment: RestaurantPayment, result: PaymentExecutionResult | PaymentRecoveryResult) -> None:
@@ -839,7 +938,7 @@ async def initiate_payment(
     amount: Decimal, currency: str, method_category: str,
     payer_type: str, payer_diner_session_id: int | None,
     payer_reference: str | None, cash_tendered_amount: Decimal | None,
-    executor_key: str | None, idempotency_key: str,
+    cash_session_id: int | None, executor_key: str | None, idempotency_key: str,
     selection_mode: PaymentExecutorSelectionMode | str | None,
     executor_registry: PaymentExecutorRegistry,
     credential_resolver: MerchantCredentialResolver | None,
@@ -883,7 +982,8 @@ async def initiate_payment(
         expected_fingerprint=expected_check_fingerprint, amount=amount,
         currency=currency, method_category=method_category, payer_type=payer_type,
         payer_diner_session_id=payer_diner_session_id, payer_reference=payer_reference,
-        cash_tendered_amount=cash_tendered_amount, executor_key=executor_key,
+        cash_tendered_amount=cash_tendered_amount,
+        cash_session_id=cash_session_id, executor_key=executor_key,
     )
     existing = await _payment_by_key(db, context=context, idempotency_key=idempotency_key)
     if existing is not None:
@@ -907,6 +1007,12 @@ async def initiate_payment(
             raise errors.CheckFinancialIdentityConflictError()
         if check.currency != currency:
             raise errors.CheckFinancialIdentityConflictError('Payment currency differs from check currency')
+        cash_session = None
+        if method_category == 'CASH':
+            cash_session = await _cash_session_for_payment(
+                db, check=check, currency=currency,
+                cash_session_id=cash_session_id,
+            )
         members = await _authorize_and_freeze(db, check=check, context=context)
         if payer_type == 'DINER' and payer_diner_session_id not in {
             value.diner_session_id for value in members
@@ -1001,6 +1107,11 @@ async def initiate_payment(
         db.add(payment)
         await db.flush()
         if method_category == 'CASH':
+            if cash_session is not None:
+                _record_cash_payment_movements(
+                    db, session=cash_session, payment=payment,
+                    context=context, now=now,
+                )
             await _apply_success(db, payment=payment, check=check, context=context, now=now)
         await db.commit()
     except IntegrityError as exc:

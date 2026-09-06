@@ -227,6 +227,18 @@ class CashMovement(Base):
             ],
             name='fk_cash_movements_session_scope', ondelete='RESTRICT',
         ),
+        ForeignKeyConstraint(
+            [
+                'restaurant_payment_id', 'tenant_id', 'organization_id',
+                'location_id',
+            ],
+            [
+                'restaurant_payments.id', 'restaurant_payments.tenant_id',
+                'restaurant_payments.organization_id',
+                'restaurant_payments.location_id',
+            ],
+            name='fk_cash_movements_payment_scope', ondelete='RESTRICT',
+        ),
         UniqueConstraint(
             'id', 'tenant_id', 'organization_id', 'location_id',
             'cash_session_id', name='uq_cash_movements_scope',
@@ -238,6 +250,10 @@ class CashMovement(Base):
         UniqueConstraint(
             'cash_session_id', 'opening_float_slot',
             name='uq_cash_movements_opening_float',
+        ),
+        UniqueConstraint(
+            'restaurant_payment_id', 'movement_type',
+            name='uq_cash_movements_payment_type',
         ),
         CheckConstraint(
             "movement_type IN ('OPENING_FLOAT','CUSTOMER_TENDER',"
@@ -265,6 +281,13 @@ class CashMovement(Base):
             "movement_type='OPENING_FLOAT' OR "
             "(reason IS NOT NULL AND TRIM(reason)<>'')",
             name='ck_cash_movements_reason',
+        ),
+        CheckConstraint(
+            "(movement_type IN ('CUSTOMER_TENDER','CUSTOMER_CHANGE') "
+            "AND restaurant_payment_id IS NOT NULL) OR "
+            "(movement_type NOT IN ('CUSTOMER_TENDER','CUSTOMER_CHANGE') "
+            "AND restaurant_payment_id IS NULL)",
+            name='ck_cash_movements_payment_relation',
         ),
         CheckConstraint(
             'request_schema_version >= 1', name='ck_cash_movements_version',
@@ -296,6 +319,9 @@ class CashMovement(Base):
     organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     cash_session_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    restaurant_payment_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
     movement_type: Mapped[str] = mapped_column(String(24), nullable=False)
     amount: Mapped[Decimal] = mapped_column(Numeric(19, 4), nullable=False)
     currency: Mapped[str] = mapped_column(

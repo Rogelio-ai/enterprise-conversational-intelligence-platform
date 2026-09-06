@@ -37,6 +37,18 @@ class InvalidCashTenderError(RestaurantPaymentError):
     code = 'INVALID_CASH_TENDER'
 
 
+class CashSessionRequiredError(RestaurantPaymentError):
+    code = 'CASH_SESSION_REQUIRED'
+
+
+class CashSessionNotFoundError(RestaurantPaymentError):
+    code = 'CASH_SESSION_NOT_FOUND'
+
+
+class InvalidCashSessionError(RestaurantPaymentError):
+    code = 'INVALID_CASH_SESSION'
+
+
 class PaymentStateConflictError(RestaurantPaymentError):
     code = 'PAYMENT_STATE_CONFLICT'
 

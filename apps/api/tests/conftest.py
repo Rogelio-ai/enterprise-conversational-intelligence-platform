@@ -184,6 +184,13 @@ def sql_connection(integration_settings: Settings):
                 'restaurant_check_allocations',
                 'restaurant_checks',
             ):
+                if table == 'restaurant_check_settlements':
+                    cursor.execute(
+                        'DELETE FROM cash_movements WHERE restaurant_payment_id '
+                        'IN (SELECT id FROM restaurant_payments WHERE tenant_id IN '
+                        '(SELECT id FROM tenants WHERE slug LIKE %s))',
+                        (f'{prefix}%',),
+                    )
                 cursor.execute(
                     f'DELETE FROM {table} WHERE tenant_id IN '
                     '(SELECT id FROM tenants WHERE slug LIKE %s)',
