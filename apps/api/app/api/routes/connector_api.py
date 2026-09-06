@@ -14,7 +14,9 @@ from app.api.deps import get_db
 from app.core.connector_security import PROTOCOL_VERSION
 from app.core.execution import ActorType, ExecutionContext
 from app.core.middleware import get_correlation_id
-from app.models import PreparationDeliveryConnector, PreparationDispatch
+from app.models import PaidCheckDispatch, PreparationDeliveryConnector, PreparationDispatch
+from app.restaurant.paid_check_printing import errors as paid_errors
+from app.restaurant.paid_check_printing import service as paid_service
 from app.restaurant.preparation_delivery import errors, service
 from app.restaurant.preparation_delivery.contracts import DeliveryResult
 
@@ -38,6 +40,17 @@ def _error(exc: Exception) -> HTTPException:
     if isinstance(exc, errors.PreparationDeliveryNotFoundError):
         return HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
     if isinstance(exc, (errors.PreparationDeliveryConflictError, errors.PreparationDeliveryConfigurationError)):
+        return HTTPException(status.HTTP_409_CONFLICT, str(exc))
+    raise exc
+
+
+def _paid_error(exc: Exception) -> HTTPException:
+    if isinstance(exc, paid_errors.PaidCheckDispatchNotFoundError):
+        return HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
+    if isinstance(
+        exc,
+        (paid_errors.PaidCheckDeliveryConflictError, paid_errors.PaidCheckTargetError),
+    ):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
     raise exc
 
@@ -250,6 +263,204 @@ async def report_result(
         raise _error(exc) from exc
     return {
         'dispatch': _wire(outcome.dispatch), 'attempt': _wire(outcome.attempt),
+        'replayed': outcome.replayed,
+    }
+
+
+@router.get('/paid-check-dispatches/eligible')
+async def eligible_paid_check_dispatches(
+    context: Annotated[ConnectorContext, Depends(get_connector_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    cursor: int | None = Query(default=None, gt=0),
+    limit: int = Query(default=50, ge=1, le=100),
+) -> dict[str, object]:
+    await _touch(db, context)
+    statement = select(PaidCheckDispatch).where(
+        PaidCheckDispatch.tenant_id == context.tenant_id,
+        PaidCheckDispatch.organization_id == context.organization_id,
+        PaidCheckDispatch.location_id == context.location_id,
+        PaidCheckDispatch.connector_id == context.connector_id,
+        PaidCheckDispatch.state.in_(('PENDING', 'RETRYABLE_FAILURE')),
+        PaidCheckDispatch.available_at <= _now(),
+    )
+    if cursor is not None:
+        statement = statement.where(PaidCheckDispatch.id > cursor)
+    rows = tuple((await db.execute(statement.order_by(
+        PaidCheckDispatch.created_at, PaidCheckDispatch.id,
+    ).limit(limit + 1))).scalars().all())
+    has_more = len(rows) > limit
+    rows = rows[:limit]
+    await db.commit()
+    return {
+        'items': [{
+            'dispatch_id': row.id,
+            'dispatch_kind': 'PAID_CHECK',
+            'operation_id': row.operation_id,
+            'state': row.state,
+            'available_at': row.available_at,
+            'created_at': row.created_at,
+        } for row in rows],
+        'next_cursor': rows[-1].id if has_more and rows else None,
+    }
+
+
+@router.get('/paid-check-dispatches/{dispatch_id}')
+async def get_paid_check_dispatch(
+    dispatch_id: Annotated[int, Path(gt=0)],
+    context: Annotated[ConnectorContext, Depends(get_connector_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> object:
+    await _touch(db, context)
+    value = await db.scalar(select(PaidCheckDispatch).where(
+        PaidCheckDispatch.id == dispatch_id,
+        PaidCheckDispatch.tenant_id == context.tenant_id,
+        PaidCheckDispatch.organization_id == context.organization_id,
+        PaidCheckDispatch.location_id == context.location_id,
+        PaidCheckDispatch.connector_id == context.connector_id,
+    ))
+    if value is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Paid-check dispatch not found')
+    projection = await paid_service.get_dispatch(
+        db, tenant_id=context.tenant_id, dispatch_id=value.id,
+    )
+    await db.commit()
+    return _wire(projection)
+
+
+async def _claim_paid_check(
+    *, dispatch_id: int, claim_request_id: str, recovery: bool,
+    context: ConnectorContext, db: AsyncSession, lease_seconds: int,
+) -> dict[str, object]:
+    await _touch(db, context)
+    try:
+        outcome = await paid_service.claim_dispatch(
+            db,
+            dispatch_id=dispatch_id,
+            connector_id=context.connector_id,
+            execution=_execution(context),
+            recovery=recovery,
+            claim_request_id=claim_request_id,
+            claim_lease_seconds=lease_seconds,
+        )
+    except Exception as exc:
+        raise _paid_error(exc) from exc
+    return {
+        'dispatch_id': outcome.dispatch.id,
+        'dispatch_kind': 'PAID_CHECK',
+        'operation_id': outcome.dispatch.operation_id,
+        'destination': {
+            'cashier_resource_id': outcome.dispatch.cashier_resource_id,
+            'cashier_resource_code': outcome.dispatch.cashier_resource_code,
+            'cashier_resource_name': outcome.dispatch.cashier_resource_name,
+            'connector_id': outcome.dispatch.connector_id,
+        },
+        'local_target_key': outcome.dispatch.local_target_key,
+        'payload_schema': outcome.dispatch.payload_schema,
+        'payload_text': outcome.dispatch.payload_text,
+        'payload_fingerprint': outcome.dispatch.payload_fingerprint,
+        'claim_request_id': claim_request_id,
+        'claim_token': outcome.claim_token,
+        'claim_expires_at': outcome.dispatch.claim_expires_at,
+        'attempt': _wire(outcome.attempt),
+        'immutable_metadata': {
+            'tenant_id': outcome.dispatch.tenant_id,
+            'organization_id': outcome.dispatch.organization_id,
+            'location_id': outcome.dispatch.location_id,
+            'restaurant_check_id': outcome.dispatch.restaurant_check_id,
+            'check_version': outcome.dispatch.check_version,
+            'check_fingerprint': outcome.dispatch.check_fingerprint,
+            'created_at': outcome.dispatch.created_at,
+        },
+        'dispatch': _wire(outcome.dispatch),
+    }
+
+
+@router.post('/paid-check-dispatches/{dispatch_id}/claims')
+async def claim_paid_check_dispatch(
+    dispatch_id: Annotated[int, Path(gt=0)],
+    payload: ClaimRequest,
+    request: Request,
+    context: Annotated[ConnectorContext, Depends(get_connector_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> object:
+    return await _claim_paid_check(
+        dispatch_id=dispatch_id,
+        claim_request_id=payload.claim_request_id,
+        recovery=False,
+        context=context,
+        db=db,
+        lease_seconds=request.app.state.settings.preparation_dispatch_claim_lease_seconds,
+    )
+
+
+@router.post('/paid-check-dispatches/{dispatch_id}/recovery-claims')
+async def recover_paid_check_dispatch(
+    dispatch_id: Annotated[int, Path(gt=0)],
+    payload: RecoveryClaimRequest,
+    request: Request,
+    context: Annotated[ConnectorContext, Depends(get_connector_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> object:
+    current = await db.scalar(select(PaidCheckDispatch).where(
+        PaidCheckDispatch.id == dispatch_id,
+        PaidCheckDispatch.tenant_id == context.tenant_id,
+        PaidCheckDispatch.connector_id == context.connector_id,
+    ))
+    if current is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Paid-check dispatch not found')
+    if current.state == 'UNCERTAIN' and payload.resolution != 'NO_SUBMISSION_CONFIRMED':
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            'UNCERTAIN recovery requires definitive non-submission evidence',
+        )
+    if current.state == 'ACTION_REQUIRED' and payload.resolution != 'CONFIGURATION_REPAIRED':
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            'ACTION_REQUIRED recovery requires repair confirmation',
+        )
+    if current.state == 'IN_PROGRESS' and payload.resolution != 'NO_SUBMISSION_CONFIRMED':
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            'Expired claim recovery requires definitive non-submission evidence',
+        )
+    return await _claim_paid_check(
+        dispatch_id=dispatch_id,
+        claim_request_id=payload.claim_request_id,
+        recovery=True,
+        context=context,
+        db=db,
+        lease_seconds=request.app.state.settings.preparation_dispatch_claim_lease_seconds,
+    )
+
+
+@router.post('/paid-check-dispatches/{dispatch_id}/results')
+async def report_paid_check_result(
+    dispatch_id: Annotated[int, Path(gt=0)],
+    payload: ResultRequest,
+    context: Annotated[ConnectorContext, Depends(get_connector_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> object:
+    await _touch(db, context)
+    try:
+        outcome = await paid_service.record_result(
+            db,
+            dispatch_id=dispatch_id,
+            connector_id=context.connector_id,
+            claim_token=payload.claim_token,
+            delivery_result=DeliveryResult(
+                result=payload.result,
+                result_fingerprint=payload.result_fingerprint,
+                local_job_reference=payload.local_job_reference,
+                error_kind=payload.error_kind,
+                error_message=payload.error_message,
+            ),
+            execution=_execution(context),
+        )
+    except Exception as exc:
+        raise _paid_error(exc) from exc
+    return {
+        'dispatch': _wire(outcome.dispatch),
+        'attempt': _wire(outcome.attempt),
         'replayed': outcome.replayed,
     }
 

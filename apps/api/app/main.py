@@ -29,6 +29,7 @@ from app.api.routes.product_compositions import router as product_compositions_r
 from app.api.routes.product_aliases import router as product_aliases_router
 from app.api.routes.pricing import router as pricing_router
 from app.api.routes.pos_submissions import router as pos_submissions_router
+from app.api.routes.paid_check_printing import router as paid_check_printing_router
 from app.api.routes.preparation import router as preparation_router
 from app.api.routes.preparation_delivery import router as preparation_delivery_router
 from app.api.routes.resources import router as resources_router
@@ -139,6 +140,7 @@ def create_app(
     app.include_router(diner_sessions_router)
     app.include_router(restaurant_orders_router)
     app.include_router(restaurant_checks_router)
+    app.include_router(paid_check_printing_router)
     app.include_router(restaurant_payments_router)
     app.include_router(billing_router)
     app.include_router(fiscal_issuance_router)

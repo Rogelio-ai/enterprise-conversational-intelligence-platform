@@ -138,6 +138,16 @@ def sql_connection(integration_settings: Settings):
                 (f'{prefix}%',),
             )
             cursor.execute(
+                'DELETE FROM paid_check_dispatch_attempts WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM paid_check_dispatches WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
                 'DELETE FROM preparation_dispatch_attempts WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),

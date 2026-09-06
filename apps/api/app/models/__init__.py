@@ -44,6 +44,7 @@ from app.models.menu import (
 )
 from app.models.organization import Location, Organization
 from app.models.order_draft import OrderDraft, OrderDraftItem, OrderDraftItemSelection
+from app.models.paid_check_print import PaidCheckDispatch, PaidCheckDispatchAttempt
 from app.models.pricing import ProductPrice, Promotion, PromotionLocation, PromotionProduct
 from app.models.product_structure import (
     ProductChoiceGroup,
@@ -130,6 +131,8 @@ __all__ = [
     'OrderDraft',
     'OrderDraftItem',
     'OrderDraftItemSelection',
+    'PaidCheckDispatch',
+    'PaidCheckDispatchAttempt',
     'Permission',
     'Product',
     'ProductAlias',

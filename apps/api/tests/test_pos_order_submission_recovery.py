@@ -68,7 +68,7 @@ def _scope(
             permission_id = int(cursor.fetchone()['id'])
         _execute(connection, 'INSERT INTO role_permissions (role_id,permission_id) VALUES (%s,%s)', (role_id, permission_id))
     organization_id = _execute(connection, "INSERT INTO organizations (tenant_id,code,name,status) VALUES (%s,%s,'Organization','ACTIVE')", (tenant_id, f'ORG-{uuid4().hex[:12]}'))
-    location_id = _execute(connection, "INSERT INTO locations (tenant_id,organization_id,code,name,timezone,status) VALUES (%s,%s,%s,'Location','America/Mexico_City','ACTIVE')", (tenant_id, organization_id, f'LOC-{uuid4().hex[:12]}'))
+    location_id = _execute(connection, "INSERT INTO locations (tenant_id,organization_id,code,name,timezone,country_code,status) VALUES (%s,%s,%s,'Location','America/Mexico_City','MX','ACTIVE')", (tenant_id, organization_id, f'LOC-{uuid4().hex[:12]}'))
     _execute(
         connection,
         "INSERT INTO restaurant_tax_rules (tenant_id,organization_id,location_id,"
@@ -100,6 +100,15 @@ def _accepted_order(client: TestClient, connection, scope: Scope, *, name='Burge
     assert joined.status_code == 201, joined.text
     diner = {'Authorization': f"Bearer {joined.json()['access_token']}"}
     product_id = _execute(connection, "INSERT INTO products (tenant_id,organization_id,name,tax_classification_code,status,source) VALUES (%s,%s,%s,%s,'ACTIVE','PLATFORM')", (scope.tenant_id, scope.organization_id, name, TAX_CLASSIFICATION))
+    _execute(
+        connection,
+        "INSERT INTO product_fiscal_classifications (tenant_id,organization_id,product_id,"
+        "fiscal_jurisdiction_code,product_classification_scheme,"
+        "product_classification_code,unit_classification_scheme,unit_classification_code,"
+        "effective_from,effective_to,status) VALUES (%s,%s,%s,'MX','TEST-PRODUCT-SCHEME',"
+        "%s,'TEST-UNIT-SCHEME','EACH',CURRENT_TIMESTAMP - INTERVAL 1 DAY,NULL,'ACTIVE')",
+        (scope.tenant_id, scope.organization_id, product_id, f'FISCAL-{product_id}'),
+    )
     menu_id = _execute(connection, "INSERT INTO menus (tenant_id,organization_id,name,status) VALUES (%s,%s,'Menu','ACTIVE')", (scope.tenant_id, scope.organization_id))
     _execute(connection, "INSERT INTO menu_locations (tenant_id,organization_id,menu_id,location_id,status) VALUES (%s,%s,%s,%s,'ACTIVE')", (scope.tenant_id, scope.organization_id, menu_id, scope.location_id))
     section_id = _execute(connection, "INSERT INTO menu_sections (tenant_id,organization_id,menu_id,name,status) VALUES (%s,%s,%s,'Food','ACTIVE')", (scope.tenant_id, scope.organization_id, menu_id))
