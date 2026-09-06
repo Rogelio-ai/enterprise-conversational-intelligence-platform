@@ -3,14 +3,17 @@ from __future__ import annotations
 from dataclasses import asdict
 from datetime import datetime
 from decimal import Decimal
-from typing import Annotated, Literal
+import json
+from typing import Annotated, Any, Literal
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Response, status
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, BeforeValidator, ConfigDict, Field, field_validator, model_validator
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_db
 from app.api.diner_deps import DinerAuthenticatedContext, get_diner_authenticated_context
+from app.api.routes.conversations import validate_language
 from app.core.middleware import get_correlation_id
 from app.restaurant.checks import errors as check_errors
 from app.restaurant.diner_experience import service, states
@@ -21,7 +24,15 @@ from app.restaurant.diner_experience.contracts import (
     ProductUnavailableError,
 )
 from app.restaurant.intelligence.errors import KnowledgeNotFoundError, KnowledgeUnavailableError
+from app.restaurant.intelligence.contracts import RestaurantIntentCode
+from app.restaurant.intelligence.orchestration import (
+    ConversationActionCommand,
+    DinerOrchestrationContext,
+    orchestrate_action,
+)
+from app.restaurant.conversations import service as conversation_service
 from app.restaurant.orders.errors import ProductNotOrderableError
+from app.models import ConversationParticipant
 
 
 router = APIRouter(prefix='/diner', tags=['diner-experience'])
@@ -167,6 +178,81 @@ class OperationalRequestResponse(BaseModel):
     created_at: datetime
     resolved_at: datetime | None
     experience: ExperienceResponse
+
+
+def _reject_float(value: Any) -> Any:
+    if isinstance(value, float):
+        raise ValueError('Binary floating-point values are not valid exact quantities')
+    return value
+
+
+ExactQuantity = Annotated[Decimal, BeforeValidator(_reject_float), Field(gt=0)]
+
+
+class ConversationActionRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    modality: Literal['TEXT', 'VOICE', 'TOUCH']
+    content_text: str = Field(min_length=1, max_length=10_000)
+    intent_code: RestaurantIntentCode
+    operation: Literal['ADD', 'CONFIGURE', 'MODIFY', 'REMOVE'] | None = None
+    reference_text: str | None = Field(default=None, min_length=1, max_length=200)
+    product_id: int | None = Field(default=None, gt=0)
+    quantity: ExactQuantity | None = None
+    draft_item_id: int | None = Field(default=None, gt=0)
+    choice_group_id: int | None = Field(default=None, gt=0)
+    choice_reference_text: str | None = Field(default=None, min_length=1, max_length=200)
+    option_ids: list[int] = Field(default_factory=list)
+    expected_draft_version: int | None = Field(default=None, ge=1)
+    expected_commercial_fingerprint: str | None = Field(
+        default=None, pattern=r'^[0-9a-f]{64}$'
+    )
+    check_id: int | None = Field(default=None, gt=0)
+    check_scope: Literal['INDIVIDUAL', 'GLOBAL_TABLE', 'SELECTED'] | None = None
+    selected_diner_session_ids: list[int] = Field(default_factory=list)
+    payment_method: Literal['CASH', 'CARD', 'TRANSFER'] | None = None
+    continuation_decision: Literal['YES', 'NO'] | None = None
+    expected_check_version: int | None = Field(default=None, ge=1)
+    language: str | None = Field(default=None, max_length=63)
+    language_source: Literal['DECLARED', 'DETECTED', 'INHERITED'] | None = None
+
+    _language = field_validator('language')(validate_language)
+
+    @field_validator('content_text')
+    @classmethod
+    def content_is_not_blank(cls, value: str) -> str:
+        if not value.strip():
+            raise ValueError('content_text cannot be blank')
+        return value
+
+    @field_validator('option_ids', 'selected_diner_session_ids')
+    @classmethod
+    def identifiers_are_distinct_positive(cls, values: list[int]) -> list[int]:
+        if any(value <= 0 for value in values) or len(values) != len(set(values)):
+            raise ValueError('Identifiers must be distinct positive integers')
+        return values
+
+    @model_validator(mode='after')
+    def language_metadata_is_paired(self):
+        if (self.language is None) != (self.language_source is None):
+            raise ValueError('language and language_source must be supplied together')
+        return self
+
+
+class ConversationMessageReference(BaseModel):
+    id: int
+    sequence_number: int
+    modality: str
+    content_text: str
+
+
+class ConversationActionResponse(BaseModel):
+    source_message: ConversationMessageReference
+    response_message: ConversationMessageReference
+    intent_code: RestaurantIntentCode
+    experience: ExperienceResponse
+    authoritative_data: Any = None
+    replayed: bool = False
 
 
 def _operational_experience(request_status: str) -> ExperienceResponse:
@@ -340,4 +426,101 @@ async def read_operational_request(
     return OperationalRequestResponse(
         **asdict(value),
         experience=_operational_experience(value.status),
+    )
+
+
+@router.post('/conversation/actions', response_model=ConversationActionResponse)
+async def execute_conversation_action(
+    payload: ConversationActionRequest,
+    context: Annotated[DinerAuthenticatedContext, Depends(get_diner_authenticated_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    idempotency_key: IdempotencyKey,
+) -> ConversationActionResponse:
+    source = await conversation_service.append_message(
+        db,
+        tenant_id=context.tenant_id,
+        conversation_id=context.conversation_id,
+        participant_id=context.conversation_participant_id,
+        owner_diner_session_id=context.diner_session_id,
+        modality=payload.modality,
+        content_text=payload.content_text,
+        language=payload.language,
+        language_source=payload.language_source,
+    )
+    source_reference = ConversationMessageReference.model_validate(
+        source, from_attributes=True
+    )
+    result = await orchestrate_action(
+        db,
+        context=DinerOrchestrationContext(
+            tenant_id=context.tenant_id,
+            organization_id=context.organization_id,
+            location_id=context.location_id,
+            resource_id=context.resource_id,
+            service_session_id=context.service_session_id,
+            diner_session_id=context.diner_session_id,
+            conversation_id=context.conversation_id,
+            correlation_id=get_correlation_id(),
+        ),
+        command=ConversationActionCommand(
+            intent_code=payload.intent_code,
+            idempotency_key=idempotency_key,
+            operation=payload.operation,
+            reference_text=payload.reference_text,
+            product_id=payload.product_id,
+            quantity=payload.quantity,
+            draft_item_id=payload.draft_item_id,
+            choice_group_id=payload.choice_group_id,
+            choice_reference_text=payload.choice_reference_text,
+            option_ids=tuple(payload.option_ids),
+            expected_draft_version=payload.expected_draft_version,
+            expected_commercial_fingerprint=payload.expected_commercial_fingerprint,
+            check_id=payload.check_id,
+            check_scope=payload.check_scope,
+            selected_diner_session_ids=tuple(payload.selected_diner_session_ids),
+            payment_method=payload.payment_method,
+            continuation_decision=payload.continuation_decision,
+            expected_check_version=payload.expected_check_version,
+            language=payload.language,
+        ),
+    )
+    waiter_id = await db.scalar(
+        select(ConversationParticipant.id).where(
+            ConversationParticipant.tenant_id == context.tenant_id,
+            ConversationParticipant.conversation_id == context.conversation_id,
+            ConversationParticipant.participant_type == 'DIGITAL_WAITER',
+        )
+    )
+    if waiter_id is None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            {'state': 'ACTION_BLOCKED', 'code': 'DIGITAL_WAITER_PARTICIPANT_MISSING'},
+        )
+    response_message = await conversation_service.append_message(
+        db,
+        tenant_id=context.tenant_id,
+        conversation_id=context.conversation_id,
+        participant_id=waiter_id,
+        modality='TEXT',
+        content_text=json.dumps(
+            {
+                'state': result.experience.state.value,
+                'code': result.experience.code,
+                'next_action': result.experience.next_action,
+            },
+            sort_keys=True,
+            separators=(',', ':'),
+        ),
+        language=payload.language,
+        language_source='INHERITED' if payload.language is not None else None,
+    )
+    return ConversationActionResponse(
+        source_message=source_reference,
+        response_message=ConversationMessageReference.model_validate(
+            response_message, from_attributes=True
+        ),
+        intent_code=payload.intent_code,
+        experience=ExperienceResponse.model_validate(result.experience, from_attributes=True),
+        authoritative_data=result.authoritative_data,
+        replayed=result.replayed,
     )
