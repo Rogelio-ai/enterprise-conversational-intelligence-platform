@@ -16,6 +16,7 @@ from app.api.routes.connector_api import router as connector_api_router
 from app.api.routes.connector_auth import router as connector_auth_router
 from app.api.routes.customers import router as customers_router
 from app.api.routes.diner_sessions import router as diner_sessions_router
+from app.api.routes.diner_experience import router as diner_experience_router
 from app.api.routes.conversations import router as conversations_router
 from app.api.routes.health import router as health_router
 from app.api.routes.fiscal_issuance import router as fiscal_issuance_router
@@ -138,6 +139,7 @@ def create_app(
     app.include_router(cash_sessions_router)
     app.include_router(restaurant_service_sessions_router)
     app.include_router(diner_sessions_router)
+    app.include_router(diner_experience_router)
     app.include_router(restaurant_orders_router)
     app.include_router(restaurant_checks_router)
     app.include_router(paid_check_printing_router)

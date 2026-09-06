@@ -39,6 +39,19 @@ def _unauthorized() -> HTTPException:
     )
 
 
+def _session_closed() -> HTTPException:
+    return HTTPException(
+        status_code=status.HTTP_409_CONFLICT,
+        detail={
+            'state': 'SESSION_CLOSED',
+            'code': 'SESSION_CLOSED',
+            'required_input': [],
+            'allowed_actions': [],
+            'next_action': 'LEAVE_SESSION',
+        },
+    )
+
+
 async def get_diner_authenticated_context(
     request: Request,
     token: Annotated[str, Depends(diner_oauth2_scheme)],
@@ -74,8 +87,10 @@ async def get_diner_authenticated_context(
         or service.open_slot != 1
         or service.tenant_id != tenant_id
     ):
-        logger.info('Diner authorization denied', extra={'event': 'diner_authorization_denied', 'tenant_id': tenant_id, 'service_session_id': service.id, 'diner_session_id': diner.id, 'outcome': 'inactive'})
-        raise _unauthorized()
+        logger.info('Diner authorization denied', extra={'event': 'diner_authorization_denied', 'tenant_id': tenant_id, 'service_session_id': service.id, 'diner_session_id': diner.id, 'outcome': 'closed'})
+        # The signed token and its exact tenant/diner/service tuple resolved before
+        # this distinction is returned; unknown or mismatched identities stay 401.
+        raise _session_closed()
     request.state.tenant_id = tenant_id
     request.state.diner_session_id = diner.id
     return DinerAuthenticatedContext(

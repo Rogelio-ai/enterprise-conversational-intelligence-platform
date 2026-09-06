@@ -40,6 +40,9 @@ def register_error_handlers(app: FastAPI) -> None:
                 'code': str(detail.get('code', 'http_error')),
                 'message': str(detail.get('message', detail)),
             }
+            for key in ('state', 'required_input', 'allowed_actions', 'next_action'):
+                if key in detail:
+                    error[key] = detail[key]
         else:
             error = {'code': 'http_error', 'message': str(detail)}
         return JSONResponse(

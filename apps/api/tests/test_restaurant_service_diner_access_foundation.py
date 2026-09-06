@@ -112,7 +112,12 @@ def test_staff_open_read_validation_regenerate_close_and_resource_lifecycle(clie
     assert joined.status_code == 201
     closed = client.post(f"/restaurant-service-sessions/{opened['id']}/close", headers=_headers(client, scope))
     assert closed.status_code == 200 and closed.json()['status'] == 'CLOSED'
-    assert client.get('/diner-session', headers={'Authorization': f"Bearer {joined.json()['access_token']}"}).status_code == 401
+    closed_diner = client.get(
+        '/diner-session',
+        headers={'Authorization': f"Bearer {joined.json()['access_token']}"},
+    )
+    assert closed_diner.status_code == 409
+    assert closed_diner.json()['error']['state'] == 'SESSION_CLOSED'
     with connection.cursor() as cursor:
         cursor.execute('SELECT status FROM resources WHERE id=%s', (scope.resource_id,))
         assert cursor.fetchone()['status'] == 'ACTIVE'
@@ -170,7 +175,9 @@ def test_join_identity_capacity_conversation_draft_end_and_token_separation(clie
     assert client.get('/diner-session', headers={'Authorization': f'Bearer {staff_token}'}).status_code == 401
     ended = client.post('/diner-session/end', headers=diner_headers)
     assert ended.status_code == 200 and ended.json()['status'] == 'ENDED'
-    assert client.get('/diner-session', headers=diner_headers).status_code == 401
+    closed = client.get('/diner-session', headers=diner_headers)
+    assert closed.status_code == 409
+    assert closed.json()['error']['state'] == 'SESSION_CLOSED'
     replacement = _join(client, opened, 'Alex Again', 'DINER@example.test')
     assert replacement.status_code == 201
     with pytest.raises(TokenValidationError):

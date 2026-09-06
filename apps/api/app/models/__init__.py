@@ -11,6 +11,7 @@ from app.models.billing import (
 )
 from app.models.cash_management import CashCount, CashMovement, CashSession
 from app.models.customer import Customer, CustomerExternalIdentity
+from app.models.diner_operational_request import DinerOperationalRequest
 from app.models.fiscal_product import (
     ProductFiscalClassification,
     RestaurantOrderItemFiscalSnapshot,
@@ -115,6 +116,7 @@ __all__ = [
     'Customer',
     'CustomerExternalIdentity',
     'CustomerFiscalProfile',
+    'DinerOperationalRequest',
     'Conversation',
     'ConversationMessage',
     'ConversationParticipant',
