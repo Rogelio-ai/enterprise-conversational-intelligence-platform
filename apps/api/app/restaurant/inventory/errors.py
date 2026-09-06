@@ -55,3 +55,11 @@ class DuplicateOpeningBalanceError(InventoryError):
 
 class StockMovementAlreadyReversedError(InventoryError):
     code = 'STOCK_MOVEMENT_ALREADY_REVERSED'
+
+
+class OrderConsumptionNotFoundError(InventoryError):
+    code = 'ORDER_CONSUMPTION_NOT_FOUND'
+
+
+class OrderConsumptionConflictError(InventoryError):
+    code = 'ORDER_CONSUMPTION_CONFLICT'

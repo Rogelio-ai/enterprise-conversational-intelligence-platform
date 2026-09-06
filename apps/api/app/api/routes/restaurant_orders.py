@@ -14,6 +14,8 @@ from app.core.middleware import get_correlation_id
 from app.restaurant.orders import acceptance, acceptance_errors
 from app.restaurant.commercial.errors import CommercialResolutionError
 from app.restaurant.orders.errors import DraftNotFoundError
+from app.restaurant.inventory import errors as inventory_errors
+from app.restaurant.inventory import order_consumption
 
 
 router = APIRouter(tags=['restaurant-orders'])
@@ -88,12 +90,60 @@ class RestaurantOrderResponse(BaseModel):
     items: tuple[RestaurantOrderItemResponse, ...]
 
 
+class OrderConsumptionMovementResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    stock_movement_id: int
+    restaurant_order_item_id: int
+    restaurant_order_item_component_id: int | None
+    source_product_id: int
+    inventory_item_id: int
+    inventory_item_name: str
+    base_uom: str
+    consumed_quantity: Decimal
+    consumption_definition_version: int
+    unit_cost: Decimal
+    currency: str
+    extended_cost: Decimal
+
+
+class OrderItemConsumptionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    restaurant_order_item_id: int
+    product_id: int
+    product_name: str
+    quantity: Decimal
+    commercial_amount: Decimal
+    coverage_status: str
+    unresolved_evidence: tuple[dict[str, object], ...]
+    movements: tuple[OrderConsumptionMovementResponse, ...]
+    historical_theoretical_cost: Decimal | None
+    theoretical_gross_margin: Decimal | None
+    theoretical_margin_percent: Decimal | None
+
+
+class OrderConsumptionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    restaurant_order_id: int
+    currency: str
+    coverage_status: str
+    schema_version: int
+    source_fingerprint: str
+    unresolved_evidence: tuple[dict[str, object], ...]
+    items: tuple[OrderItemConsumptionResponse, ...]
+    commercial_amount: Decimal
+    historical_theoretical_cost: Decimal | None
+    theoretical_gross_margin: Decimal | None
+    theoretical_margin_percent: Decimal | None
+
+
 def _error(exc: Exception, *, diner: bool) -> HTTPException:
     from app.restaurant.checks.errors import OrderingBlockedError
     if isinstance(exc, OrderingBlockedError):
         return HTTPException(status.HTTP_409_CONFLICT, {'code': exc.code, 'message': str(exc)})
     if isinstance(exc, acceptance_errors.RestaurantOrderNotFoundError):
         return HTTPException(status.HTTP_404_NOT_FOUND, 'Restaurant Order not found')
+    if isinstance(exc, inventory_errors.OrderConsumptionNotFoundError):
+        return HTTPException(status.HTTP_404_NOT_FOUND, str(exc))
     if isinstance(
         exc,
         (
@@ -195,3 +245,26 @@ async def get_staff_order(
     except Exception as exc:
         raise _error(exc, diner=False) from exc
     return RestaurantOrderResponse.model_validate(value)
+
+
+@router.get(
+    '/restaurant-orders/{order_id}/theoretical-consumption',
+    response_model=OrderConsumptionResponse,
+)
+async def get_staff_order_theoretical_consumption(
+    order_id: Annotated[int, Path(gt=0)],
+    context: Annotated[
+        AuthenticatedContext, Depends(require_permission('restaurant_order.read'))
+    ],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    _inventory_context: Annotated[
+        AuthenticatedContext, Depends(require_permission('inventory.read'))
+    ],
+) -> OrderConsumptionResponse:
+    try:
+        value = await order_consumption.get_order_consumption(
+            db, tenant_id=context.tenant_id, order_id=order_id
+        )
+    except Exception as exc:
+        raise _error(exc, diner=False) from exc
+    return OrderConsumptionResponse.model_validate(value)

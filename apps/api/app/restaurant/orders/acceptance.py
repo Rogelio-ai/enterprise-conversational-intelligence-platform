@@ -34,6 +34,7 @@ from app.restaurant.orders.acceptance_contracts import (
     ConfirmationResult,
     RestaurantOrderProjection,
 )
+from app.restaurant.inventory import order_consumption
 from app.restaurant.service_sessions import service as service_session_service
 from app.restaurant.tax import service as tax_service
 from app.restaurant.tax.contracts import RestaurantTaxLineCandidate
@@ -513,6 +514,7 @@ async def confirm_current_order(
         draft.current_slot = None
         draft.terminal_at = accepted_at
         await db.flush()
+        await order_consumption.materialize_accepted_order(db, order=order)
         await db.commit()
         await db.refresh(order)
     except Exception as exc:

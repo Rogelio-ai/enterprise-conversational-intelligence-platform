@@ -81,3 +81,49 @@ class ProductCostProjection:
     currency: str | None
     components: tuple[CostComponentProjection, ...]
     total_theoretical_cost: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class OrderConsumptionMovementProjection:
+    stock_movement_id: int
+    restaurant_order_item_id: int
+    restaurant_order_item_component_id: int | None
+    source_product_id: int
+    inventory_item_id: int
+    inventory_item_name: str
+    base_uom: str
+    consumed_quantity: Decimal
+    consumption_definition_version: int
+    unit_cost: Decimal
+    currency: str
+    extended_cost: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class OrderItemConsumptionProjection:
+    restaurant_order_item_id: int
+    product_id: int
+    product_name: str
+    quantity: Decimal
+    commercial_amount: Decimal
+    coverage_status: str
+    unresolved_evidence: tuple[dict[str, object], ...]
+    movements: tuple[OrderConsumptionMovementProjection, ...]
+    historical_theoretical_cost: Decimal | None
+    theoretical_gross_margin: Decimal | None
+    theoretical_margin_percent: Decimal | None
+
+
+@dataclass(frozen=True, slots=True)
+class OrderConsumptionProjection:
+    restaurant_order_id: int
+    currency: str
+    coverage_status: str
+    schema_version: int
+    source_fingerprint: str
+    unresolved_evidence: tuple[dict[str, object], ...]
+    items: tuple[OrderItemConsumptionProjection, ...]
+    commercial_amount: Decimal
+    historical_theoretical_cost: Decimal | None
+    theoretical_gross_margin: Decimal | None
+    theoretical_margin_percent: Decimal | None

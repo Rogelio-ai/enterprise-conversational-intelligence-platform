@@ -30,6 +30,7 @@ from app.models.inventory import (
     InventoryItem,
     ProductConsumptionComponent,
     ProductConsumptionDefinition,
+    RestaurantOrderConsumption,
     StockMovement,
 )
 from app.models.menu import (
@@ -150,6 +151,7 @@ __all__ = [
     'Resource',
     'RestaurantServiceSession',
     'RestaurantOrder',
+    'RestaurantOrderConsumption',
     'RestaurantOrderItem',
     'RestaurantOrderItemComponent',
     'RestaurantOrderItemFiscalSnapshot',

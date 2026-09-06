@@ -10,6 +10,7 @@ from sqlalchemy import (
     ForeignKeyConstraint,
     Index,
     Integer,
+    JSON,
     Numeric,
     SmallInteger,
     String,
@@ -203,6 +204,54 @@ class ProductConsumptionComponent(Base):
     )
 
 
+class RestaurantOrderConsumption(Base):
+    __tablename__ = 'restaurant_order_consumptions'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['restaurant_order_id', 'tenant_id', 'organization_id', 'location_id'],
+            [
+                'restaurant_orders.id', 'restaurant_orders.tenant_id',
+                'restaurant_orders.organization_id', 'restaurant_orders.location_id',
+            ],
+            name='fk_order_consumptions_order_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id',
+            'restaurant_order_id', name='uq_order_consumptions_scope',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'organization_id', 'location_id', 'restaurant_order_id',
+            name='uq_order_consumptions_order',
+        ),
+        CheckConstraint(
+            "coverage_status IN ('COMPLETE','PARTIAL')",
+            name='ck_order_consumptions_coverage',
+        ),
+        CheckConstraint('schema_version >= 1', name='ck_order_consumptions_version'),
+        Index(
+            'ix_order_consumptions_order', 'tenant_id', 'restaurant_order_id', 'id'
+        ),
+        OPTIONS,
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    restaurant_order_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    coverage_status: Mapped[str] = mapped_column(String(16), nullable=False)
+    schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_fingerprint: Mapped[str] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=False
+    )
+    unresolved_evidence: Mapped[list[dict[str, object]]] = mapped_column(
+        JSON, nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class StockMovement(Base):
     __tablename__ = 'stock_movements'
     __table_args__ = (
@@ -226,6 +275,59 @@ class StockMovement(Base):
             ],
             name='fk_stock_movements_reversal_scope', ondelete='RESTRICT',
         ),
+        ForeignKeyConstraint(
+            [
+                'restaurant_order_consumption_id', 'tenant_id', 'organization_id',
+                'location_id', 'restaurant_order_id',
+            ],
+            [
+                'restaurant_order_consumptions.id',
+                'restaurant_order_consumptions.tenant_id',
+                'restaurant_order_consumptions.organization_id',
+                'restaurant_order_consumptions.location_id',
+                'restaurant_order_consumptions.restaurant_order_id',
+            ],
+            name='fk_stock_movements_order_consumption_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['restaurant_order_item_id', 'tenant_id', 'restaurant_order_id'],
+            [
+                'restaurant_order_items.id', 'restaurant_order_items.tenant_id',
+                'restaurant_order_items.order_id',
+            ],
+            name='fk_stock_movements_order_item_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            [
+                'restaurant_order_item_component_id', 'tenant_id',
+                'restaurant_order_id', 'restaurant_order_item_id',
+            ],
+            [
+                'restaurant_order_item_components.id',
+                'restaurant_order_item_components.tenant_id',
+                'restaurant_order_item_components.order_id',
+                'restaurant_order_item_components.order_item_id',
+            ],
+            name='fk_stock_movements_order_component_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['source_product_id', 'tenant_id', 'organization_id'],
+            ['products.id', 'products.tenant_id', 'products.organization_id'],
+            name='fk_stock_movements_source_product_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            [
+                'consumption_definition_id', 'tenant_id', 'organization_id',
+                'location_id',
+            ],
+            [
+                'product_consumption_definitions.id',
+                'product_consumption_definitions.tenant_id',
+                'product_consumption_definitions.organization_id',
+                'product_consumption_definitions.location_id',
+            ],
+            name='fk_stock_movements_definition_scope', ondelete='RESTRICT',
+        ),
         UniqueConstraint(
             'id', 'tenant_id', 'organization_id', 'location_id', 'inventory_item_id',
             name='uq_stock_movements_scope',
@@ -240,6 +342,10 @@ class StockMovement(Base):
         ),
         UniqueConstraint(
             'reversal_of_movement_id', name='uq_stock_movements_direct_reversal'
+        ),
+        UniqueConstraint(
+            'restaurant_order_consumption_id', 'consumption_source_key',
+            name='uq_stock_movements_consumption_source',
         ),
         CheckConstraint(
             "movement_type IN ('OPENING_BALANCE','MANUAL_IN','MANUAL_OUT',"
@@ -275,9 +381,37 @@ class StockMovement(Base):
             "AND actor_reference IS NOT NULL)",
             name='ck_stock_movements_actor',
         ),
+        CheckConstraint(
+            "(movement_type='CONSUMPTION' AND "
+            'restaurant_order_consumption_id IS NOT NULL AND '
+            'restaurant_order_id IS NOT NULL AND restaurant_order_item_id IS NOT NULL AND '
+            'source_product_id IS NOT NULL AND consumption_definition_id IS NOT NULL AND '
+            'consumption_definition_version IS NOT NULL AND '
+            'inventory_item_name_snapshot IS NOT NULL AND base_uom_snapshot IS NOT NULL AND '
+            'unit_cost_snapshot IS NOT NULL AND currency_snapshot IS NOT NULL AND '
+            'extended_cost_snapshot IS NOT NULL AND consumption_source_key IS NOT NULL) OR '
+            "(movement_type<>'CONSUMPTION' AND "
+            'restaurant_order_consumption_id IS NULL AND restaurant_order_id IS NULL AND '
+            'restaurant_order_item_id IS NULL AND restaurant_order_item_component_id IS NULL AND '
+            'source_product_id IS NULL AND consumption_definition_id IS NULL AND '
+            'consumption_definition_version IS NULL AND inventory_item_name_snapshot IS NULL AND '
+            'base_uom_snapshot IS NULL AND unit_cost_snapshot IS NULL AND '
+            'currency_snapshot IS NULL AND extended_cost_snapshot IS NULL AND '
+            'consumption_source_key IS NULL)',
+            name='ck_stock_movements_consumption_evidence',
+        ),
+        CheckConstraint(
+            '(unit_cost_snapshot IS NULL OR unit_cost_snapshot >= 0) AND '
+            '(extended_cost_snapshot IS NULL OR extended_cost_snapshot >= 0)',
+            name='ck_stock_movements_consumption_cost',
+        ),
         Index(
             'ix_stock_movements_stock', 'tenant_id', 'location_id',
             'inventory_item_id', 'recorded_at', 'id',
+        ),
+        Index(
+            'ix_stock_movements_order_consumption', 'tenant_id',
+            'restaurant_order_id', 'restaurant_order_item_id', 'id',
         ),
         OPTIONS,
     )
@@ -310,6 +444,37 @@ class StockMovement(Base):
     request_schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
     request_fingerprint: Mapped[str] = mapped_column(
         String(64, collation='ascii_bin'), nullable=False
+    )
+    restaurant_order_consumption_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    restaurant_order_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    restaurant_order_item_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    restaurant_order_item_component_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    source_product_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    consumption_definition_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    consumption_definition_version: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    inventory_item_name_snapshot: Mapped[str | None] = mapped_column(
+        String(200), nullable=True
+    )
+    base_uom_snapshot: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    unit_cost_snapshot: Mapped[Decimal | None] = mapped_column(
+        Numeric(19, 6), nullable=True
+    )
+    currency_snapshot: Mapped[str | None] = mapped_column(
+        String(3, collation='ascii_bin'), nullable=True
+    )
+    extended_cost_snapshot: Mapped[Decimal | None] = mapped_column(
+        Numeric(31, 12), nullable=True
+    )
+    consumption_source_key: Mapped[str | None] = mapped_column(
+        String(128, collation='ascii_bin'), nullable=True
     )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(), nullable=False, server_default=func.current_timestamp()
