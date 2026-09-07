@@ -293,3 +293,26 @@ export interface RestaurantOrderResponse {
   payable_total: string;
   items: RestaurantOrderItemResponse[];
 }
+
+export interface AccountPreviewLineResponse {
+  order_id: number;
+  order_item_id: number;
+  product_id: number;
+  product_name: string;
+  quantity: string;
+  unit_price: string;
+  discount_amount: string;
+  commercial_amount: string;
+}
+
+export interface AccountPreviewResponse {
+  diner_session_id: number;
+  display_name: string;
+  currency: string | null;
+  eligible_order_ids: number[];
+  lines: AccountPreviewLineResponse[];
+  eligible_total: string;
+  active_check_id: number | null;
+  has_active_nonempty_draft: boolean;
+  experience: ExperienceResponse;
+}

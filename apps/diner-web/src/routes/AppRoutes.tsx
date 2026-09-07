@@ -7,6 +7,7 @@ import { JoinPage } from '../pages/JoinPage';
 import { MenuPage } from '../pages/MenuPage';
 import { ProductDetailPage } from '../pages/ProductDetailPage';
 import { DraftReviewPage } from '../pages/DraftReviewPage';
+import { AccountPreviewPage } from '../pages/AccountPreviewPage';
 import { useAuth } from '../session/AuthContext';
 
 function SessionBoundary({ children }: { children: ReactNode }) {
@@ -34,6 +35,7 @@ export function AppRoutes() {
       <Route path="/menu" element={<SessionBoundary><MenuPage /></SessionBoundary>} />
       <Route path="/products/:productId" element={<SessionBoundary><ProductDetailPage /></SessionBoundary>} />
       <Route path="/order" element={<SessionBoundary><DraftReviewPage /></SessionBoundary>} />
+      <Route path="/account" element={<SessionBoundary><AccountPreviewPage /></SessionBoundary>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

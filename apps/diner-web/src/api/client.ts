@@ -1,5 +1,6 @@
 import type {
   AddDraftItemRequest,
+  AccountPreviewResponse,
   ApiErrorBody,
   CheckoutPreviewResponse,
   ConfirmOrderRequest,
@@ -154,5 +155,9 @@ export const dinerApi = {
 
   listOrders(): Promise<RestaurantOrderResponse[]> {
     return request('/diner/orders', {}, true);
+  },
+
+  getAccountPreview(): Promise<AccountPreviewResponse> {
+    return request('/diner/account-preview', {}, true);
   },
 };

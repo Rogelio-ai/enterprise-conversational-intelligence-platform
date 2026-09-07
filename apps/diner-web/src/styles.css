@@ -329,6 +329,35 @@ button, a, input { -webkit-tap-highlight-color: transparent; }
 .accepted-order-summary li span { color: var(--color-text-secondary); }
 .accepted-order-summary strong { font-variant-numeric: tabular-nums; }
 .accepted-order-summary > div { margin-top: .4rem; padding-top: 1rem; border-top: 1px solid var(--color-border); font-size: 1.05rem; font-weight: 800; }
+.account-main { width: min(calc(100% - 2rem), 68rem); min-height: calc(100svh - 150px); margin: 0 auto; padding: var(--space-xl) 0 var(--space-2xl); }
+.account-hero { max-width: 42rem; margin-bottom: var(--space-xl); }
+.account-hero h1 { margin: 0; font-family: var(--font-display); font-size: clamp(3rem, 13vw, 5.5rem); line-height: .95; letter-spacing: -.055em; }
+.account-hero h1:focus { outline: 0; }
+.account-hero > p:last-child { margin: 1rem 0 0; color: var(--color-text-secondary); line-height: 1.6; }
+.account-notices { display: grid; gap: var(--space-sm); margin-bottom: var(--space-lg); }
+.account-notices p { margin: 0; padding: var(--space-md); border: 1px solid color-mix(in srgb, var(--color-primary) 35%, var(--color-border)); border-radius: var(--radius-sm); color: var(--color-text-secondary); background: var(--color-surface); line-height: 1.5; }
+.account-notices strong { color: var(--color-primary); }
+.account-layout { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(17rem, .65fr); align-items: start; gap: var(--space-lg); }
+.account-consumption, .account-summary-card, .account-empty { border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-elevated); box-shadow: var(--shadow-card); }
+.account-consumption { padding: clamp(1.25rem, 4vw, 2rem); }
+.account-section-heading h2, .account-summary-card h2, .account-empty h2 { margin: 0; font-family: var(--font-display); font-size: clamp(1.65rem, 5vw, 2.2rem); letter-spacing: -.025em; }
+.account-consumption ul { display: grid; gap: var(--space-md); margin: var(--space-lg) 0 0; padding: 0; list-style: none; }
+.account-consumption li { padding: var(--space-md); border-radius: var(--radius-md); background: var(--color-background); }
+.account-line-heading { display: flex; align-items: baseline; justify-content: space-between; gap: var(--space-md); }
+.account-line-heading > span { color: var(--color-text-secondary); font-size: .84rem; }
+.account-line-heading strong { font-size: 1.05rem; }
+.account-consumption dl { display: grid; gap: .4rem; margin: .85rem 0 0; padding-top: .85rem; border-top: 1px solid var(--color-border); }
+.account-consumption dl > div { display: flex; justify-content: space-between; gap: var(--space-md); }
+.account-consumption dt { color: var(--color-text-secondary); }
+.account-consumption dd { margin: 0; font-variant-numeric: tabular-nums; }
+.account-summary-card { position: sticky; top: var(--space-md); padding: var(--space-lg); }
+.account-summary-card > strong { display: block; margin-top: var(--space-md); color: var(--color-success); font-family: var(--font-display); font-size: clamp(2rem, 7vw, 3.25rem); font-variant-numeric: tabular-nums; line-height: 1; }
+.account-summary-card > p:last-child { margin: var(--space-lg) 0 0; padding-top: var(--space-md); border-top: 1px solid var(--color-border); color: var(--color-text-secondary); font-size: .8rem; line-height: 1.5; }
+.account-empty { display: grid; justify-items: center; padding: clamp(2rem, 8vw, 4rem); text-align: center; }
+.account-empty > span { display: grid; width: 4rem; height: 4rem; place-items: center; border: 1px solid var(--color-primary); border-radius: 50%; color: var(--color-primary); font-size: 1.5rem; }
+.account-empty h2 { margin-top: var(--space-md); }
+.account-empty p { margin: .65rem 0 var(--space-lg); color: var(--color-text-secondary); }
+.account-consumption--loading { display: grid; min-height: 15rem; align-content: center; gap: var(--space-lg); }
 .draft-empty { display: grid; justify-items: center; padding: clamp(2rem, 8vw, 4rem); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-elevated); box-shadow: var(--shadow-card); text-align: center; }
 .draft-empty > span { display: grid; width: 4rem; height: 4rem; place-items: center; border: 1px solid var(--color-primary); border-radius: 50%; color: var(--color-primary); font-size: 1.5rem; }
 .draft-empty h2 { margin: var(--space-md) 0 0; font-family: var(--font-display); font-size: 2rem; }
@@ -367,6 +396,7 @@ button, a, input { -webkit-tap-highlight-color: transparent; }
   .app-header { align-items: flex-start; flex-wrap: wrap; }
   .app-header-actions { width: 100%; justify-content: space-between; }
   .app-header .theme-button span:last-child { display: none; }
+  .app-header .primary-nav { min-width: 0; overflow-x: auto; }
   .menu-main { padding-top: var(--space-lg); }
   .menu-group-heading { align-items: flex-start; flex-direction: column; }
   .section-nav { width: calc(100% + 1rem); margin-left: -.25rem; }
@@ -385,6 +415,10 @@ button, a, input { -webkit-tap-highlight-color: transparent; }
   .order-commercial-summary { grid-row: auto; }
   .order-confirm-button { width: 100%; }
   .accepted-order-summary li, .accepted-order-summary > div { align-items: flex-start; flex-direction: column; }
+  .account-main { padding-top: var(--space-lg); }
+  .account-layout { grid-template-columns: 1fr; }
+  .account-summary-card { position: static; }
+  .account-line-heading { align-items: flex-start; flex-direction: column; gap: .35rem; }
 }
 
 @media (max-width: 380px) {
