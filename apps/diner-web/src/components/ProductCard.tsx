@@ -1,20 +1,6 @@
 import { Link } from 'react-router-dom';
 import type { ProductSummaryResponse } from '../api/contracts';
-
-function formatPrice(amount: string, currency: string): string {
-  const numericAmount = Number(amount);
-  if (!Number.isFinite(numericAmount)) return `${amount} ${currency}`;
-  try {
-    return new Intl.NumberFormat('es-MX', {
-      style: 'currency',
-      currency,
-      minimumFractionDigits: 2,
-      maximumFractionDigits: 2,
-    }).format(numericAmount);
-  } catch {
-    return `${amount} ${currency}`;
-  }
-}
+import { formatPrice } from '../utils/formatters';
 
 export function ProductCard({ product }: { product: ProductSummaryResponse }) {
   const category = product.category_path.map((item) => item.name).join(' · ');

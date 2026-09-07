@@ -54,6 +54,13 @@ const menuResponse = {
   experience: { state: 'OK', code: 'OK', required_input: [], allowed_actions: ['SHOW_PRODUCT', 'ADD_ITEM'], next_action: null },
 };
 
+const productDetailResponse = {
+  product: menuResponse.menus[0].sections[0].products[0],
+  fixed_components: [{ product_id: 201, name: 'Fruta de temporada', quantity: '1.0000' }],
+  choice_groups: [{ id: 301, name: 'Bebida', min_selections: 1, max_selections: 1, required: true, options: [] }],
+  experience: { state: 'OK', code: 'OK', required_input: [], allowed_actions: ['ADD_ITEM', 'BROWSE_MENU'], next_action: 'CONFIGURE_PRODUCT' },
+};
+
 function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
@@ -88,6 +95,7 @@ function mockApi(menuHandler: () => Promise<Response>) {
     const url = String(input);
     if (url.endsWith('/diner-session')) return Promise.resolve(jsonResponse(currentSession));
     if (url.endsWith('/diner/menu')) return menuHandler();
+    if (url.endsWith('/diner/products/101')) return Promise.resolve(jsonResponse(productDetailResponse));
     return Promise.reject(new Error(`Unexpected request: ${url} ${init?.method || 'GET'}`));
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -157,6 +165,7 @@ describe('menu browsing', () => {
     expect(productLink).toHaveAttribute('href', '/products/101');
     await userEvent.click(productLink);
     expect(await screen.findByRole('heading', { name: 'Desayuno campirano' })).toBeInTheDocument();
+    expect(screen.getByText('$125.00')).toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Volver al menú' })).toHaveAttribute('href', '/menu');
   });
 

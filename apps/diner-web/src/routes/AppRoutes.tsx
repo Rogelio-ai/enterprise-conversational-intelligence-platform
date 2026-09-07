@@ -5,7 +5,7 @@ import { StateMessage } from '../components/StateMessage';
 import { DinerHomePage } from '../pages/DinerHomePage';
 import { JoinPage } from '../pages/JoinPage';
 import { MenuPage } from '../pages/MenuPage';
-import { ProductRouteBoundary } from '../pages/ProductRouteBoundary';
+import { ProductDetailPage } from '../pages/ProductDetailPage';
 import { useAuth } from '../session/AuthContext';
 
 function SessionBoundary({ children }: { children: ReactNode }) {
@@ -31,7 +31,7 @@ export function AppRoutes() {
       <Route path="/join/:joinContextKey" element={<JoinPage />} />
       <Route path="/app" element={<SessionBoundary><DinerHomePage /></SessionBoundary>} />
       <Route path="/menu" element={<SessionBoundary><MenuPage /></SessionBoundary>} />
-      <Route path="/products/:productId" element={<SessionBoundary><ProductRouteBoundary /></SessionBoundary>} />
+      <Route path="/products/:productId" element={<SessionBoundary><ProductDetailPage /></SessionBoundary>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

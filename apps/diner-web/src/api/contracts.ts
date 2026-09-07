@@ -84,3 +84,33 @@ export interface DinerMenuResponse {
   menus: MenuResponse[];
   experience: ExperienceResponse;
 }
+
+export interface FixedComponentResponse {
+  product_id: number;
+  name: string;
+  quantity: string;
+}
+
+export interface ChoiceOptionResponse {
+  id: number;
+  product_id: number;
+  name: string;
+  description: string | null;
+  quantity: string;
+}
+
+export interface ChoiceGroupResponse {
+  id: number;
+  name: string;
+  min_selections: number;
+  max_selections: number;
+  required: boolean;
+  options: ChoiceOptionResponse[];
+}
+
+export interface ProductDetailResponse {
+  product: ProductSummaryResponse;
+  fixed_components: FixedComponentResponse[];
+  choice_groups: ChoiceGroupResponse[];
+  experience: ExperienceResponse;
+}

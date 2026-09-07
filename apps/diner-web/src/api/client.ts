@@ -4,6 +4,7 @@ import type {
   DinerJoinResponse,
   DinerMenuResponse,
   DinerSessionResponse,
+  ProductDetailResponse,
 } from './contracts';
 import { readStoredSession } from '../session/storage';
 
@@ -86,5 +87,9 @@ export const dinerApi = {
 
   getMenu(): Promise<DinerMenuResponse> {
     return request('/diner/menu', {}, true);
+  },
+
+  getProduct(productId: number): Promise<ProductDetailResponse> {
+    return request(`/diner/products/${productId}`, {}, true);
   },
 };
