@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from decimal import Decimal
 from typing import Any, Mapping, Protocol
+from urllib.parse import quote
 
 import httpx
 
@@ -12,6 +13,9 @@ from app.restaurant.integrations.payments.contracts import (
     PaymentExecutionOutcome,
     PaymentExecutionRequest,
     PaymentExecutionResult,
+    PaymentRecoveryOutcome,
+    PaymentRecoveryRequest,
+    PaymentRecoveryResult,
 )
 
 
@@ -33,6 +37,10 @@ class ConektaHttpResponse:
 class ConektaOrderTransport(Protocol):
     async def create_order(
         self, *, private_key: str, payload: Mapping[str, Any]
+    ) -> ConektaHttpResponse: ...
+
+    async def retrieve_order(
+        self, *, private_key: str, order_id: str
     ) -> ConektaHttpResponse: ...
 
 
@@ -66,6 +74,35 @@ class HttpxConektaOrderTransport:
                 response = await client.post(
                     self._endpoint,
                     json=payload,
+                    headers={
+                        'Authorization': f'Bearer {private_key}',
+                        'Accept': CONEKTA_ACCEPT,
+                        'Content-Type': 'application/json',
+                        'Accept-Language': 'es',
+                    },
+                )
+        except httpx.HTTPError as exc:
+            raise ConektaAmbiguousTransportError(
+                'Conekta outcome is unknown after transport interruption'
+            ) from exc
+        try:
+            body = response.json()
+        except ValueError:
+            body = None
+        return ConektaHttpResponse(
+            status_code=response.status_code,
+            body=body if isinstance(body, Mapping) else None,
+        )
+
+    async def retrieve_order(
+        self, *, private_key: str, order_id: str
+    ) -> ConektaHttpResponse:
+        try:
+            async with httpx.AsyncClient(
+                timeout=self._timeout, transport=self._transport
+            ) as client:
+                response = await client.get(
+                    f'{self._endpoint}/{quote(order_id, safe="")}',
                     headers={
                         'Authorization': f'Bearer {private_key}',
                         'Accept': CONEKTA_ACCEPT,
@@ -135,7 +172,7 @@ def _safe_evidence(body: Mapping[str, Any]) -> dict[str, str | None]:
 
 
 class ConektaPaymentExecutor:
-    """Initial Conekta CARD Order executor; recovery and 3DS continuation are separate."""
+    """Conekta CARD Order execution and read-only recovery; 3DS is separate."""
 
     def __init__(self, transport: ConektaOrderTransport | None = None) -> None:
         self._transport = transport or HttpxConektaOrderTransport()
@@ -191,12 +228,98 @@ class ConektaPaymentExecutor:
             )
         return self._result(response)
 
+    async def recover(
+        self,
+        *,
+        request: PaymentRecoveryRequest,
+        merchant_credential: EphemeralMerchantCredential | None,
+    ) -> PaymentRecoveryResult:
+        reference = request.external_reference
+        if merchant_credential is None:
+            return self._recovery_uncertain(
+                reference, 'CONEKTA_CREDENTIAL_UNAVAILABLE'
+            )
+        if reference is None:
+            return self._recovery_uncertain(
+                None, 'CONEKTA_RECOVERY_REFERENCE_REQUIRED'
+            )
+        try:
+            response = await self._transport.retrieve_order(
+                private_key=merchant_credential.value.get_secret_value(),
+                order_id=reference,
+            )
+        except ConektaAmbiguousTransportError:
+            return self._recovery_uncertain(
+                reference, 'CONEKTA_RECOVERY_TRANSPORT_UNCERTAIN'
+            )
+        return self._recovery_result(response, expected_reference=reference)
+
     @staticmethod
     def _failure(code: str) -> PaymentExecutionResult:
         return PaymentExecutionResult(
             outcome=PaymentExecutionOutcome.DEFINITE_FAILURE,
             error_code=code,
             error_message='Conekta payment could not be executed',
+        )
+
+    @staticmethod
+    def _recovery_uncertain(
+        reference: str | None,
+        code: str,
+        *,
+        external_status: str | None = None,
+    ) -> PaymentRecoveryResult:
+        return PaymentRecoveryResult(
+            outcome=PaymentRecoveryOutcome.STILL_UNCERTAIN,
+            external_reference=reference,
+            external_status=external_status,
+            error_code=code,
+            error_message='Conekta did not establish a definitive recovery result',
+        )
+
+    @classmethod
+    def _recovery_result(
+        cls,
+        response: ConektaHttpResponse,
+        *,
+        expected_reference: str,
+    ) -> PaymentRecoveryResult:
+        body = response.body
+        if not 200 <= response.status_code < 300 or body is None:
+            return cls._recovery_uncertain(
+                expected_reference,
+                'CONEKTA_RECOVERY_RESPONSE_UNCERTAIN',
+                external_status=f'HTTP_{response.status_code}',
+            )
+
+        evidence = _safe_evidence(body)
+        if evidence['external_reference'] != expected_reference:
+            return cls._recovery_uncertain(
+                expected_reference,
+                'CONEKTA_RECOVERY_IDENTITY_UNCERTAIN',
+                external_status=evidence['external_status'],
+            )
+        payment_status = evidence['external_status']
+        if payment_status == 'paid':
+            return PaymentRecoveryResult(
+                outcome=PaymentRecoveryOutcome.CONFIRMED_SUCCESS,
+                **evidence,
+            )
+        if payment_status in {
+            'declined', 'rejected', 'failed', 'error', 'expired',
+            'cancelled', 'canceled', 'voided',
+        }:
+            return PaymentRecoveryResult(
+                outcome=PaymentRecoveryOutcome.DEFINITE_FAILURE,
+                error_code='CONEKTA_RECOVERY_PAYMENT_FAILED',
+                error_message='Conekta established that the payment did not succeed',
+                **evidence,
+            )
+        return PaymentRecoveryResult(
+            outcome=PaymentRecoveryOutcome.STILL_UNCERTAIN,
+            error_code='CONEKTA_RECOVERY_RESULT_PENDING',
+            error_message='Conekta payment recovery requires later confirmation',
+            **evidence,
         )
 
     @classmethod
