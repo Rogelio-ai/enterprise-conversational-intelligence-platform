@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import userEvent from '@testing-library/user-event';
 import { MemoryRouter } from 'react-router-dom';
 import { AppRoutes } from '../routes/AppRoutes';
+import { CONEKTA_SCRIPT_URL, type ConektaCardParameters } from '../payments/conekta';
 import { AuthProvider } from '../session/AuthContext';
 import { ThemeProvider } from '../theme/ThemeContext';
 
@@ -67,6 +68,15 @@ function mockFetch(
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith('/diner-session')) return Promise.resolve(json(currentSession));
+    if (url.endsWith('/diner/restaurant-checks/77/settlement')) {
+      return Promise.resolve(json({
+        check_id: 77, check_status: 'OPEN', check_version: 1,
+        check_fingerprint: 'fingerprint', liability_total: '190.0000',
+        currency: 'MXN', confirmed_settlement: '40.0000',
+        reserved_financial_exposure: '0.0000', uncertain_exposure: '0.0000',
+        available_to_initiate: '150.0000', payments: [],
+      }));
+    }
     return handler(url, init);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -74,7 +84,12 @@ function mockFetch(
 }
 
 beforeEach(() => { sessionStorage.clear(); localStorage.clear(); seedSession(); });
-afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
+afterEach(() => {
+  cleanup();
+  delete window.ConektaCheckoutComponents;
+  document.querySelectorAll(`script[src="${CONEKTA_SCRIPT_URL}"]`).forEach((script) => script.remove());
+  vi.unstubAllGlobals();
+});
 
 describe('check creation and review', () => {
   it('does not create on entry and sends the exact individual command only after confirmation', async () => {
@@ -353,5 +368,76 @@ describe('check creation and review', () => {
     expect(sessionStorage.getItem('diner-auth-session-v1')).not.toContain('+52 55 1234 5678');
     expect(fetchMock.mock.calls.some(([input, init]) => String(input).includes('/payments') && init?.method === 'POST')).toBe(false);
     expect(screen.queryByLabelText(/número de tarjeta|cvv|cvc|fecha de vencimiento/i)).not.toBeInTheDocument();
+  });
+
+  it('hands the opaque token to one explicit payment initiation and renders its authoritative result', async () => {
+    let cardParameters: ConektaCardParameters | undefined;
+    let releasePayment: ((value: Response) => void) | undefined;
+    const pendingPayment = new Promise<Response>((resolve) => { releasePayment = resolve; });
+    const fetchMock = mockFetch((url, init) => {
+      if (url.includes('/diner/restaurant-checks/77?view=detailed')) return Promise.resolve(json(check()));
+      if (url.endsWith('/diner/payment-executors?method_category=CARD&currency=MXN')) {
+        return Promise.resolve(json([{
+          executor_key: 'conekta-card', display_name: 'Tarjeta', topology: 'LOCATION',
+          method_category: 'CARD', currency: 'MXN',
+        }]));
+      }
+      if (url.endsWith('/diner/payment-executors/conekta-card/client-configuration?currency=MXN')) {
+        return Promise.resolve(json({
+          provider: 'CONEKTA', tokenization_mode: 'WEB_TOKENIZER',
+          public_key: 'key_test_public', locale: 'es',
+        }));
+      }
+      if (url.endsWith('/diner/restaurant-checks/77/payments') && init?.method === 'POST') {
+        return pendingPayment;
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    renderPath('/check/77');
+
+    await userEvent.type(await screen.findByRole('textbox', { name: 'Correo electrónico' }), 'ana@example.com');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Teléfono' }), '+525500000001');
+    await userEvent.click(screen.getByRole('button', { name: 'Continuar al formulario de tarjeta' }));
+    await waitFor(() => expect(document.querySelector(`script[src="${CONEKTA_SCRIPT_URL}"]`)).not.toBeNull());
+    window.ConektaCheckoutComponents = {
+      Card: (parameters) => { cardParameters = parameters; },
+    };
+    fireEvent.load(document.querySelector(`script[src="${CONEKTA_SCRIPT_URL}"]`) as HTMLScriptElement);
+    await waitFor(() => expect(cardParameters).toBeDefined());
+    const providerSubmit = vi.fn();
+    cardParameters?.callbacks.onUpdateSubmitTrigger(providerSubmit);
+    await userEvent.click(await screen.findByRole('button', { name: 'Continuar con tarjeta' }));
+    expect(providerSubmit).toHaveBeenCalledOnce();
+    cardParameters?.callbacks.onCreateTokenSucceeded({ id: 'tok_payment_once' });
+
+    const pay = await screen.findByRole('button', { name: 'Pagar ahora' });
+    expect(fetchMock.mock.calls.some(([input, request]) => String(input).endsWith('/payments') && request?.method === 'POST')).toBe(false);
+    fireEvent.click(pay);
+    fireEvent.click(pay);
+    await waitFor(() => expect(fetchMock.mock.calls.filter(([input, request]) => (
+      String(input).endsWith('/payments') && request?.method === 'POST'
+    ))).toHaveLength(1));
+    const paymentCall = fetchMock.mock.calls.find(([input, request]) => (
+      String(input).endsWith('/payments') && request?.method === 'POST'
+    ));
+    expect(new Headers(paymentCall?.[1]?.headers).get('Idempotency-Key')).toMatch(/^diner-payment-/);
+    expect(JSON.parse(String(paymentCall?.[1]?.body))).toEqual({
+      expected_check_version: 1,
+      expected_check_fingerprint: 'fingerprint',
+      amount: '150.0000',
+      currency: 'MXN',
+      method_category: 'CARD',
+      payer_type: 'DINER',
+      payer_diner_session_id: 11,
+      selection_mode: 'EXPLICIT',
+      executor_key: 'conekta-card',
+      customer_payment_source: 'tok_payment_once',
+      payment_customer_identity: {
+        display_name: 'Ana', email: 'ana@example.com', phone: '+525500000001',
+      },
+    });
+    expect(sessionStorage.getItem('diner-auth-session-v1')).not.toContain('tok_payment_once');
+    releasePayment?.(json({ state: 'SUCCEEDED', amount: '150.0000', currency: 'MXN' }, 201));
+    expect(await screen.findByRole('heading', { name: 'Pago registrado correctamente' })).toBeInTheDocument();
   });
 });

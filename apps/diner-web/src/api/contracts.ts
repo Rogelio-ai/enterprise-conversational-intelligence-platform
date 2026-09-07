@@ -410,3 +410,71 @@ export interface PaymentExecutorClientConfigurationResponse {
   public_key: string;
   locale: string;
 }
+
+export interface PaymentCustomerIdentityRequest {
+  display_name: string;
+  email: string;
+  phone: string;
+}
+
+export interface PaymentInitiationRequest {
+  expected_check_version: number;
+  expected_check_fingerprint: string;
+  amount: string;
+  currency: string;
+  method_category: 'CARD';
+  payer_type: 'DINER';
+  payer_diner_session_id: number;
+  selection_mode: 'EXPLICIT';
+  executor_key: string;
+  customer_payment_source: string;
+  payment_customer_identity: PaymentCustomerIdentityRequest;
+}
+
+export interface PaymentAttemptResponse {
+  sequence: number;
+  attempt_type: string;
+  result: string;
+  external_reference: string | null;
+  external_status: string | null;
+  error_code: string | null;
+  error_message: string | null;
+}
+
+export interface PaymentResponse {
+  id: number;
+  check_id: number;
+  check_version: number;
+  check_fingerprint: string;
+  amount: string;
+  currency: string;
+  method_category: string;
+  payer_type: string;
+  payer_diner_session_id: number | null;
+  payer_reference: string | null;
+  state: string;
+  executor_key: string | null;
+  external_reference: string | null;
+  external_status: string | null;
+  instrument_brand: string | null;
+  instrument_last_four: string | null;
+  instrument_display: string | null;
+  cash_tendered_amount: string | null;
+  cash_change_due: string | null;
+  terminal_at: string | null;
+  attempts: PaymentAttemptResponse[];
+}
+
+export interface SettlementResponse {
+  check_id: number;
+  check_status: string;
+  check_version: number;
+  check_fingerprint: string;
+  liability_total: string;
+  currency: string;
+  confirmed_settlement: string;
+  reserved_financial_exposure: string;
+  uncertain_exposure: string;
+  available_to_initiate: string;
+  payments: PaymentResponse[];
+}

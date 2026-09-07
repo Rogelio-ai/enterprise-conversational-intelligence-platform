@@ -18,6 +18,9 @@ import type {
   RestaurantCheckResponse,
   AvailablePaymentExecutorResponse,
   PaymentExecutorClientConfigurationResponse,
+  PaymentInitiationRequest,
+  PaymentResponse,
+  SettlementResponse,
 } from './contracts';
 import { readStoredSession } from '../session/storage';
 
@@ -180,6 +183,22 @@ export const dinerApi = {
 
   getCheck(checkId: number): Promise<RestaurantCheckResponse> {
     return request(`/diner/restaurant-checks/${checkId}?view=detailed`, {}, true);
+  },
+
+  getCheckSettlement(checkId: number): Promise<SettlementResponse> {
+    return request(`/diner/restaurant-checks/${checkId}/settlement`, {}, true);
+  },
+
+  initiateCardPayment(
+    checkId: number,
+    payload: PaymentInitiationRequest,
+    idempotencyKey: string,
+  ): Promise<PaymentResponse> {
+    return request(`/diner/restaurant-checks/${checkId}/payments`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(payload),
+    }, true);
   },
 
   getCardPaymentExecutors(currency: string): Promise<AvailablePaymentExecutorResponse[]> {

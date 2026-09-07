@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { ApiError, dinerApi } from '../api/client';
-import type { RestaurantCheckResponse } from '../api/contracts';
+import type { PaymentResponse, RestaurantCheckResponse } from '../api/contracts';
 import { DinerHeader } from '../components/DinerHeader';
 import { ConektaCardTokenizer, type EphemeralCustomerPaymentSource } from '../components/ConektaCardTokenizer';
 import { PaymentContactForm, type PaymentCustomerIdentity } from '../components/PaymentContactForm';
@@ -33,8 +33,13 @@ export function CheckReviewPage() {
   const validId = Number.isSafeInteger(parsedId) && parsedId > 0;
   const heading = useRef<HTMLHeadingElement>(null);
   const { session, knownEmail } = useAuth();
-  const [, setPaymentSource] = useState<EphemeralCustomerPaymentSource | null>(null);
+  const [paymentSource, setPaymentSource] = useState<EphemeralCustomerPaymentSource | null>(null);
   const [paymentCustomerIdentity, setPaymentCustomerIdentity] = useState<PaymentCustomerIdentity | null>(null);
+  const [paymentResult, setPaymentResult] = useState<Pick<PaymentResponse, 'state' | 'amount' | 'currency'> | null>(null);
+  const [submittingPayment, setSubmittingPayment] = useState(false);
+  const [tokenizerGeneration, setTokenizerGeneration] = useState(0);
+  const paymentInFlight = useRef(false);
+  const paymentIntentKey = useRef<string | null>(null);
   const checkQuery = useQuery({
     queryKey: ['diner', 'restaurant-check', parsedId],
     queryFn: () => dinerApi.getCheck(parsedId),
@@ -46,12 +51,66 @@ export function CheckReviewPage() {
     && isZeroMoney(checkQuery.data.uncertain_exposure)
     && !isZeroMoney(checkQuery.data.outstanding);
   const checkCurrency = checkQuery.data?.currency ?? '';
-  const executors = useQuery({
-    queryKey: ['diner', 'card-payment-executors', checkCurrency],
-    queryFn: () => dinerApi.getCardPaymentExecutors(checkCurrency),
+  const settlement = useQuery({
+    queryKey: ['diner', 'restaurant-check-settlement', parsedId],
+    queryFn: () => dinerApi.getCheckSettlement(parsedId),
     enabled: checkCanTokenizeCard,
     retry: false,
   });
+  const settlementCanInitiate = settlement.data?.check_status === 'OPEN'
+    && isZeroMoney(settlement.data.uncertain_exposure)
+    && !isZeroMoney(settlement.data.available_to_initiate);
+  const executors = useQuery({
+    queryKey: ['diner', 'card-payment-executors', settlement.data?.currency ?? checkCurrency],
+    queryFn: () => dinerApi.getCardPaymentExecutors(settlement.data?.currency ?? checkCurrency),
+    enabled: settlementCanInitiate,
+    retry: false,
+  });
+
+  async function submitPayment(executorKey: string) {
+    const authoritative = settlement.data;
+    if (!authoritative || !session || !paymentCustomerIdentity || !paymentSource || paymentInFlight.current) return;
+    paymentInFlight.current = true;
+    setSubmittingPayment(true);
+    if (!paymentIntentKey.current) paymentIntentKey.current = `diner-payment-${crypto.randomUUID()}`;
+    const source = paymentSource.source;
+    setPaymentSource(null);
+    setTokenizerGeneration((current) => current + 1);
+    try {
+      const result = await dinerApi.initiateCardPayment(authoritative.check_id, {
+        expected_check_version: authoritative.check_version,
+        expected_check_fingerprint: authoritative.check_fingerprint,
+        amount: authoritative.available_to_initiate,
+        currency: authoritative.currency,
+        method_category: 'CARD',
+        payer_type: 'DINER',
+        payer_diner_session_id: session.dinerSessionId,
+        selection_mode: 'EXPLICIT',
+        executor_key: executorKey,
+        customer_payment_source: source,
+        payment_customer_identity: paymentCustomerIdentity,
+      }, paymentIntentKey.current);
+      setPaymentResult(result);
+    } catch (unknownError) {
+      if (!(unknownError instanceof ApiError && unknownError.state === 'SESSION_CLOSED')) {
+        setPaymentResult({
+          state: unknownError instanceof ApiError && unknownError.status === 0 ? 'UNCERTAIN' : 'FAILED',
+          amount: authoritative.available_to_initiate,
+          currency: authoritative.currency,
+        });
+      }
+    } finally {
+      paymentInFlight.current = false;
+      setSubmittingPayment(false);
+    }
+  }
+
+  function prepareFreshCard() {
+    paymentIntentKey.current = null;
+    setPaymentResult(null);
+    setPaymentSource(null);
+    setTokenizerGeneration((current) => current + 1);
+  }
 
   useEffect(() => {
     document.title = 'Revisar cuenta · Mesa';
@@ -108,7 +167,23 @@ export function CheckReviewPage() {
         </div>
         {canTokenizeCard && (
           <div className="check-payment-section">
-            {executors.isPending ? (
+            {paymentResult ? (
+              <section className={`payment-result payment-result--${paymentResult.state.toLowerCase()}`} role="status" aria-live="polite">
+                {paymentResult.state === 'SUCCEEDED' ? <><h2>Pago registrado correctamente</h2><p>El restaurante confirmó el registro inicial de este pago.</p></>
+                  : paymentResult.state === 'REJECTED' ? <><h2>Pago no aprobado</h2><p>La tarjeta no fue aprobada. No se registró como pago confirmado.</p><button className="secondary-button" type="button" onClick={prepareFreshCard}>Intentar con otra tarjeta</button></>
+                    : paymentResult.state === 'FAILED' ? <><h2>No se pudo procesar el pago</h2><p>El intento terminó sin aprobación. Puedes preparar una tarjeta nueva.</p><button className="secondary-button" type="button" onClick={prepareFreshCard}>Intentar con otra tarjeta</button></>
+                      : paymentResult.state === 'UNCERTAIN' ? <><h2>Estamos confirmando el resultado de tu pago</h2><p>No intentes realizar otro pago por ahora.</p></>
+                        : <><h2>Pago en proceso</h2><p>El restaurante todavía procesa este pago. No inicies otro intento.</p></>}
+              </section>
+            ) : submittingPayment ? (
+              <section className="payment-result" role="status" aria-busy="true"><h2>Procesando pago</h2><p>Espera la respuesta autoritativa del restaurante. No inicies otro intento.</p></section>
+            ) : settlement.isPending ? (
+              <section className="conekta-tokenizer" aria-busy="true"><h2>Preparando el importe</h2><p role="status">Consultando el saldo disponible del restaurante…</p></section>
+            ) : settlement.isError ? (
+              <section className="conekta-tokenizer" role="alert"><h2>Pago con tarjeta no disponible</h2><p>No fue posible confirmar el importe disponible. Ningún pago fue realizado.</p><button className="secondary-button" type="button" onClick={() => settlement.refetch()}>Reintentar</button></section>
+            ) : !settlementCanInitiate ? (
+              <section className="payment-result payment-result--uncertain" role="status"><h2>Pago no disponible</h2><p>El estado financiero actual no permite iniciar otro pago.</p></section>
+            ) : executors.isPending ? (
               <section className="conekta-tokenizer" aria-busy="true"><h2>Pago seguro con tarjeta</h2><p role="status">Consultando opciones de tarjeta…</p></section>
             ) : executors.isError || !executors.data[0] ? (
               <section className="conekta-tokenizer" role="alert"><h2>Pago con tarjeta no disponible</h2><p>No fue posible cargar el pago con tarjeta. Ningún pago fue realizado.</p><button className="secondary-button" type="button" onClick={() => executors.refetch()}>Reintentar</button></section>
@@ -118,14 +193,25 @@ export function CheckReviewPage() {
                   initialName={session?.displayName ?? ''}
                   initialEmail={knownEmail ?? ''}
                   onReady={setPaymentCustomerIdentity}
-                  onEdit={() => { setPaymentCustomerIdentity(null); setPaymentSource(null); }}
+                  onEdit={() => { setPaymentCustomerIdentity(null); setPaymentSource(null); paymentIntentKey.current = null; }}
                 />
                 {paymentCustomerIdentity && (
                   <ConektaCardTokenizer
+                    key={tokenizerGeneration}
                     executorKey={executors.data[0].executor_key}
-                    currency={check.currency}
-                    onSourceReady={setPaymentSource}
+                    currency={settlement.data.currency}
+                    onSourceReady={(source) => { paymentIntentKey.current = null; setPaymentSource(source); }}
                   />
+                )}
+                {paymentCustomerIdentity && paymentSource && (
+                  <section className="payment-confirmation" aria-labelledby="payment-confirmation-title">
+                    <p className="panel-kicker">Confirmación de pago</p>
+                    <h2 id="payment-confirmation-title">Información de tarjeta preparada</h2>
+                    <p>Se solicitará al restaurante cobrar {formatPrice(settlement.data.available_to_initiate, settlement.data.currency)}.</p>
+                    <button className="primary-button" type="button" disabled={submittingPayment} onClick={() => submitPayment(executors.data[0].executor_key)}>
+                      {submittingPayment ? 'Procesando pago…' : 'Pagar ahora'}
+                    </button>
+                  </section>
                 )}
               </>
             )}

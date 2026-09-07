@@ -45,6 +45,7 @@ from app.core.logging import configure_logging
 from app.core.middleware import RuntimeMiddleware
 from app.db.session import DatabaseManager
 from app.restaurant.integrations.payments.credentials import MerchantCredentialResolver
+from app.restaurant.integrations.payments.conekta import ConektaPaymentExecutor
 from app.restaurant.integrations.payments.registry import PaymentExecutorRegistry
 from app.restaurant.integrations.fiscal.credentials import (
     FiscalProviderCredentialResolver,
@@ -97,9 +98,14 @@ def create_app(
     app.state.settings = runtime_settings
     app.state.database = runtime_database
     app.state.pos_adapters = dict(pos_adapters or {})
-    app.state.payment_executor_registry = (
-        payment_executor_registry or PaymentExecutorRegistry(payment_executors)
-    )
+    if payment_executor_registry is not None:
+        app.state.payment_executor_registry = payment_executor_registry
+    else:
+        configured_payment_executors = dict(payment_executors or {})
+        configured_payment_executors.setdefault('CONEKTA', ConektaPaymentExecutor())
+        app.state.payment_executor_registry = PaymentExecutorRegistry(
+            configured_payment_executors
+        )
     app.state.merchant_credential_resolver = merchant_credential_resolver
     if fiscal_provider_registry is not None:
         app.state.fiscal_provider_registry = fiscal_provider_registry
