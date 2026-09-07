@@ -52,6 +52,66 @@ function draft(version = 7, items: unknown[] = [draftItem()], readiness = items.
   };
 }
 
+function checkoutPreview(version = 7, overrides: Record<string, unknown> = {}) {
+  return {
+    status: 'READY',
+    draft_id: 601,
+    draft_version: version,
+    tenant_id: 1,
+    organization_id: 2,
+    location_id: 3,
+    resolved_at: '2026-09-06T20:00:00Z',
+    currency: 'MXN',
+    tax_mode: 'TAX_INCLUDED',
+    rounding_policy: 'HALF_UP',
+    fingerprint_schema_version: 1,
+    lines: [],
+    subtotal: '250.0000',
+    total_discount: '25.0000',
+    pre_round_total: '225.0000',
+    rounding_adjustment: '0.0000',
+    payable_total: '225.0000',
+    commercial_fingerprint: 'a'.repeat(64),
+    ...overrides,
+  };
+}
+
+function acceptedOrder(overrides: Record<string, unknown> = {}) {
+  return {
+    id: 901,
+    status: 'ACCEPTED',
+    accepted_at: '2026-09-06T20:01:00Z',
+    source_order_draft_id: 601,
+    accepted_draft_version: 7,
+    currency: 'MXN',
+    tax_mode: 'TAX_INCLUDED',
+    rounding_policy: 'HALF_UP',
+    subtotal: '250.0000',
+    total_discount: '25.0000',
+    pre_round_total: '225.0000',
+    rounding_adjustment: '0.0000',
+    payable_total: '225.0000',
+    items: [{
+      id: 902,
+      source_order_draft_item_id: 701,
+      product_id: 101,
+      product_name: 'Desayuno campirano',
+      composition_id: 801,
+      quantity: '2.0000',
+      position: 0,
+      source_product_price_id: 77,
+      price_source: 'PLATFORM',
+      unit_price: '125.0000',
+      base_amount: '250.0000',
+      discount_amount: '25.0000',
+      commercial_amount: '225.0000',
+      components: [],
+      promotions: [],
+    }],
+    ...overrides,
+  };
+}
+
 const productDetail = {
   product: {
     id: 101,
@@ -117,10 +177,14 @@ function renderPage() {
   );
 }
 
-function mockFetch(handler: (url: string, init?: RequestInit) => Promise<Response>) {
+function mockFetch(
+  handler: (url: string, init?: RequestInit) => Promise<Response>,
+  previewHandler: () => Promise<Response> = () => Promise.resolve(response(checkoutPreview())),
+) {
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith('/diner-session')) return Promise.resolve(response(session));
+    if (url.endsWith('/diner/checkout-preview')) return previewHandler();
     return handler(url, init);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -365,5 +429,168 @@ describe('draft review', () => {
       : Promise.reject(new Error(`Unexpected request: ${url}`)));
     renderPage();
     expect(await screen.findByRole('heading', { name: 'No pudimos cargar tu pedido' })).toBeInTheDocument();
+  });
+
+  it('confirms the exact authoritative preview once and presents the accepted order', async () => {
+    let finishConfirmation: ((value: Response) => void) | undefined;
+    const pendingConfirmation = new Promise<Response>((resolve) => { finishConfirmation = resolve; });
+    const fetchMock = mockFetch((url) => {
+      if (url.endsWith('/diner/order-draft')) return Promise.resolve(response(draft()));
+      if (url.endsWith('/diner/order/confirm')) return pendingConfirmation;
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    renderPage();
+
+    expect(await screen.findByText('$225.00')).toBeInTheDocument();
+    const confirm = screen.getByRole('button', { name: 'Confirmar pedido' });
+    await userEvent.dblClick(confirm);
+    expect(screen.getByRole('button', { name: 'Confirmando con el restaurante…' })).toBeDisabled();
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/diner/order/confirm'))).toHaveLength(1);
+
+    const confirmCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/diner/order/confirm'));
+    expect(confirmCall?.[1]?.method).toBe('POST');
+    expect(JSON.parse(String(confirmCall?.[1]?.body))).toEqual({
+      expected_draft_version: 7,
+      expected_commercial_fingerprint: 'a'.repeat(64),
+    });
+    expect(new Headers(confirmCall?.[1]?.headers).get('Idempotency-Key')).toMatch(/^diner-confirm-/);
+
+    finishConfirmation?.(response(acceptedOrder(), 201));
+    expect(await screen.findByRole('heading', { name: 'Tu pedido fue confirmado' })).toBeInTheDocument();
+    expect(screen.getByText('2 × Desayuno campirano')).toBeInTheDocument();
+    expect(screen.getByText('Total aceptado')).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Actualizar' })).not.toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Volver al menú' })).toHaveAttribute('href', '/menu');
+  });
+
+  it('does not expose confirmation for an empty or incomplete authoritative draft', async () => {
+    const fetchMock = mockFetch((url) => {
+      if (url.endsWith('/diner/order-draft')) return Promise.resolve(response(draft(7, [], 'EMPTY')));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    renderPage();
+
+    expect(await screen.findByRole('heading', { name: 'Tu pedido está vacío' })).toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Confirmar pedido' })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/diner/checkout-preview'))).toBe(false);
+  });
+
+  it('keeps an incomplete authoritative draft editable without exposing confirmation', async () => {
+    const fetchMock = mockFetch((url) => {
+      if (url.endsWith('/diner/order-draft')) return Promise.resolve(response(draft(7, [draftItem({ readiness: 'INCOMPLETE' })], 'INCOMPLETE')));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    renderPage();
+
+    expect(await screen.findByText('Tu pedido necesita una revisión')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Editar configuración' })).toBeEnabled();
+    expect(screen.queryByRole('button', { name: 'Confirmar pedido' })).not.toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/diner/checkout-preview'))).toBe(false);
+  });
+
+  it('refreshes draft and commercial preview after conflict and requires another click', async () => {
+    let draftReads = 0;
+    let previewReads = 0;
+    let confirmations = 0;
+    const fetchMock = mockFetch((url) => {
+      if (url.endsWith('/diner/order-draft')) {
+        draftReads += 1;
+        return Promise.resolve(response(draftReads === 1 ? draft() : draft(8, [draftItem({ quantity: '3.0000' })])));
+      }
+      if (url.endsWith('/diner/order/confirm')) {
+        confirmations += 1;
+        return Promise.resolve(response({ error: { code: 'http_error', message: 'Commercial confirmation expectation is stale' } }, 409));
+      }
+      if (url.endsWith('/diner/orders')) return Promise.resolve(response([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }, () => {
+      previewReads += 1;
+      return Promise.resolve(response(checkoutPreview(previewReads === 1 ? 7 : 8, {
+        subtotal: previewReads === 1 ? '250.0000' : '375.0000',
+        payable_total: previewReads === 1 ? '225.0000' : '350.0000',
+        commercial_fingerprint: (previewReads === 1 ? 'a' : 'b').repeat(64),
+      })));
+    });
+    renderPage();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Confirmar pedido' }));
+    expect(await screen.findByText(/cambiaron/)).toBeInTheDocument();
+    expect(screen.getByDisplayValue('3.0000')).toBeInTheDocument();
+    expect(await screen.findByText('$350.00')).toBeInTheDocument();
+    expect(confirmations).toBe(1);
+    expect(screen.getByRole('button', { name: 'Confirmar pedido' })).toBeEnabled();
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/diner/order/confirm'))).toHaveLength(1);
+  });
+
+  it('reconciles an ambiguous confirmation to the accepted order without retrying it', async () => {
+    const fetchMock = mockFetch((url) => {
+      if (url.endsWith('/diner/order-draft')) return Promise.resolve(response(draft()));
+      if (url.endsWith('/diner/order/confirm')) return Promise.reject(new TypeError('connection lost'));
+      if (url.endsWith('/diner/orders')) return Promise.resolve(response([acceptedOrder()]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    renderPage();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Confirmar pedido' }));
+    expect(await screen.findByRole('heading', { name: 'Tu pedido fue confirmado' })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/diner/order/confirm'))).toHaveLength(1);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/diner/orders'))).toBe(true);
+  });
+
+  it('preserves one idempotency identity when an ambiguous attempt leaves the draft confirmable', async () => {
+    let draftReads = 0;
+    let confirmations = 0;
+    const keys: Array<string | null> = [];
+    mockFetch((url, init) => {
+      if (url.endsWith('/diner/order-draft')) {
+        draftReads += 1;
+        return Promise.resolve(response(draft()));
+      }
+      if (url.endsWith('/diner/order/confirm')) {
+        confirmations += 1;
+        keys.push(new Headers(init?.headers).get('Idempotency-Key'));
+        return confirmations === 1
+          ? Promise.reject(new TypeError('connection lost'))
+          : Promise.resolve(response(acceptedOrder(), 201));
+      }
+      if (url.endsWith('/diner/orders')) return Promise.resolve(response([]));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    renderPage();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Confirmar pedido' }));
+    expect(await screen.findByText(/borrador sigue disponible/)).toBeInTheDocument();
+    await userEvent.click(screen.getByRole('button', { name: 'Confirmar pedido' }));
+    expect(await screen.findByRole('heading', { name: 'Tu pedido fue confirmado' })).toBeInTheDocument();
+    expect(keys).toHaveLength(2);
+    expect(keys[1]).toBe(keys[0]);
+    expect(draftReads).toBe(2);
+  });
+
+  it('shows a controlled commercial-preview failure without sending confirmation', async () => {
+    const fetchMock = mockFetch((url) => {
+      if (url.endsWith('/diner/order-draft')) return Promise.resolve(response(draft()));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }, () => Promise.resolve(response({ error: { code: 'http_error', message: 'Commercial resolution failed' } }, 409)));
+    renderPage();
+
+    expect(await screen.findByRole('heading', { name: 'Revisa tu pedido nuevamente' })).toBeInTheDocument();
+    expect(screen.getByText(/El pedido no fue confirmado\./)).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/diner/order/confirm'))).toBe(false);
+  });
+
+  it('preserves the existing controlled session-closed experience during confirmation', async () => {
+    const fetchMock = mockFetch((url) => {
+      if (url.endsWith('/diner/order-draft')) return Promise.resolve(response(draft()));
+      if (url.endsWith('/diner/order/confirm')) return Promise.resolve(response({
+        error: { code: 'session_closed', state: 'SESSION_CLOSED', message: 'Session closed' },
+      }, 409));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    renderPage();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Confirmar pedido' }));
+    expect(await screen.findByRole('heading', { name: 'Esta sesión ha terminado' })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/diner/orders'))).toBe(false);
   });
 });

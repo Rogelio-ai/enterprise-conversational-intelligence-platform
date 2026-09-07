@@ -2,10 +2,12 @@ import { useEffect, useMemo, useRef, useState } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { Link } from 'react-router-dom';
 import { ApiError, dinerApi } from '../api/client';
-import type { DraftItemResponse, DraftResponse } from '../api/contracts';
+import type { DraftItemResponse, DraftResponse, RestaurantOrderResponse } from '../api/contracts';
+import { AcceptedOrderSuccess } from '../components/AcceptedOrderSuccess';
 import { DinerHeader } from '../components/DinerHeader';
 import { DraftReviewLoadingState } from '../components/DraftReviewLoadingState';
 import { ProductConfiguration, type ConfiguredProductSelection } from '../components/ProductConfiguration';
+import { OrderConfirmation } from '../components/OrderConfirmation';
 import { formatQuantity } from '../utils/formatters';
 
 const draftQueryKey = ['diner', 'order-draft'] as const;
@@ -279,6 +281,8 @@ export function DraftReviewPage() {
   const queryClient = useQueryClient();
   const [editingConfigurationItemId, setEditingConfigurationItemId] = useState<number | null>(null);
   const [editRevision, setEditRevision] = useState(0);
+  const [confirmationPending, setConfirmationPending] = useState(false);
+  const [acceptedOrder, setAcceptedOrder] = useState<RestaurantOrderResponse | null>(null);
   const draftQuery = useQuery({
     queryKey: draftQueryKey,
     queryFn: dinerApi.getOrderDraft,
@@ -335,6 +339,8 @@ export function DraftReviewPage() {
       if (result.operation.kind === 'configuration') setEditingConfigurationItemId(null);
     },
   });
+
+  if (acceptedOrder) return <AcceptedOrderSuccess order={acceptedOrder} />;
 
   if (draftQuery.isPending) {
     return <div className="diner-page"><DinerHeader /><DraftReviewLoadingState /></div>;
@@ -395,7 +401,7 @@ export function DraftReviewPage() {
                 <DraftLine
                   key={`${item.item_id}-${editRevision}`}
                   item={item}
-                  disabled={editMutation.isPending}
+                  disabled={editMutation.isPending || confirmationPending}
                   editingConfiguration={editingConfigurationItemId === item.item_id}
                   onEditConfiguration={() => { editMutation.reset(); setEditingConfigurationItemId(item.item_id); }}
                   onCancelConfiguration={() => setEditingConfigurationItemId(null)}
@@ -407,6 +413,12 @@ export function DraftReviewPage() {
               <strong>{draft.readiness === 'READY' ? 'Tu pedido está listo para el siguiente paso' : 'Tu pedido necesita una revisión'}</strong>
               <span>{draft.readiness === 'READY' ? 'Puedes seguir ajustándolo antes de confirmar más adelante.' : 'Revisa las líneas marcadas antes de continuar.'}</span>
             </aside>
+            <OrderConfirmation
+              draft={draft}
+              editPending={editMutation.isPending || editingConfigurationItemId !== null}
+              onAccepted={setAcceptedOrder}
+              onSubmittingChange={setConfirmationPending}
+            />
           </>
         )}
       </main>

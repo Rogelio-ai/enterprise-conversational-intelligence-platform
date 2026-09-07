@@ -1,6 +1,8 @@
 import type {
   AddDraftItemRequest,
   ApiErrorBody,
+  CheckoutPreviewResponse,
+  ConfirmOrderRequest,
   DinerJoinRequest,
   DinerJoinResponse,
   DinerMenuResponse,
@@ -8,6 +10,7 @@ import type {
   DraftResponse,
   ProductDetailResponse,
   ReplaceDraftGroupSelectionsRequest,
+  RestaurantOrderResponse,
   SetDraftItemQuantityRequest,
 } from './contracts';
 import { readStoredSession } from '../session/storage';
@@ -135,5 +138,21 @@ export const dinerApi = {
     return request(`/diner/order-draft/items/${itemId}?expected_version=${expectedVersion}`, {
       method: 'DELETE',
     }, true);
+  },
+
+  getCheckoutPreview(): Promise<CheckoutPreviewResponse> {
+    return request('/diner/checkout-preview', {}, true);
+  },
+
+  confirmOrder(payload: ConfirmOrderRequest, idempotencyKey: string): Promise<RestaurantOrderResponse> {
+    return request('/diner/order/confirm', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(payload),
+    }, true);
+  },
+
+  listOrders(): Promise<RestaurantOrderResponse[]> {
+    return request('/diner/orders', {}, true);
   },
 };

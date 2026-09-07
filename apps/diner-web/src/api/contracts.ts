@@ -182,3 +182,114 @@ export interface SetDraftItemQuantityRequest {
   quantity: string;
   expected_version: number;
 }
+
+export interface AppliedPromotionResponse {
+  promotion_id: number;
+  name: string;
+  promotion_type: string;
+  promotion_value: string;
+  currency: string | null;
+  priority: number;
+  is_combinable: boolean;
+  calculated_discount: string;
+}
+
+export interface CheckoutPreviewLineResponse {
+  draft_item_id: number;
+  product_id: number;
+  product_name: string;
+  composition_id: number | null;
+  quantity: string;
+  price_id: number;
+  price_source: string;
+  unit_price: string;
+  base_amount: string;
+  applied_promotions: AppliedPromotionResponse[];
+  discount_amount: string;
+  commercial_amount: string;
+}
+
+export interface CheckoutPreviewResponse {
+  status: string;
+  draft_id: number;
+  draft_version: number;
+  tenant_id: number;
+  organization_id: number;
+  location_id: number;
+  resolved_at: string;
+  currency: string;
+  tax_mode: string;
+  rounding_policy: string;
+  fingerprint_schema_version: number;
+  lines: CheckoutPreviewLineResponse[];
+  subtotal: string;
+  total_discount: string;
+  pre_round_total: string;
+  rounding_adjustment: string;
+  payable_total: string;
+  commercial_fingerprint: string;
+}
+
+export interface ConfirmOrderRequest {
+  expected_draft_version: number;
+  expected_commercial_fingerprint: string;
+}
+
+export interface OrderComponentResponse {
+  kind: string;
+  position: number;
+  source_component_id: number | null;
+  source_choice_group_id: number | null;
+  source_choice_option_id: number | null;
+  choice_group_name: string | null;
+  product_id: number;
+  product_name: string;
+  quantity: string;
+}
+
+export interface OrderPromotionResponse {
+  promotion_id: number;
+  application_order: number;
+  promotion_name: string;
+  promotion_type: string;
+  promotion_value: string;
+  promotion_currency: string | null;
+  priority: number;
+  is_combinable: boolean;
+  calculated_discount: string;
+}
+
+export interface RestaurantOrderItemResponse {
+  id: number;
+  source_order_draft_item_id: number;
+  product_id: number;
+  product_name: string;
+  composition_id: number | null;
+  quantity: string;
+  position: number;
+  source_product_price_id: number;
+  price_source: string;
+  unit_price: string;
+  base_amount: string;
+  discount_amount: string;
+  commercial_amount: string;
+  components: OrderComponentResponse[];
+  promotions: OrderPromotionResponse[];
+}
+
+export interface RestaurantOrderResponse {
+  id: number;
+  status: string;
+  accepted_at: string;
+  source_order_draft_id: number;
+  accepted_draft_version: number;
+  currency: string;
+  tax_mode: string;
+  rounding_policy: string;
+  subtotal: string;
+  total_discount: string;
+  pre_round_total: string;
+  rounding_adjustment: string;
+  payable_total: string;
+  items: RestaurantOrderItemResponse[];
+}
