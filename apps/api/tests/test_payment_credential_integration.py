@@ -444,7 +444,12 @@ def test_retry_rejects_inactive_original_without_rebinding_or_external_call(
         retried = client.post(
             f"/restaurant-payments/{first.json()['id']}/retry",
             headers=_staff_headers(client, scope),
-            json={'execution_credential': CUSTOMER_SOURCE},
+            json={
+                'execution_credential': CUSTOMER_SOURCE,
+                'payment_customer_identity': _electronic_payload(check, '1', diner_id)[
+                    'payment_customer_identity'
+                ],
+            },
         )
         assert retried.status_code == 200, retried.text
         assert retried.json()['state'] == 'FAILED'

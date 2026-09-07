@@ -36,6 +36,7 @@ from app.restaurant.integrations.payments.contracts import (
     PaymentExecutionOutcome,
     PaymentExecutionRequest,
     PaymentExecutionResult,
+    PaymentCustomerIdentity,
     PaymentRecoveryOutcome,
     PaymentRecoveryRequest,
     PaymentRecoveryResult,
@@ -112,7 +113,7 @@ def _request_fingerprint(
     currency: str, method_category: str, payer_type: str,
     payer_diner_session_id: int | None, payer_reference: str | None,
     cash_tendered_amount: Decimal | None, cash_session_id: int | None,
-    executor_key: str | None,
+    executor_key: str | None, payment_customer_identity: PaymentCustomerIdentity | None,
 ) -> str:
     return _sha({
         'schema_version': REQUEST_SCHEMA_VERSION,
@@ -130,6 +131,10 @@ def _request_fingerprint(
         'cash_tendered_amount': None if cash_tendered_amount is None else _money(cash_tendered_amount),
         'cash_session_id': cash_session_id,
         'executor_key': executor_key,
+        'payment_customer_identity': (
+            None if payment_customer_identity is None
+            else payment_customer_identity.model_dump(mode='json')
+        ),
     })
 
 
@@ -758,6 +763,7 @@ async def _execute_claimed(
     context: ExecutionContext, executor_registry: PaymentExecutorRegistry,
     credential_resolver: MerchantCredentialResolver | None,
     customer_payment_source: EphemeralCustomerPaymentSource | None,
+    payment_customer_identity: PaymentCustomerIdentity,
 ) -> PaymentProjection:
     try:
         resolved = await _execution_executor(
@@ -852,6 +858,7 @@ async def _execute_claimed(
                     currency=payment.currency, method_category=payment.method_category,
                     idempotency_key=payment.provider_idempotency_key,
                     request_fingerprint=payment.request_fingerprint,
+                    customer_identity=payment_customer_identity,
                 )
                 log_context = {
                     'tenant_id': payment.tenant_id,
@@ -943,6 +950,7 @@ async def initiate_payment(
     executor_registry: PaymentExecutorRegistry,
     credential_resolver: MerchantCredentialResolver | None,
     customer_payment_source: EphemeralCustomerPaymentSource | None,
+    payment_customer_identity: PaymentCustomerIdentity | None,
 ) -> tuple[PaymentProjection, bool]:
     amount = _validate_amount(amount)
     currency = currency.strip().upper()
@@ -965,6 +973,10 @@ async def initiate_payment(
             raise errors.PaymentPermissionError('Only authorized staff may confirm physical cash receipt')
         if executor_key is not None or customer_payment_source is not None:
             raise errors.SensitiveCredentialMisuseError('Cash payment cannot carry execution credentials')
+        if payment_customer_identity is not None:
+            raise errors.InvalidPaymentCustomerIdentityError(
+                'Cash payment cannot carry payment customer identity'
+            )
         if cash_tendered_amount is None:
             raise errors.InvalidCashTenderError()
         cash_tendered_amount = _validate_amount(cash_tendered_amount)
@@ -976,6 +988,10 @@ async def initiate_payment(
         raise errors.InvalidPaymentExecutorSelectionError(
             'Electronic payment requires an executor selection mode'
         )
+    elif payment_customer_identity is None:
+        raise errors.InvalidPaymentCustomerIdentityError(
+            'Electronic payment requires payment customer identity'
+        )
 
     fingerprint = _request_fingerprint(
         check_id=check_id, expected_version=expected_check_version,
@@ -984,6 +1000,7 @@ async def initiate_payment(
         payer_diner_session_id=payer_diner_session_id, payer_reference=payer_reference,
         cash_tendered_amount=cash_tendered_amount,
         cash_session_id=cash_session_id, executor_key=executor_key,
+        payment_customer_identity=payment_customer_identity,
     )
     existing = await _payment_by_key(db, context=context, idempotency_key=idempotency_key)
     if existing is not None:
@@ -1142,6 +1159,7 @@ async def initiate_payment(
         executor_registry=executor_registry,
         credential_resolver=credential_resolver,
         customer_payment_source=customer_payment_source,
+        payment_customer_identity=payment_customer_identity,
     ), False
 
 
@@ -1150,6 +1168,7 @@ async def retry_payment(
     executor_registry: PaymentExecutorRegistry,
     credential_resolver: MerchantCredentialResolver | None,
     customer_payment_source: EphemeralCustomerPaymentSource | None,
+    payment_customer_identity: PaymentCustomerIdentity,
 ) -> PaymentProjection:
     claimed, token = await _claim(
         db, tenant_id=context.tenant_id, payment_id=payment_id, context=context,
@@ -1162,6 +1181,7 @@ async def retry_payment(
         executor_registry=executor_registry,
         credential_resolver=credential_resolver,
         customer_payment_source=customer_payment_source,
+        payment_customer_identity=payment_customer_identity,
     )
 
 

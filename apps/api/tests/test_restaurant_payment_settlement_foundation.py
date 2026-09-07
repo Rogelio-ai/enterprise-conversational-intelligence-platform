@@ -113,6 +113,11 @@ def _electronic_payload(check, amount, diner_id, credential='test-ephemeral-toke
         'payer_diner_session_id': diner_id,
         'executor_key': 'deterministic',
         'execution_credential': credential,
+        'payment_customer_identity': {
+            'display_name': 'Test Diner',
+            'email': 'diner@example.com',
+            'phone': '+525500000001',
+        },
     }
 
 
@@ -437,7 +442,12 @@ def test_recovery_absence_releases_capacity_retry_reacquires_and_uncertainty_rem
         retried = client.post(
             f"/restaurant-payments/{first['id']}/retry",
             headers=_staff_headers(client, scope),
-            json={'execution_credential': 'new-ephemeral-token'},
+            json={
+                'execution_credential': 'new-ephemeral-token',
+                'payment_customer_identity': _electronic_payload(check, '1', diner_id)[
+                    'payment_customer_identity'
+                ],
+            },
         )
         assert retried.status_code == 200, retried.text
         assert retried.json()['state'] == 'SUCCEEDED'

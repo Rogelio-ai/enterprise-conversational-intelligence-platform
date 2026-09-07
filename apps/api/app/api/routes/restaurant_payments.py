@@ -11,7 +11,10 @@ from app.api.deps import AuthenticatedContext, get_db, require_permission
 from app.api.diner_deps import DinerAuthenticatedContext, get_diner_authenticated_context
 from app.core.execution import ActorType, ExecutionContext
 from app.core.middleware import get_correlation_id
-from app.restaurant.integrations.payments.contracts import EphemeralCustomerPaymentSource
+from app.restaurant.integrations.payments.contracts import (
+    EphemeralCustomerPaymentSource,
+    PaymentCustomerIdentity,
+)
 from app.restaurant.integrations.payments.client_configuration import (
     PaymentExecutorClientConfigurationResolver,
 )
@@ -62,6 +65,7 @@ class PaymentInitiationRequest(BaseModel):
         json_schema_extra={'deprecated': True},
         description='Deprecated alias for customer_payment_source',
     )
+    payment_customer_identity: PaymentCustomerIdentity | None = None
 
     @model_validator(mode='after')
     def validate_payer(self):
@@ -79,6 +83,10 @@ class PaymentInitiationRequest(BaseModel):
             raise ValueError('EXPLICIT selection requires executor_key')
         if self.selection_mode == 'AUTO' and self.executor_key is not None:
             raise ValueError('AUTO selection cannot include executor_key')
+        if self.method_category == 'CASH' and self.payment_customer_identity is not None:
+            raise ValueError('CASH does not accept payment customer identity')
+        if self.method_category != 'CASH' and self.payment_customer_identity is None:
+            raise ValueError('Electronic payment requires payment customer identity')
         return self
 
 
@@ -93,6 +101,7 @@ class RetryPaymentRequest(BaseModel):
         max_length=4096,
         json_schema_extra={'deprecated': True},
     )
+    payment_customer_identity: PaymentCustomerIdentity
 
     @model_validator(mode='after')
     def validate_source(self):
@@ -232,6 +241,7 @@ def _error(exc: Exception) -> HTTPException:
         errors.InvalidPaymentAmountError,
         errors.InvalidCashTenderError,
         errors.SensitiveCredentialMisuseError,
+        errors.InvalidPaymentCustomerIdentityError,
         errors.InvalidPaymentExecutorSelectionError,
     )):
         return HTTPException(status.HTTP_422_UNPROCESSABLE_ENTITY, {'code': exc.code, 'message': str(exc)})
@@ -263,6 +273,7 @@ async def _initiate(
         customer_payment_source=_customer_payment_source(
             payload.customer_payment_source, payload.execution_credential
         ),
+        payment_customer_identity=payload.payment_customer_identity,
     )
 
 
@@ -435,6 +446,7 @@ async def staff_retry_payment(
             customer_payment_source=_customer_payment_source(
                 payload.customer_payment_source, payload.execution_credential
             ),
+            payment_customer_identity=payload.payment_customer_identity,
         )
     except Exception as exc:
         raise _error(exc) from exc

@@ -518,7 +518,12 @@ def test_concurrent_retry_has_one_execution_claim_and_one_financial_effect(
             return request_client.post(
                 f"/restaurant-payments/{created.json()['id']}/retry",
                 headers=staff_headers,
-                json={'customer_payment_source': CUSTOMER_SECRET},
+                json={
+                    'customer_payment_source': CUSTOMER_SECRET,
+                    'payment_customer_identity': _electronic_payload(check, '1', diner_id)[
+                        'payment_customer_identity'
+                    ],
+                },
             )
 
         with ThreadPoolExecutor(max_workers=2) as pool:
@@ -762,7 +767,12 @@ def test_definite_absence_retry_revalidates_original_configuration_without_fallb
         retried = client.post(
             f"/restaurant-payments/{created.json()['id']}/retry",
             headers=staff_headers,
-            json={'customer_payment_source': CUSTOMER_SECRET},
+            json={
+                'customer_payment_source': CUSTOMER_SECRET,
+                'payment_customer_identity': _electronic_payload(check, '1', diner_id)[
+                    'payment_customer_identity'
+                ],
+            },
         )
 
     assert absent.status_code == 200 and absent.json()['state'] == 'FAILED'

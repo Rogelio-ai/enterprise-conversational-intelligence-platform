@@ -141,9 +141,11 @@ def test_join_identity_capacity_conversation_draft_end_and_token_separation(clie
     first = _join(client, opened, '  Alex  ', '  DINER@Example.Test ')
     assert first.status_code == 201, first.text
     first_body = first.json()
+    assert first_body['email'] == 'diner@example.test'
     diner_headers = {'Authorization': f"Bearer {first_body['access_token']}"}
     own = client.get('/diner-session', headers=diner_headers)
     assert own.status_code == 200 and own.json()['display_name'] == 'Alex'
+    assert own.json()['email'] == 'diner@example.test'
     conversation = client.get('/diner/conversation', headers=diner_headers)
     assert conversation.status_code == 200 and conversation.json()['id'] == first_body['conversation_id']
     message = client.post('/diner/conversation/messages', headers=diner_headers, json={'modality': 'TEXT', 'content_text': 'Please add water'})

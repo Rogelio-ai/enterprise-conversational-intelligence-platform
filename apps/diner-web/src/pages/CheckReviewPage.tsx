@@ -5,6 +5,8 @@ import { ApiError, dinerApi } from '../api/client';
 import type { RestaurantCheckResponse } from '../api/contracts';
 import { DinerHeader } from '../components/DinerHeader';
 import { ConektaCardTokenizer, type EphemeralCustomerPaymentSource } from '../components/ConektaCardTokenizer';
+import { PaymentContactForm, type PaymentCustomerIdentity } from '../components/PaymentContactForm';
+import { useAuth } from '../session/AuthContext';
 import { formatPrice, formatQuantity } from '../utils/formatters';
 
 function statusCopy(status: string): { eyebrow: string; title: string; description: string } {
@@ -30,7 +32,9 @@ export function CheckReviewPage() {
   const parsedId = Number(checkId);
   const validId = Number.isSafeInteger(parsedId) && parsedId > 0;
   const heading = useRef<HTMLHeadingElement>(null);
+  const { session, knownEmail } = useAuth();
   const [, setPaymentSource] = useState<EphemeralCustomerPaymentSource | null>(null);
+  const [paymentCustomerIdentity, setPaymentCustomerIdentity] = useState<PaymentCustomerIdentity | null>(null);
   const checkQuery = useQuery({
     queryKey: ['diner', 'restaurant-check', parsedId],
     queryFn: () => dinerApi.getCheck(parsedId),
@@ -109,11 +113,21 @@ export function CheckReviewPage() {
             ) : executors.isError || !executors.data[0] ? (
               <section className="conekta-tokenizer" role="alert"><h2>Pago con tarjeta no disponible</h2><p>No fue posible cargar el pago con tarjeta. Ningún pago fue realizado.</p><button className="secondary-button" type="button" onClick={() => executors.refetch()}>Reintentar</button></section>
             ) : (
-              <ConektaCardTokenizer
-                executorKey={executors.data[0].executor_key}
-                currency={check.currency}
-                onSourceReady={setPaymentSource}
-              />
+              <>
+                <PaymentContactForm
+                  initialName={session?.displayName ?? ''}
+                  initialEmail={knownEmail ?? ''}
+                  onReady={setPaymentCustomerIdentity}
+                  onEdit={() => { setPaymentCustomerIdentity(null); setPaymentSource(null); }}
+                />
+                {paymentCustomerIdentity && (
+                  <ConektaCardTokenizer
+                    executorKey={executors.data[0].executor_key}
+                    currency={check.currency}
+                    onSourceReady={setPaymentSource}
+                  />
+                )}
+              </>
             )}
           </div>
         )}

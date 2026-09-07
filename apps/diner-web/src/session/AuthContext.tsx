@@ -30,6 +30,7 @@ export type AuthStatus =
 interface AuthContextValue {
   status: AuthStatus;
   session: StoredDinerSession | null;
+  knownEmail: string | null;
   authenticate: (response: DinerJoinResponse) => void;
   retryRestoration: () => void;
   leaveSession: () => void;
@@ -49,6 +50,7 @@ function initialAuthState(): { status: AuthStatus; session: StoredDinerSession |
 
 export function AuthProvider({ children }: PropsWithChildren) {
   const [auth, setAuth] = useState(initialAuthState);
+  const [knownEmail, setKnownEmail] = useState<string | null>(null);
   const restoration = useQuery({
     queryKey: ['diner-session', 'restore'],
     queryFn: dinerApi.getCurrentSession,
@@ -58,6 +60,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   const invalidate = useCallback((failure: 'invalid' | 'closed') => {
     clearStoredSession();
+    setKnownEmail(null);
     setAuth({ status: failure === 'closed' ? 'closed' : 'expired', session: null });
   }, []);
 
@@ -66,6 +69,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
   useEffect(() => {
     if (auth.status !== 'checking') return;
     if (restoration.data) {
+      setKnownEmail(restoration.data.email ?? null);
       setAuth((current) => {
         if (!current.session) return { status: 'unauthenticated', session: null };
         const session = { ...current.session, displayName: restoration.data.display_name };
@@ -85,6 +89,7 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   const authenticate = useCallback((response: DinerJoinResponse) => {
     const session = fromJoinResponse(response);
+    setKnownEmail(response.email ?? null);
     storeSession(session);
     setAuth({ status: 'authenticated', session });
   }, []);
@@ -95,12 +100,13 @@ export function AuthProvider({ children }: PropsWithChildren) {
 
   const leaveSession = useCallback(() => {
     clearStoredSession();
+    setKnownEmail(null);
     setAuth({ status: 'unauthenticated', session: null });
   }, []);
 
   const value = useMemo(
-    () => ({ status: auth.status, session: auth.session, authenticate, retryRestoration, leaveSession }),
-    [auth, authenticate, retryRestoration, leaveSession],
+    () => ({ status: auth.status, session: auth.session, knownEmail, authenticate, retryRestoration, leaveSession }),
+    [auth, knownEmail, authenticate, retryRestoration, leaveSession],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

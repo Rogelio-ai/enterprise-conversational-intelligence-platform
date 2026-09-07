@@ -7,6 +7,7 @@ from app.restaurant.integrations.payments.contracts import (
     EphemeralMerchantCredential,
     PaymentExecutionOutcome,
     PaymentExecutionRequest,
+    PaymentCustomerIdentity,
     PaymentExecutionResult,
     PaymentRecoveryOutcome,
     PaymentRecoveryRequest,
@@ -29,6 +30,7 @@ class DeterministicPaymentExecutor:
         self.execution_calls = 0
         self.recovery_calls = 0
         self.execution_received_customer_source = False
+        self.last_customer_identity: PaymentCustomerIdentity | None = None
         self.execution_received_merchant_credential = False
         self.recovery_received_merchant_credential = False
         self.last_recovery_external_reference: str | None = None
@@ -46,6 +48,7 @@ class DeterministicPaymentExecutor:
     ) -> PaymentExecutionResult:
         self.execution_received_merchant_credential = merchant_credential is not None
         self.execution_received_customer_source = customer_payment_source is not None
+        self.last_customer_identity = request.customer_identity
         existing = self._operations.get(request.idempotency_key)
         if existing is not None:
             return existing

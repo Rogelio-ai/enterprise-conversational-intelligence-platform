@@ -11,6 +11,7 @@ export interface DinerJoinResponse {
   conversation_id: number;
   display_name: string;
   customer_id: number | null;
+  email?: string | null;
   access_token: string;
   token_type: 'bearer';
   expires_at: string;
@@ -24,6 +25,7 @@ export interface DinerSessionResponse {
   conversation_id: number;
   display_name: string;
   customer_id: number | null;
+  email?: string | null;
   status: string;
   joined_at: string;
   ended_at: string | null;

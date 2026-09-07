@@ -81,6 +81,10 @@ class SensitiveCredentialMisuseError(RestaurantPaymentError):
     code = 'SENSITIVE_PAYMENT_CREDENTIAL_MISUSE'
 
 
+class InvalidPaymentCustomerIdentityError(RestaurantPaymentError):
+    code = 'INVALID_PAYMENT_CUSTOMER_IDENTITY'
+
+
 class PaymentExecutorRegistryError(RestaurantPaymentError):
     code = 'PAYMENT_EXECUTOR_REGISTRY_ERROR'
 

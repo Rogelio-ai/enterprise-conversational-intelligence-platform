@@ -60,10 +60,13 @@ function renderPath(path: string) {
   return render(<QueryClientProvider client={client}><ThemeProvider><MemoryRouter initialEntries={[path]}><AuthProvider><AppRoutes /></AuthProvider></MemoryRouter></ThemeProvider></QueryClientProvider>);
 }
 
-function mockFetch(handler: (url: string, init?: RequestInit) => Promise<Response>) {
+function mockFetch(
+  handler: (url: string, init?: RequestInit) => Promise<Response>,
+  currentSession: typeof session & { email?: string | null } = session,
+) {
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
-    if (url.endsWith('/diner-session')) return Promise.resolve(json(session));
+    if (url.endsWith('/diner-session')) return Promise.resolve(json(currentSession));
     return handler(url, init);
   });
   vi.stubGlobal('fetch', fetchMock);
@@ -270,6 +273,9 @@ describe('check creation and review', () => {
     renderPath('/check/77');
 
     expect(await screen.findByRole('heading', { name: 'Cuenta lista para pagar' })).toBeInTheDocument();
+    await userEvent.type(await screen.findByRole('textbox', { name: 'Correo electrónico' }), 'ana@example.com');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Teléfono' }), '+525500000001');
+    await userEvent.click(screen.getByRole('button', { name: 'Continuar al formulario de tarjeta' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('No fue posible preparar la tarjeta');
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith(
       '/diner/payment-executors/location-priority-card/client-configuration?currency=MXN',
@@ -295,8 +301,57 @@ describe('check creation and review', () => {
     });
     renderPath('/check/77');
 
+    await userEvent.type(await screen.findByRole('textbox', { name: 'Correo electrónico' }), 'ana@example.com');
+    await userEvent.type(screen.getByRole('textbox', { name: 'Teléfono' }), '+525500000001');
+    await userEvent.click(screen.getByRole('button', { name: 'Continuar al formulario de tarjeta' }));
     expect(await screen.findByRole('heading', { name: 'Esta sesión ha terminado' })).toBeInTheDocument();
     await waitFor(() => expect(sessionStorage.getItem('diner-auth-session-v1')).toBeNull());
     expect(fetchMock.mock.calls.some(([input, init]) => String(input).includes('/payments') && init?.method === 'POST')).toBe(false);
+  });
+
+  it('keeps payment contact route-local and gates card preparation on valid contact data', async () => {
+    const originalSessionStorage = sessionStorage.getItem('diner-auth-session-v1');
+    const fetchMock = mockFetch((url) => {
+      if (url.includes('/diner/restaurant-checks/77?view=detailed')) return Promise.resolve(json(check()));
+      if (url.endsWith('/diner/payment-executors?method_category=CARD&currency=MXN')) {
+        return Promise.resolve(json([{
+          executor_key: 'card', display_name: 'Tarjeta', topology: 'LOCATION',
+          method_category: 'CARD', currency: 'MXN',
+        }]));
+      }
+      if (url.endsWith('/diner/payment-executors/card/client-configuration?currency=MXN')) {
+        return Promise.resolve(json({ provider: 'UNSUPPORTED', tokenization_mode: 'UNSUPPORTED', public_key: 'public', locale: 'es' }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }, { ...session, email: 'ana.known@example.com' });
+    renderPath('/check/77');
+
+    const name = await screen.findByRole('textbox', { name: 'Nombre' });
+    const email = screen.getByRole('textbox', { name: 'Correo electrónico' });
+    const phone = screen.getByRole('textbox', { name: 'Teléfono' });
+    expect(name).toHaveValue('Ana');
+    expect(email).toHaveValue('ana.known@example.com');
+
+    await userEvent.clear(email);
+    await userEvent.type(email, 'correo-invalido');
+    await userEvent.type(phone, '5512345678');
+    await userEvent.click(screen.getByRole('button', { name: 'Continuar al formulario de tarjeta' }));
+    expect(screen.getByText('Ingresa un correo electrónico válido.')).toBeInTheDocument();
+    expect(screen.getByText(/Ingresa el teléfono con código de país/)).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/client-configuration'))).toBe(false);
+
+    await userEvent.clear(email);
+    await userEvent.type(email, 'corrected@example.com');
+    await userEvent.clear(phone);
+    await userEvent.type(phone, '+52 55 1234 5678');
+    await userEvent.click(screen.getByRole('button', { name: 'Continuar al formulario de tarjeta' }));
+    expect(await screen.findByRole('alert')).toHaveTextContent('No fue posible preparar la tarjeta');
+    expect(sessionStorage.getItem('diner-auth-session-v1')).toBe(originalSessionStorage);
+    expect(JSON.stringify({ ...localStorage })).not.toContain('corrected@example.com');
+    expect(JSON.stringify({ ...localStorage })).not.toContain('+52 55 1234 5678');
+    expect(sessionStorage.getItem('diner-auth-session-v1')).not.toContain('corrected@example.com');
+    expect(sessionStorage.getItem('diner-auth-session-v1')).not.toContain('+52 55 1234 5678');
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).includes('/payments') && init?.method === 'POST')).toBe(false);
+    expect(screen.queryByLabelText(/número de tarjeta|cvv|cvc|fecha de vencimiento/i)).not.toBeInTheDocument();
   });
 });

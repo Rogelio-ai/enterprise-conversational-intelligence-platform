@@ -53,6 +53,7 @@ class DinerJoinResponse(BaseModel):
     conversation_id: int
     display_name: str
     customer_id: int | None
+    email: str | None
     access_token: str
     token_type: str = 'bearer'
     expires_at: datetime
@@ -66,6 +67,7 @@ class DinerSessionResponse(BaseModel):
     conversation_id: int
     display_name: str
     customer_id: int | None
+    email: str | None
     status: str
     joined_at: datetime
     ended_at: datetime | None
@@ -102,6 +104,7 @@ def _diner_response(value: DinerSession) -> DinerSessionResponse:
         conversation_id=value.conversation_id,
         display_name=value.display_name,
         customer_id=value.customer_id,
+        email=value.normalized_email,
         status=value.status,
         joined_at=value.joined_at,
         ended_at=value.ended_at,
@@ -176,6 +179,7 @@ async def join_diner(
         conversation_id=diner.conversation_id,
         display_name=diner.display_name,
         customer_id=diner.customer_id,
+        email=diner.normalized_email,
         access_token=token,
         expires_at=expires_at,
         expires_in=request.app.state.settings.diner_access_token_ttl_minutes * 60,

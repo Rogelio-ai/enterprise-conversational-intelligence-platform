@@ -580,6 +580,65 @@ def test_controlled_selection_errors_are_safe_and_create_no_payment(
     assert 'payment_executor_unavailable' in _log_events(caplog)
 
 
+def test_payment_customer_identity_is_required_propagated_and_idempotent(
+    integration_settings, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    _grant(connection, scope.tenant_id, configure_executor=False)
+    _configuration(connection, scope, key='identity', adapter_kind='AVAILABLE', priority=10)
+    executor = DeterministicPaymentExecutor()
+
+    with _client(integration_settings, {'AVAILABLE': executor}) as client:
+        _, diner_headers = _open_and_join(client, scope)
+        _order(client, connection, scope, diner_headers, amount='100')
+        check = _check(client, diner_headers, 'payment-customer-identity')
+        diner_id = client.get('/diner-session', headers=diner_headers).json()['id']
+        payload = {
+            **_electronic_payload(check, '10', diner_id),
+            'selection_mode': 'EXPLICIT',
+            'executor_key': 'identity',
+        }
+
+        for missing_field in ('email', 'phone'):
+            invalid_identity = dict(payload['payment_customer_identity'])
+            invalid_identity.pop(missing_field)
+            rejected = client.post(
+                f"/diner/restaurant-checks/{check['id']}/payments",
+                headers={**diner_headers, 'Idempotency-Key': f'missing-{missing_field}'},
+                json={**payload, 'payment_customer_identity': invalid_identity},
+            )
+            assert rejected.status_code == 422, rejected.text
+
+        headers = {**diner_headers, 'Idempotency-Key': 'stable-identity'}
+        created = client.post(
+            f"/diner/restaurant-checks/{check['id']}/payments", headers=headers, json=payload,
+        )
+        replayed = client.post(
+            f"/diner/restaurant-checks/{check['id']}/payments", headers=headers, json=payload,
+        )
+        changed = client.post(
+            f"/diner/restaurant-checks/{check['id']}/payments",
+            headers=headers,
+            json={
+                **payload,
+                'payment_customer_identity': {
+                    **payload['payment_customer_identity'],
+                    'phone': '+525500000099',
+                },
+            },
+        )
+
+    assert created.status_code == 201, created.text
+    assert replayed.status_code == 200, replayed.text
+    assert replayed.json()['id'] == created.json()['id']
+    assert changed.status_code == 409, changed.text
+    assert changed.json()['error']['code'] == 'PAYMENT_IDEMPOTENCY_CONFLICT'
+    assert executor.execution_calls == 1
+    assert executor.last_customer_identity is not None
+    assert executor.last_customer_identity.model_dump() == payload['payment_customer_identity']
+
+
 def test_payment_observability_is_safe_and_metrics_have_only_bounded_labels(
     integration_settings, sql_connection, caplog,
 ) -> None:
