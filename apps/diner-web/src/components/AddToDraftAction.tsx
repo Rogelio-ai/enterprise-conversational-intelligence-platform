@@ -186,7 +186,10 @@ export function AddToDraftAction({
         <div>
           <strong>Agregado a tu pedido</strong>
           <p>El restaurante confirmó el producto en tu pedido.</p>
-          <button className="text-button" type="button" onClick={() => mutation.reset()}>Agregar otro igual</button>
+          <div className="add-to-draft-recovery">
+            <Link to="/order">Ver mi pedido</Link>
+            <button className="text-button" type="button" onClick={() => mutation.reset()}>Agregar otro igual</button>
+          </div>
         </div>
       </div>
     );

@@ -30,12 +30,15 @@ function countIsComplete(group: ChoiceGroupResponse, count: number): boolean {
 interface ProductConfigurationProps {
   productId: number;
   groups: ChoiceGroupResponse[];
+  initialSelection?: ConfiguredProductSelection;
   disabled?: boolean;
   onSelectionChange?: (selection: ConfiguredProductSelection, ready: boolean) => void;
 }
 
-export function ProductConfiguration({ productId, groups, disabled = false, onSelectionChange }: ProductConfigurationProps) {
-  const [selectedByGroup, setSelectedByGroup] = useState<Record<number, number[]>>({});
+export function ProductConfiguration({ productId, groups, initialSelection, disabled = false, onSelectionChange }: ProductConfigurationProps) {
+  const [selectedByGroup, setSelectedByGroup] = useState<Record<number, number[]>>(() => Object.fromEntries(
+    (initialSelection?.groups ?? []).map((group) => [group.group_id, group.option_ids]),
+  ));
 
   const selection = useMemo<ConfiguredProductSelection>(() => ({
     product_id: productId,

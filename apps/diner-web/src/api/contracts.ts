@@ -177,3 +177,8 @@ export interface ReplaceDraftGroupSelectionsRequest {
   option_ids: number[];
   expected_version: number;
 }
+
+export interface SetDraftItemQuantityRequest {
+  quantity: string;
+  expected_version: number;
+}

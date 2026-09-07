@@ -277,6 +277,7 @@ describe('product detail', () => {
       selections: [{ group_id: 301, group_name: 'Bebida', choice_option_id: 401, selected_product_id: 501, selected_product_name: 'Café' }],
     })])));
     expect(await screen.findByText('Agregado a tu pedido')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Ver mi pedido' })).toHaveAttribute('href', '/order');
     expect(screen.getByRole('button', { name: 'Agregar otro igual' })).toBeInTheDocument();
   });
 

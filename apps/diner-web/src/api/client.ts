@@ -8,6 +8,7 @@ import type {
   DraftResponse,
   ProductDetailResponse,
   ReplaceDraftGroupSelectionsRequest,
+  SetDraftItemQuantityRequest,
 } from './contracts';
 import { readStoredSession } from '../session/storage';
 
@@ -120,6 +121,19 @@ export const dinerApi = {
     return request(`/diner/order-draft/items/${itemId}/choice-groups/${groupId}`, {
       method: 'PUT',
       body: JSON.stringify(payload),
+    }, true);
+  },
+
+  setDraftItemQuantity(itemId: number, payload: SetDraftItemQuantityRequest): Promise<DraftResponse> {
+    return request(`/diner/order-draft/items/${itemId}/quantity`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }, true);
+  },
+
+  removeDraftItem(itemId: number, expectedVersion: number): Promise<DraftResponse> {
+    return request(`/diner/order-draft/items/${itemId}?expected_version=${expectedVersion}`, {
+      method: 'DELETE',
     }, true);
   },
 };

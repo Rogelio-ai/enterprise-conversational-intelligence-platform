@@ -12,6 +12,7 @@ export function DinerHeader() {
         <nav className="primary-nav" aria-label="Navegación principal">
           <NavLink to="/app" end>Inicio</NavLink>
           <NavLink to="/menu">Menú</NavLink>
+          <NavLink to="/order">Mi pedido</NavLink>
         </nav>
         <ThemeButton />
       </div>
