@@ -114,8 +114,9 @@ describe('product detail', () => {
     expect(screen.getByRole('heading', { name: 'Incluye' })).toBeInTheDocument();
     expect(screen.getByText('Fruta de temporada')).toBeInTheDocument();
     expect(screen.getByText('Cantidad 2')).toBeInTheDocument();
-    expect(screen.getByRole('heading', { name: 'Elige algunas opciones' })).toBeInTheDocument();
-    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(screen.getByRole('heading', { name: 'Personaliza tu elección' })).toBeInTheDocument();
+    expect(screen.getByRole('group', { name: 'Bebida' })).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Café/ })).toBeInTheDocument();
     expect(screen.queryByRole('checkbox')).not.toBeInTheDocument();
 
     const productCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/diner/products/101'));
@@ -134,25 +135,30 @@ describe('product detail', () => {
         configuration_required: false,
       },
       fixed_components: [],
-      choice_groups: [],
     })));
     renderApp();
     expect(await screen.findByRole('heading', { name: 'Pan de temporada' })).toBeInTheDocument();
     expect(screen.getAllByText('No disponible').length).toBeGreaterThan(0);
     expect(screen.getByText('No disponible por el momento')).toBeInTheDocument();
     expect(screen.queryByRole('heading', { name: 'Incluye' })).not.toBeInTheDocument();
-    expect(screen.queryByText('Se puede personalizar')).not.toBeInTheDocument();
+    expect(screen.queryByText('Personaliza tu elección')).not.toBeInTheDocument();
     expect(screen.queryByRole('button', { name: /pedir|agregar/i })).not.toBeInTheDocument();
   });
 
-  it('presents optional configuration without creating interactive selection', async () => {
+  it('presents optional configuration using the authoritative group metadata', async () => {
     mockApi(() => Promise.resolve(jsonResponse({
       ...productDetail,
       product: { ...productDetail.product, configuration_required: false },
+      choice_groups: [{
+        ...productDetail.choice_groups[0],
+        min_selections: 0,
+        required: false,
+      }],
     })));
     renderApp();
-    expect(await screen.findByRole('heading', { name: 'Se puede personalizar' })).toBeInTheDocument();
-    expect(screen.queryByRole('radio')).not.toBeInTheDocument();
+    expect(await screen.findByRole('heading', { name: 'Personaliza tu elección' })).toBeInTheDocument();
+    expect(screen.getByText('Opcional')).toBeInTheDocument();
+    expect(screen.getByRole('radio', { name: /Sin selección/ })).toBeChecked();
   });
 
   it('shows a structurally appropriate loading state', async () => {

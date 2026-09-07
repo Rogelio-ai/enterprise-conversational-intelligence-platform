@@ -3,6 +3,7 @@ import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { ApiError, dinerApi } from '../api/client';
 import { DinerHeader } from '../components/DinerHeader';
+import { ProductConfiguration } from '../components/ProductConfiguration';
 import { ProductDetailLoadingState } from '../components/ProductDetailLoadingState';
 import { formatPrice, formatQuantity } from '../utils/formatters';
 
@@ -85,7 +86,7 @@ export function ProductDetailPage() {
     );
   }
 
-  const { product, fixed_components: fixedComponents } = productQuery.data;
+  const { product, fixed_components: fixedComponents, choice_groups: choiceGroups } = productQuery.data;
   const categoryNames = product.category_path.map((category) => category.name);
 
   return (
@@ -139,25 +140,9 @@ export function ProductDetailPage() {
               </section>
             )}
 
-            {product.configuration_required ? (
-              <aside className="configuration-panel configuration-panel--required">
-                <span className="configuration-panel-mark" aria-hidden="true">✦</span>
-                <div>
-                  <p className="panel-kicker">Personalización requerida</p>
-                  <h2>Elige algunas opciones</h2>
-                  <p>Este producto requiere que elijas algunas opciones antes de pedirlo.</p>
-                </div>
-              </aside>
-            ) : product.configuration_available ? (
-              <aside className="configuration-panel">
-                <span className="configuration-panel-mark" aria-hidden="true">✦</span>
-                <div>
-                  <p className="panel-kicker">A tu gusto</p>
-                  <h2>Se puede personalizar</h2>
-                  <p>Este producto cuenta con opciones adicionales disponibles.</p>
-                </div>
-              </aside>
-            ) : null}
+            {choiceGroups.length > 0 && product.orderable && (
+              <ProductConfiguration key={product.id} productId={product.id} groups={choiceGroups} />
+            )}
           </div>
 
           {!product.orderable && (
