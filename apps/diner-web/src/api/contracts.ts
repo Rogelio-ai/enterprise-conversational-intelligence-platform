@@ -393,3 +393,18 @@ export interface RestaurantCheckResponse {
   details: CheckResourceResponse[] | null;
   signal: string | null;
 }
+
+export interface AvailablePaymentExecutorResponse {
+  executor_key: string;
+  display_name: string;
+  topology: string;
+  method_category: string;
+  currency: string;
+}
+
+export interface PaymentExecutorClientConfigurationResponse {
+  provider: string;
+  tokenization_mode: string;
+  public_key: string;
+  locale: string;
+}

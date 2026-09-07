@@ -16,6 +16,8 @@ import type {
   CheckCreateRequest,
   EligibleConsumptionResponse,
   RestaurantCheckResponse,
+  AvailablePaymentExecutorResponse,
+  PaymentExecutorClientConfigurationResponse,
 } from './contracts';
 import { readStoredSession } from '../session/storage';
 
@@ -178,5 +180,20 @@ export const dinerApi = {
 
   getCheck(checkId: number): Promise<RestaurantCheckResponse> {
     return request(`/diner/restaurant-checks/${checkId}?view=detailed`, {}, true);
+  },
+
+  getCardPaymentExecutors(currency: string): Promise<AvailablePaymentExecutorResponse[]> {
+    return request(`/diner/payment-executors?method_category=CARD&currency=${encodeURIComponent(currency)}`, {}, true);
+  },
+
+  getPaymentExecutorClientConfiguration(
+    executorKey: string,
+    currency: string,
+  ): Promise<PaymentExecutorClientConfigurationResponse> {
+    return request(
+      `/diner/payment-executors/${encodeURIComponent(executorKey)}/client-configuration?currency=${encodeURIComponent(currency)}`,
+      {},
+      true,
+    );
   },
 };

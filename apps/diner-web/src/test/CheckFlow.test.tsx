@@ -249,4 +249,54 @@ describe('check creation and review', () => {
     await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/diner/restaurant-checks/77?view=detailed'))).toHaveLength(2));
     expect(fetchMock.mock.calls.some(([input]) => /payment|settlement|conekta/i.test(String(input)))).toBe(false);
   });
+
+  it('uses the authoritative CARD executor key to request client configuration', async () => {
+    const fetchMock = mockFetch((url) => {
+      if (url.includes('/diner/restaurant-checks/77?view=detailed')) return Promise.resolve(json(check()));
+      if (url.endsWith('/diner/payment-executors?method_category=CARD&currency=MXN')) {
+        return Promise.resolve(json([{
+          executor_key: 'location-priority-card', display_name: 'Tarjeta',
+          topology: 'LOCATION', method_category: 'CARD', currency: 'MXN',
+        }]));
+      }
+      if (url.endsWith('/diner/payment-executors/location-priority-card/client-configuration?currency=MXN')) {
+        return Promise.resolve(json({
+          provider: 'UNSUPPORTED', tokenization_mode: 'UNSUPPORTED',
+          public_key: 'key_test_public', locale: 'es',
+        }));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    renderPath('/check/77');
+
+    expect(await screen.findByRole('heading', { name: 'Cuenta lista para pagar' })).toBeInTheDocument();
+    expect(await screen.findByRole('alert')).toHaveTextContent('No fue posible preparar la tarjeta');
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith(
+      '/diner/payment-executors/location-priority-card/client-configuration?currency=MXN',
+    ))).toBe(true);
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).includes('/payments') && init?.method === 'POST')).toBe(false);
+  });
+
+  it('preserves terminal session closure during card client configuration', async () => {
+    const fetchMock = mockFetch((url) => {
+      if (url.includes('/diner/restaurant-checks/77?view=detailed')) return Promise.resolve(json(check()));
+      if (url.endsWith('/diner/payment-executors?method_category=CARD&currency=MXN')) {
+        return Promise.resolve(json([{
+          executor_key: 'location-priority-card', display_name: 'Tarjeta',
+          topology: 'LOCATION', method_category: 'CARD', currency: 'MXN',
+        }]));
+      }
+      if (url.endsWith('/diner/payment-executors/location-priority-card/client-configuration?currency=MXN')) {
+        return Promise.resolve(json({
+          error: { code: 'session_closed', state: 'SESSION_CLOSED', message: 'Session closed' },
+        }, 409));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    renderPath('/check/77');
+
+    expect(await screen.findByRole('heading', { name: 'Esta sesión ha terminado' })).toBeInTheDocument();
+    await waitFor(() => expect(sessionStorage.getItem('diner-auth-session-v1')).toBeNull());
+    expect(fetchMock.mock.calls.some(([input, init]) => String(input).includes('/payments') && init?.method === 'POST')).toBe(false);
+  });
 });

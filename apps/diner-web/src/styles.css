@@ -399,6 +399,16 @@ button, a, input { -webkit-tap-highlight-color: transparent; }
 .check-financial .check-outstanding { margin-top: .35rem; padding-top: 1rem; border-top: 1px solid var(--color-border); font-size: 1.1rem; }
 .check-financial .check-outstanding dt, .check-financial .check-outstanding dd { color: var(--color-text-primary); font-weight: 800; }
 .check-financial-note { margin: var(--space-md) 0 0; padding-top: var(--space-md); border-top: 1px solid var(--color-border); color: var(--color-text-secondary); font-size: .82rem; line-height: 1.5; }
+.check-payment-section { width: min(100%, 44rem); margin: var(--space-xl) auto 0; }
+.conekta-tokenizer { min-width: 0; overflow: hidden; padding: clamp(1.25rem, 4vw, 2rem); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-elevated); box-shadow: var(--shadow-card); }
+.conekta-tokenizer h2 { margin: 0; font-family: var(--font-display); font-size: clamp(1.65rem, 6vw, 2.25rem); letter-spacing: -.025em; }
+.conekta-tokenizer > p:not(.panel-kicker) { color: var(--color-text-secondary); line-height: 1.55; }
+.conekta-iframe-container { width: 100%; min-height: 32rem; overflow: hidden; border-radius: var(--radius-sm); }
+.conekta-iframe-container:empty { min-height: 0; }
+.conekta-tokenizer-status { min-height: 1.5rem; margin: var(--space-md) 0; }
+.conekta-tokenizer-error { margin: var(--space-lg) 0; padding: var(--space-md); border: 1px solid color-mix(in srgb, var(--color-danger) 40%, var(--color-border)); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-danger) 7%, var(--color-surface)); }
+.conekta-tokenizer-error p { color: var(--color-text-secondary); line-height: 1.5; }
+.conekta-tokenizer-error .secondary-button { width: 100%; }
 .draft-empty { display: grid; justify-items: center; padding: clamp(2rem, 8vw, 4rem); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-elevated); box-shadow: var(--shadow-card); text-align: center; }
 .draft-empty > span { display: grid; width: 4rem; height: 4rem; place-items: center; border: 1px solid var(--color-primary); border-radius: 50%; color: var(--color-primary); font-size: 1.5rem; }
 .draft-empty h2 { margin: var(--space-md) 0 0; font-family: var(--font-display); font-size: 2rem; }
