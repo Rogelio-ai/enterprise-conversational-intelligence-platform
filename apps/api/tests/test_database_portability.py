@@ -545,6 +545,7 @@ EXPECTED_DOMAIN_CHECKS = {
     ('location_payment_executor_configurations', 'ck_payment_executor_configurations_topology'),
     ('location_payment_executor_configurations', 'ck_payment_executor_configurations_status'),
     ('location_payment_executor_configurations', 'ck_payment_executor_configurations_priority'),
+    ('location_payment_executor_configurations', 'ck_payment_executor_configurations_client_public_key'),
     ('location_payment_executor_capabilities', 'ck_payment_executor_capabilities_method'),
     ('location_payment_executor_capabilities', 'ck_payment_executor_capabilities_currency'),
     ('preparation_delivery_connector_enrollments', 'ck_connector_enrollments_active_slot'),
@@ -1448,7 +1449,10 @@ def _assert_database_contract(
                    ))
                   OR
                   (TABLE_NAME = 'location_payment_executor_configurations'
-                   AND COLUMN_NAME IN ('executor_key', 'adapter_kind', 'credential_binding'))
+                   AND COLUMN_NAME IN (
+                       'executor_key', 'adapter_kind', 'credential_binding',
+                       'client_public_key'
+                   ))
                   OR
                   (TABLE_NAME = 'location_payment_executor_capabilities'
                    AND COLUMN_NAME = 'currency')
@@ -1583,6 +1587,7 @@ def _assert_database_contract(
             ('location_payment_executor_configurations', 'executor_key', 'utf8mb4_bin'),
             ('location_payment_executor_configurations', 'adapter_kind', 'utf8mb4_bin'),
             ('location_payment_executor_configurations', 'credential_binding', 'utf8mb4_bin'),
+            ('location_payment_executor_configurations', 'client_public_key', 'ascii_bin'),
             ('location_payment_executor_capabilities', 'currency', 'ascii_bin'),
             ('restaurant_payment_attempts', 'executor_key', 'utf8mb4_bin'),
             ('restaurant_payment_attempts', 'claim_token', 'ascii_bin'),

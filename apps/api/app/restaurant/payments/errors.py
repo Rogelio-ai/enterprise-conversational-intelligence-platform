@@ -127,3 +127,7 @@ class NoEligiblePaymentExecutorError(PaymentExecutorResolutionError):
 
 class MerchantCredentialResolutionError(RestaurantPaymentError):
     code = 'MERCHANT_CREDENTIAL_RESOLUTION_ERROR'
+
+
+class PaymentClientConfigurationUnavailableError(RestaurantPaymentError):
+    code = 'PAYMENT_CLIENT_CONFIGURATION_UNAVAILABLE'

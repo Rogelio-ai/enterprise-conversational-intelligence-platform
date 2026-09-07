@@ -53,6 +53,11 @@ class LocationPaymentExecutorConfiguration(TimestampMixin, Base):
             'selection_priority >= 0',
             name='ck_payment_executor_configurations_priority',
         ),
+        CheckConstraint(
+            "client_public_key IS NULL OR (CHAR_LENGTH(client_public_key) BETWEEN 1 AND 256 "
+            "AND TRIM(client_public_key) <> '')",
+            name='ck_payment_executor_configurations_client_public_key',
+        ),
         Index(
             'ix_payment_executor_configurations_lookup',
             'tenant_id', 'organization_id', 'location_id', 'status',
@@ -73,6 +78,9 @@ class LocationPaymentExecutorConfiguration(TimestampMixin, Base):
     )
     credential_binding: Mapped[str | None] = mapped_column(
         String(200, collation='utf8mb4_bin'), nullable=True
+    )
+    client_public_key: Mapped[str | None] = mapped_column(
+        String(256, collation='ascii_bin'), nullable=True
     )
     selection_priority: Mapped[int] = mapped_column(
         Integer, nullable=False, default=100, server_default=text('100')

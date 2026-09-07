@@ -3,7 +3,7 @@ from __future__ import annotations
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response, status
 from pydantic import BeforeValidator, BaseModel, ConfigDict, Field, SecretStr, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -12,6 +12,9 @@ from app.api.diner_deps import DinerAuthenticatedContext, get_diner_authenticate
 from app.core.execution import ActorType, ExecutionContext
 from app.core.middleware import get_correlation_id
 from app.restaurant.integrations.payments.contracts import EphemeralCustomerPaymentSource
+from app.restaurant.integrations.payments.client_configuration import (
+    PaymentExecutorClientConfigurationResolver,
+)
 from app.restaurant.integrations.payments.resolver import (
     PaymentExecutorResolver,
     PaymentExecutorSelectionMode,
@@ -104,6 +107,13 @@ class AvailablePaymentExecutorResponse(BaseModel):
     topology: str
     method_category: str
     currency: str
+
+
+class PaymentExecutorClientConfigurationResponse(BaseModel):
+    provider: Literal['CONEKTA']
+    tokenization_mode: Literal['WEB_TOKENIZER']
+    public_key: str = Field(min_length=1, max_length=256)
+    locale: Literal['es']
 
 
 class PaymentAttemptResponse(BaseModel):
@@ -298,6 +308,31 @@ async def diner_available_payment_executors(
         method_category=method_category,
         currency=currency,
     )
+
+
+@router.get(
+    '/diner/payment-executors/{executor_key}/client-configuration',
+    response_model=PaymentExecutorClientConfigurationResponse,
+)
+async def diner_payment_executor_client_configuration(
+    executor_key: Annotated[str, Path(min_length=1, max_length=128)],
+    context: Annotated[DinerAuthenticatedContext, Depends(get_diner_authenticated_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    currency: str = Query(min_length=3, max_length=3, pattern='^[A-Za-z]{3}$'),
+) -> PaymentExecutorClientConfigurationResponse:
+    try:
+        value = await PaymentExecutorClientConfigurationResolver(
+            db, db.info['payment_executor_registry']
+        ).resolve_conekta_card(
+            tenant_id=context.tenant_id,
+            organization_id=context.organization_id,
+            location_id=context.location_id,
+            executor_key=executor_key,
+            currency=currency,
+        )
+    except Exception as exc:
+        raise _error(exc) from exc
+    return PaymentExecutorClientConfigurationResponse.model_validate(value, from_attributes=True)
 
 
 @router.get('/payment-executors', response_model=list[AvailablePaymentExecutorResponse])

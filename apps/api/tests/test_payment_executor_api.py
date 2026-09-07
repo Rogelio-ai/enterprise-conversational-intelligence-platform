@@ -90,6 +90,7 @@ def _configuration(
     method: str = 'CARD',
     currency: str = 'MXN',
     credential_binding: str | None = None,
+    client_public_key: str | None = None,
     organization_id: int | None = None,
     location_id: int | None = None,
 ) -> int:
@@ -100,8 +101,9 @@ def _configuration(
             '''
             INSERT INTO location_payment_executor_configurations (
                 tenant_id,organization_id,location_id,executor_key,display_name,
-                adapter_kind,topology,status,credential_binding,selection_priority
-            ) VALUES (%s,%s,%s,%s,%s,%s,'EXTERNAL',%s,%s,%s)
+                adapter_kind,topology,status,credential_binding,client_public_key,
+                selection_priority
+            ) VALUES (%s,%s,%s,%s,%s,%s,'EXTERNAL',%s,%s,%s,%s)
             ''',
             (
                 scope.tenant_id,
@@ -112,6 +114,7 @@ def _configuration(
                 adapter_kind,
                 status,
                 credential_binding,
+                client_public_key,
                 priority,
             ),
         )
@@ -141,6 +144,162 @@ def _client(settings, executors, credential_resolver=None) -> TestClient:
         payment_executors=executors,
         merchant_credential_resolver=credential_resolver,
     ))
+
+
+def test_diner_conekta_client_configuration_is_authenticated_public_and_read_only(
+    integration_settings, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    private_binding = 'vault-private-conekta-binding'
+    public_key = 'key_public_browser_test'
+    _configuration(
+        connection,
+        scope,
+        key='conekta-card',
+        adapter_kind='CONEKTA',
+        priority=10,
+        credential_binding=private_binding,
+        client_public_key=public_key,
+    )
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM restaurant_payments WHERE tenant_id=%s',
+            (scope.tenant_id,),
+        )
+        payments_before = cursor.fetchone()['count']
+
+    credential_resolver = DeterministicMerchantCredentialResolver(
+        {private_binding: MERCHANT_SENTINEL}
+    )
+    with _client(
+        integration_settings,
+        {'CONEKTA': DeterministicPaymentExecutor()},
+        credential_resolver,
+    ) as client:
+        path = '/diner/payment-executors/conekta-card/client-configuration'
+        unauthenticated = client.get(path, params={'currency': 'MXN'})
+        assert unauthenticated.status_code == 401, unauthenticated.text
+
+        _, diner_headers = _open_and_join(client, scope)
+        response = client.get(
+            path,
+            headers=diner_headers,
+            params={'currency': 'mxn'},
+        )
+        assert response.status_code == 200, response.text
+        assert response.json() == {
+            'provider': 'CONEKTA',
+            'tokenization_mode': 'WEB_TOKENIZER',
+            'public_key': public_key,
+            'locale': 'es',
+        }
+        assert set(response.json()) == {
+            'provider', 'tokenization_mode', 'public_key', 'locale'
+        }
+        assert private_binding not in response.text
+        assert MERCHANT_SENTINEL not in response.text
+        assert 'credential_binding' not in response.text
+        assert 'secret' not in response.text.lower()
+        assert credential_resolver.calls == []
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM restaurant_payments WHERE tenant_id=%s',
+            (scope.tenant_id,),
+        )
+        assert cursor.fetchone()['count'] == payments_before
+
+
+def test_diner_client_configuration_rejects_wrong_scope_or_executor_configuration(
+    integration_settings, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    local = _scope(connection, f'{prefix}-local')
+    foreign = _scope(connection, f'{prefix}-foreign')
+    other_location_id = _location(connection, local, 'Other client config location')
+    private_binding = 'vault-private-client-config-binding'
+    cases = (
+        (
+            'inactive', 'CONEKTA', 'CARD', 'INACTIVE', local,
+            local.location_id, 'public-inactive',
+        ),
+        (
+            'transfer-only', 'CONEKTA', 'TRANSFER', 'ACTIVE', local,
+            local.location_id, 'public-transfer',
+        ),
+        (
+            'unsupported', 'AVAILABLE', 'CARD', 'ACTIVE', local,
+            local.location_id, 'public-unsupported',
+        ),
+        ('missing-public', 'CONEKTA', 'CARD', 'ACTIVE', local, local.location_id, None),
+        (
+            'other-location', 'CONEKTA', 'CARD', 'ACTIVE', local,
+            other_location_id, 'public-other-location',
+        ),
+        (
+            'foreign', 'CONEKTA', 'CARD', 'ACTIVE', foreign,
+            foreign.location_id, 'public-foreign',
+        ),
+    )
+    for key, adapter_kind, method, status, scope, location_id, public_key in cases:
+        _configuration(
+            connection,
+            scope,
+            key=key,
+            adapter_kind=adapter_kind,
+            priority=10,
+            method=method,
+            status=status,
+            credential_binding=private_binding,
+            client_public_key=public_key,
+            location_id=location_id,
+        )
+
+    with _client(
+        integration_settings,
+        {
+            'CONEKTA': DeterministicPaymentExecutor(),
+            'AVAILABLE': DeterministicPaymentExecutor(),
+        },
+    ) as client:
+        _, diner_headers = _open_and_join(client, local)
+        unavailable_keys = (
+            'inactive', 'transfer-only', 'other-location', 'foreign', 'unknown'
+        )
+        for key in unavailable_keys:
+            response = client.get(
+                f'/diner/payment-executors/{key}/client-configuration',
+                headers=diner_headers,
+                params={'currency': 'MXN'},
+            )
+            assert response.status_code == 409, response.text
+            assert response.json()['error'] == {
+                'code': 'PAYMENT_EXECUTOR_UNAVAILABLE',
+                'message': 'Payment executor is unavailable',
+            }
+            assert private_binding not in response.text
+
+        for key in ('unsupported', 'missing-public'):
+            response = client.get(
+                f'/diner/payment-executors/{key}/client-configuration',
+                headers=diner_headers,
+                params={'currency': 'MXN'},
+            )
+            assert response.status_code == 409, response.text
+            assert response.json()['error'] == {
+                'code': 'PAYMENT_CLIENT_CONFIGURATION_UNAVAILABLE',
+                'message': 'Client configuration is unavailable for this payment executor',
+            }
+            assert private_binding not in response.text
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM restaurant_payments WHERE tenant_id=%s',
+            (local.tenant_id,),
+        )
+        assert cursor.fetchone()['count'] == 0
 
 
 def test_available_executors_are_safe_scoped_runtime_backed_and_ordered(
