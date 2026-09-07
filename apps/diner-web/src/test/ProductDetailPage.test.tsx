@@ -54,6 +54,36 @@ function jsonResponse(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
 
+function draftResponse(version: number, items: unknown[] = [], readiness = items.length ? 'READY' : 'EMPTY') {
+  return {
+    draft_id: 601,
+    tenant_id: 1,
+    organization_id: 2,
+    location_id: 3,
+    conversation_id: 33,
+    version,
+    readiness,
+    items,
+  };
+}
+
+function draftItem(overrides: Record<string, unknown> = {}) {
+  return {
+    item_id: 701,
+    product_id: 101,
+    product_name: 'Desayuno campirano',
+    composition_id: 801,
+    quantity: '1.0000',
+    position: 0,
+    readiness: 'READY',
+    issues: [],
+    selections: [],
+    missing_choice_groups: [],
+    fixed_components: [],
+    ...overrides,
+  };
+}
+
 function seedSession() {
   sessionStorage.setItem('diner-auth-session-v1', JSON.stringify({
     dinerSessionId: 11,
@@ -203,5 +233,136 @@ describe('product detail', () => {
     expect(await screen.findByRole('heading', { name: 'No pudimos abrir este producto' })).toBeInTheDocument();
     await waitFor(() => expect(fetchMock).toHaveBeenCalled());
     expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/diner/products/'))).toBe(false);
+  });
+
+  it('submits the exact configured product through the versioned diner draft contract', async () => {
+    let finishSelection: ((response: Response) => void) | undefined;
+    const selectionResponse = new Promise<Response>((resolve) => { finishSelection = resolve; });
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/diner-session')) return Promise.resolve(jsonResponse(currentSession));
+      if (url.endsWith('/diner/products/101')) return Promise.resolve(jsonResponse(productDetail));
+      if (url.endsWith('/diner/order-draft') && init?.method === 'POST') {
+        return Promise.resolve(jsonResponse(draftResponse(1), 201));
+      }
+      if (url.endsWith('/diner/order-draft/items')) {
+        return Promise.resolve(jsonResponse(draftResponse(2, [draftItem({ readiness: 'INCOMPLETE' })], 'INCOMPLETE'), 201));
+      }
+      if (url.endsWith('/diner/order-draft/items/701/choice-groups/301')) return selectionResponse;
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderApp();
+
+    const addButton = await screen.findByRole('button', { name: 'Agregar al pedido' });
+    expect(addButton).toBeDisabled();
+    const coffee = screen.getByRole('radio', { name: /Café/ });
+    await userEvent.click(coffee);
+    expect(addButton).toBeEnabled();
+    await userEvent.click(addButton);
+
+    expect(await screen.findByRole('button', { name: 'Agregando…' })).toBeDisabled();
+    expect(coffee).toBeDisabled();
+    await userEvent.click(screen.getByRole('button', { name: 'Agregando…' }));
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/diner/order-draft/items'))).toHaveLength(1);
+
+    const addCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/diner/order-draft/items'));
+    expect(JSON.parse(String(addCall?.[1]?.body))).toEqual({ product_id: 101, quantity: '1', expected_version: 1 });
+    expect(new Headers(addCall?.[1]?.headers).get('Authorization')).toBe('Bearer product-token');
+    const selectionCall = fetchMock.mock.calls.find(([input]) => String(input).includes('/choice-groups/301'));
+    expect(JSON.parse(String(selectionCall?.[1]?.body))).toEqual({ option_ids: [401], expected_version: 2 });
+    expect(selectionCall?.[1]?.method).toBe('PUT');
+
+    finishSelection?.(jsonResponse(draftResponse(3, [draftItem({
+      selections: [{ group_id: 301, group_name: 'Bebida', choice_option_id: 401, selected_product_id: 501, selected_product_name: 'Café' }],
+    })])));
+    expect(await screen.findByText('Agregado a tu pedido')).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Agregar otro igual' })).toBeInTheDocument();
+  });
+
+  it('adds a simple product without sending artificial choice-group mutations', async () => {
+    const simpleProduct = {
+      ...productDetail,
+      product: {
+        ...productDetail.product,
+        name: 'Pan de temporada',
+        configuration_available: false,
+        configuration_required: false,
+      },
+      fixed_components: [],
+      choice_groups: [],
+    };
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/diner-session')) return Promise.resolve(jsonResponse(currentSession));
+      if (url.endsWith('/diner/products/101')) return Promise.resolve(jsonResponse(simpleProduct));
+      if (url.endsWith('/diner/order-draft') && init?.method === 'POST') return Promise.resolve(jsonResponse(draftResponse(4), 201));
+      if (url.endsWith('/diner/order-draft/items')) {
+        return Promise.resolve(jsonResponse(draftResponse(5, [draftItem({ product_name: 'Pan de temporada', composition_id: null })]), 201));
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderApp();
+
+    await userEvent.click(await screen.findByRole('button', { name: 'Agregar al pedido' }));
+    expect(await screen.findByText('Agregado a tu pedido')).toBeInTheDocument();
+    const addCall = fetchMock.mock.calls.find(([input]) => String(input).endsWith('/diner/order-draft/items'));
+    expect(JSON.parse(String(addCall?.[1]?.body))).toEqual({ product_id: 101, quantity: '1', expected_version: 4 });
+    expect(fetchMock.mock.calls.some(([input]) => String(input).includes('/choice-groups/'))).toBe(false);
+  });
+
+  it('preserves configuration and resumes the same draft item after a controlled validation failure', async () => {
+    let selectionAttempts = 0;
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/diner-session')) return Promise.resolve(jsonResponse(currentSession));
+      if (url.endsWith('/diner/products/101')) return Promise.resolve(jsonResponse(productDetail));
+      if (url.endsWith('/diner/order-draft') && init?.method === 'POST') return Promise.resolve(jsonResponse(draftResponse(1), 201));
+      if (url.endsWith('/diner/order-draft/items')) {
+        return Promise.resolve(jsonResponse(draftResponse(2, [draftItem({ readiness: 'INCOMPLETE' })], 'INCOMPLETE'), 201));
+      }
+      if (url.includes('/choice-groups/301')) {
+        selectionAttempts += 1;
+        return Promise.resolve(selectionAttempts === 1
+          ? jsonResponse({ error: { code: 'validation_error', message: 'Request rejected' } }, 422)
+          : jsonResponse(draftResponse(3, [draftItem()])))
+      }
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderApp();
+
+    const coffee = await screen.findByRole('radio', { name: /Café/ });
+    await userEvent.click(coffee);
+    await userEvent.click(screen.getByRole('button', { name: 'Agregar al pedido' }));
+    expect(await screen.findByText('Revisa tu configuración')).toBeInTheDocument();
+    expect(coffee).toBeChecked();
+    await userEvent.click(screen.getByRole('button', { name: 'Intentar nuevamente' }));
+    expect(await screen.findByText('Agregado a tu pedido')).toBeInTheDocument();
+    expect(selectionAttempts).toBe(2);
+    expect(fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/diner/order-draft/items'))).toHaveLength(1);
+  });
+
+  it('does not offer a duplicate-prone retry when the add-item response is ambiguous', async () => {
+    const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
+      const url = String(input);
+      if (url.endsWith('/diner-session')) return Promise.resolve(jsonResponse(currentSession));
+      if (url.endsWith('/diner/products/101')) return Promise.resolve(jsonResponse(productDetail));
+      if (url.endsWith('/diner/order-draft') && init?.method === 'POST') return Promise.resolve(jsonResponse(draftResponse(1), 201));
+      if (url.endsWith('/diner/order-draft/items')) return Promise.reject(new TypeError('connection lost'));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    renderApp();
+
+    const coffee = await screen.findByRole('radio', { name: /Café/ });
+    await userEvent.click(coffee);
+    await userEvent.click(screen.getByRole('button', { name: 'Agregar al pedido' }));
+    expect(await screen.findByText('No pudimos confirmar la acción')).toBeInTheDocument();
+    expect(coffee).toBeChecked();
+    expect(screen.queryByRole('button', { name: 'Intentar nuevamente' })).not.toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Acción sin confirmar' })).toBeDisabled();
+    expect(screen.getAllByRole('link', { name: 'Volver al menú' }).at(-1)).toHaveAttribute('href', '/menu');
   });
 });

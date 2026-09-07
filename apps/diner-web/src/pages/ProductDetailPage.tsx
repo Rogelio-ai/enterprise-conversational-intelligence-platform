@@ -1,9 +1,11 @@
-import { useEffect, useRef } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
 import { Link, useParams } from 'react-router-dom';
 import { ApiError, dinerApi } from '../api/client';
+import type { ChoiceGroupResponse } from '../api/contracts';
 import { DinerHeader } from '../components/DinerHeader';
-import { ProductConfiguration } from '../components/ProductConfiguration';
+import { AddToDraftAction } from '../components/AddToDraftAction';
+import { ProductConfiguration, type ConfiguredProductSelection } from '../components/ProductConfiguration';
 import { ProductDetailLoadingState } from '../components/ProductDetailLoadingState';
 import { formatPrice, formatQuantity } from '../utils/formatters';
 
@@ -30,6 +32,36 @@ function productErrorCopy(error: unknown) {
     message: 'El restaurante no pudo mostrar esta información en este momento.',
     retryable: true,
   };
+}
+
+function ProductOrderInteraction({ productId, choiceGroups }: { productId: number; choiceGroups: ChoiceGroupResponse[] }) {
+  const [selection, setSelection] = useState<ConfiguredProductSelection>({
+    product_id: productId,
+    groups: choiceGroups.map((group) => ({ group_id: group.id, option_ids: [] })),
+  });
+  const [configurationReady, setConfigurationReady] = useState(
+    choiceGroups.every((group) => group.min_selections === 0),
+  );
+  const [submitting, setSubmitting] = useState(false);
+
+  const updateSelection = useCallback((next: ConfiguredProductSelection, ready: boolean) => {
+    setSelection(next);
+    setConfigurationReady(ready);
+  }, []);
+
+  return (
+    <>
+      {choiceGroups.length > 0 && (
+        <ProductConfiguration
+          productId={productId}
+          groups={choiceGroups}
+          disabled={submitting}
+          onSelectionChange={updateSelection}
+        />
+      )}
+      <AddToDraftAction selection={selection} ready={configurationReady} onSubmittingChange={setSubmitting} />
+    </>
+  );
 }
 
 export function ProductDetailPage() {
@@ -140,8 +172,8 @@ export function ProductDetailPage() {
               </section>
             )}
 
-            {choiceGroups.length > 0 && product.orderable && (
-              <ProductConfiguration key={product.id} productId={product.id} groups={choiceGroups} />
+            {product.orderable && (
+              <ProductOrderInteraction key={product.id} productId={product.id} choiceGroups={choiceGroups} />
             )}
           </div>
 

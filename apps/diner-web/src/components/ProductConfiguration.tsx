@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import type { ChoiceGroupResponse } from '../api/contracts';
 import { formatQuantity } from '../utils/formatters';
 
@@ -27,7 +27,14 @@ function countIsComplete(group: ChoiceGroupResponse, count: number): boolean {
   return count >= group.min_selections && count <= group.max_selections;
 }
 
-export function ProductConfiguration({ productId, groups }: { productId: number; groups: ChoiceGroupResponse[] }) {
+interface ProductConfigurationProps {
+  productId: number;
+  groups: ChoiceGroupResponse[];
+  disabled?: boolean;
+  onSelectionChange?: (selection: ConfiguredProductSelection, ready: boolean) => void;
+}
+
+export function ProductConfiguration({ productId, groups, disabled = false, onSelectionChange }: ProductConfigurationProps) {
   const [selectedByGroup, setSelectedByGroup] = useState<Record<number, number[]>>({});
 
   const selection = useMemo<ConfiguredProductSelection>(() => ({
@@ -43,6 +50,10 @@ export function ProductConfiguration({ productId, groups }: { productId: number;
     return !countIsComplete(group, selected.length);
   });
   const configurationReady = incompleteGroups.length === 0;
+
+  useEffect(() => {
+    onSelectionChange?.(selection, configurationReady);
+  }, [configurationReady, onSelectionChange, selection]);
 
   const selectSingle = (groupId: number, optionId: number | null) => {
     setSelectedByGroup((current) => ({ ...current, [groupId]: optionId === null ? [] : [optionId] }));
@@ -101,6 +112,7 @@ export function ProductConfiguration({ productId, groups }: { productId: number;
                       type="radio"
                       name={`choice-group-${group.id}`}
                       checked={selected.length === 0}
+                      disabled={disabled}
                       onChange={() => selectSingle(group.id, null)}
                     />
                     <span className="choice-option-copy">
@@ -119,7 +131,7 @@ export function ProductConfiguration({ productId, groups }: { productId: number;
                         type={singleChoice ? 'radio' : 'checkbox'}
                         name={`choice-group-${group.id}`}
                         checked={checked}
-                        disabled={atMaximum && !checked}
+                        disabled={disabled || (atMaximum && !checked)}
                         onChange={() => singleChoice ? selectSingle(group.id, option.id) : toggleMultiple(group, option.id)}
                       />
                       <span className="choice-option-copy">

@@ -1,10 +1,13 @@
 import type {
+  AddDraftItemRequest,
   ApiErrorBody,
   DinerJoinRequest,
   DinerJoinResponse,
   DinerMenuResponse,
   DinerSessionResponse,
+  DraftResponse,
   ProductDetailResponse,
+  ReplaceDraftGroupSelectionsRequest,
 } from './contracts';
 import { readStoredSession } from '../session/storage';
 
@@ -17,8 +20,9 @@ export class ApiError extends Error {
     public readonly code: string,
     public readonly state: string | undefined,
     public readonly correlationId: string | undefined,
+    message = code,
   ) {
-    super(code);
+    super(message);
     this.name = 'ApiError';
   }
 }
@@ -67,7 +71,7 @@ async function request<T>(path: string, init: RequestInit = {}, authenticated = 
     } else if (authenticated && response.status === 401) {
       authFailureListeners.forEach((listener) => listener('invalid'));
     }
-    throw new ApiError(response.status, code, state, body.correlation_id);
+    throw new ApiError(response.status, code, state, body.correlation_id, body.error?.message);
   }
 
   return (await response.json()) as T;
@@ -91,5 +95,31 @@ export const dinerApi = {
 
   getProduct(productId: number): Promise<ProductDetailResponse> {
     return request(`/diner/products/${productId}`, {}, true);
+  },
+
+  createOrderDraft(): Promise<DraftResponse> {
+    return request('/diner/order-draft', { method: 'POST' }, true);
+  },
+
+  getOrderDraft(): Promise<DraftResponse> {
+    return request('/diner/order-draft', {}, true);
+  },
+
+  addDraftItem(payload: AddDraftItemRequest): Promise<DraftResponse> {
+    return request('/diner/order-draft/items', {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }, true);
+  },
+
+  replaceDraftGroupSelections(
+    itemId: number,
+    groupId: number,
+    payload: ReplaceDraftGroupSelectionsRequest,
+  ): Promise<DraftResponse> {
+    return request(`/diner/order-draft/items/${itemId}/choice-groups/${groupId}`, {
+      method: 'PUT',
+      body: JSON.stringify(payload),
+    }, true);
   },
 };

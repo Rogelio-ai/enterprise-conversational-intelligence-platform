@@ -114,3 +114,66 @@ export interface ProductDetailResponse {
   choice_groups: ChoiceGroupResponse[];
   experience: ExperienceResponse;
 }
+
+export interface DraftIssueResponse {
+  code: string;
+  group_id: number | null;
+  option_id: number | null;
+  product_id: number | null;
+}
+
+export interface DraftSelectionResponse {
+  group_id: number;
+  group_name: string;
+  choice_option_id: number;
+  selected_product_id: number;
+  selected_product_name: string;
+}
+
+export interface MissingChoiceGroupResponse {
+  group_id: number;
+  group_name: string;
+  min_selections: number;
+  max_selections: number;
+  selected_option_ids: number[];
+}
+
+export interface DraftItemResponse {
+  item_id: number;
+  product_id: number;
+  product_name: string;
+  composition_id: number | null;
+  quantity: string;
+  position: number;
+  readiness: 'INCOMPLETE' | 'INVALID' | 'READY';
+  issues: DraftIssueResponse[];
+  selections: DraftSelectionResponse[];
+  missing_choice_groups: MissingChoiceGroupResponse[];
+  fixed_components: Array<{
+    product_id: number;
+    product_name: string;
+    quantity: string;
+  }>;
+}
+
+export interface DraftResponse {
+  draft_id: number;
+  tenant_id: number;
+  organization_id: number;
+  location_id: number;
+  conversation_id: number;
+  version: number;
+  readiness: 'EMPTY' | 'INCOMPLETE' | 'INVALID' | 'READY';
+  items: DraftItemResponse[];
+}
+
+export interface AddDraftItemRequest {
+  product_id: number;
+  quantity: string;
+  expected_version: number;
+}
+
+export interface ReplaceDraftGroupSelectionsRequest {
+  option_ids: number[];
+  expected_version: number;
+}
