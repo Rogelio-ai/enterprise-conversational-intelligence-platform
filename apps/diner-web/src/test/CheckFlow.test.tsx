@@ -45,6 +45,16 @@ function check(overrides: Record<string, unknown> = {}) {
   };
 }
 
+function settlement(overrides: Record<string, unknown> = {}) {
+  return {
+    check_id: 77, check_status: 'OPEN', check_version: 1,
+    check_fingerprint: 'fingerprint', liability_total: '190.0000',
+    currency: 'MXN', confirmed_settlement: '40.0000',
+    reserved_financial_exposure: '0.0000', uncertain_exposure: '0.0000',
+    available_to_initiate: '150.0000', payments: [], ...overrides,
+  };
+}
+
 function json(body: unknown, status = 200) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } });
 }
@@ -64,18 +74,13 @@ function renderPath(path: string) {
 function mockFetch(
   handler: (url: string, init?: RequestInit) => Promise<Response>,
   currentSession: typeof session & { email?: string | null } = session,
+  currentSettlement: Record<string, unknown> = settlement(),
 ) {
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = String(input);
     if (url.endsWith('/diner-session')) return Promise.resolve(json(currentSession));
     if (url.endsWith('/diner/restaurant-checks/77/settlement')) {
-      return Promise.resolve(json({
-        check_id: 77, check_status: 'OPEN', check_version: 1,
-        check_fingerprint: 'fingerprint', liability_total: '190.0000',
-        currency: 'MXN', confirmed_settlement: '40.0000',
-        reserved_financial_exposure: '0.0000', uncertain_exposure: '0.0000',
-        available_to_initiate: '150.0000', payments: [],
-      }));
+      return Promise.resolve(json(currentSettlement));
     }
     return handler(url, init);
   });
@@ -249,7 +254,10 @@ describe('check creation and review', () => {
     const fetchMock = mockFetch((url) => {
       if (url.includes('/diner/restaurant-checks/77?view=detailed')) return Promise.resolve(json(check({ uncertain_exposure: '30.0000' })));
       return Promise.reject(new Error(`Unexpected request: ${url}`));
-    });
+    }, session, settlement({
+      uncertain_exposure: '30.0000', available_to_initiate: '120.0000',
+      payments: [{ id: 501, state: 'UNCERTAIN' }],
+    }));
     renderPath('/check/77');
     expect(await screen.findByText('2 × Tacos de pescado')).toBeInTheDocument();
     expect(screen.getByRole('heading', { name: 'Pago pendiente de confirmación' })).toBeInTheDocument();
@@ -265,7 +273,9 @@ describe('check creation and review', () => {
     expect(screen.queryByRole('button', { name: /pagar|método/i })).not.toBeInTheDocument();
     await userEvent.click(screen.getByRole('button', { name: 'Actualizar' }));
     await waitFor(() => expect(fetchMock.mock.calls.filter(([input]) => String(input).includes('/diner/restaurant-checks/77?view=detailed'))).toHaveLength(2));
-    expect(fetchMock.mock.calls.some(([input]) => /payment|settlement|conekta/i.test(String(input)))).toBe(false);
+    expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith('/diner/restaurant-checks/77/settlement'))).toBe(true);
+    expect(fetchMock.mock.calls.some(([input]) => /payment-executors|conekta/i.test(String(input)))).toBe(false);
+    expect(screen.getByRole('link', { name: 'Consultar pago' })).toHaveAttribute('href', '/check/77/payments/501');
   });
 
   it('uses the authoritative CARD executor key to request client configuration', async () => {
@@ -391,6 +401,13 @@ describe('check creation and review', () => {
       if (url.endsWith('/diner/restaurant-checks/77/payments') && init?.method === 'POST') {
         return pendingPayment;
       }
+      if (url.endsWith('/diner/restaurant-checks/77/payments/501')) {
+        return Promise.resolve(json({
+          id: 501, check_id: 77, amount: '150.0000', currency: 'MXN',
+          method_category: 'CARD', state: 'SUCCEEDED',
+          instrument_display: 'VISA •••• 4242', terminal_at: '2026-09-07T20:00:00Z',
+        }));
+      }
       return Promise.reject(new Error(`Unexpected request: ${url}`));
     });
     renderPath('/check/77');
@@ -437,7 +454,7 @@ describe('check creation and review', () => {
       },
     });
     expect(sessionStorage.getItem('diner-auth-session-v1')).not.toContain('tok_payment_once');
-    releasePayment?.(json({ state: 'SUCCEEDED', amount: '150.0000', currency: 'MXN' }, 201));
-    expect(await screen.findByRole('heading', { name: 'Pago registrado correctamente' })).toBeInTheDocument();
+    releasePayment?.(json({ id: 501, state: 'SUCCEEDED', amount: '150.0000', currency: 'MXN' }, 201));
+    expect(await screen.findByRole('heading', { name: 'Pago registrado' })).toBeInTheDocument();
   });
 });

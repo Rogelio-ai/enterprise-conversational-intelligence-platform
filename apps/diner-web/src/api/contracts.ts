@@ -465,6 +465,17 @@ export interface PaymentResponse {
   attempts: PaymentAttemptResponse[];
 }
 
+export interface DinerPaymentResponse {
+  id: number;
+  check_id: number;
+  amount: string;
+  currency: string;
+  method_category: string;
+  state: string;
+  instrument_display: string | null;
+  terminal_at: string | null;
+}
+
 export interface SettlementResponse {
   check_id: number;
   check_status: string;

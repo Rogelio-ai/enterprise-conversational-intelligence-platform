@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react';
 import { useQuery } from '@tanstack/react-query';
-import { Link, useParams } from 'react-router-dom';
+import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ApiError, dinerApi } from '../api/client';
 import type { PaymentResponse, RestaurantCheckResponse } from '../api/contracts';
 import { DinerHeader } from '../components/DinerHeader';
@@ -30,6 +30,7 @@ function isZeroMoney(value: string): boolean {
 export function CheckReviewPage() {
   const { checkId } = useParams();
   const parsedId = Number(checkId);
+  const navigate = useNavigate();
   const validId = Number.isSafeInteger(parsedId) && parsedId > 0;
   const heading = useRef<HTMLHeadingElement>(null);
   const { session, knownEmail } = useAuth();
@@ -47,19 +48,17 @@ export function CheckReviewPage() {
     retry: false,
     staleTime: 5_000,
   });
-  const checkCanTokenizeCard = checkQuery.data?.status === 'OPEN'
-    && isZeroMoney(checkQuery.data.uncertain_exposure)
-    && !isZeroMoney(checkQuery.data.outstanding);
   const checkCurrency = checkQuery.data?.currency ?? '';
   const settlement = useQuery({
     queryKey: ['diner', 'restaurant-check-settlement', parsedId],
     queryFn: () => dinerApi.getCheckSettlement(parsedId),
-    enabled: checkCanTokenizeCard,
+    enabled: validId && checkQuery.isSuccess,
     retry: false,
   });
-  const settlementCanInitiate = settlement.data?.check_status === 'OPEN'
-    && isZeroMoney(settlement.data.uncertain_exposure)
-    && !isZeroMoney(settlement.data.available_to_initiate);
+  const settlementCanInitiate = ['OPEN', 'FROZEN'].includes(settlement.data?.check_status ?? '')
+    && isZeroMoney(settlement.data?.reserved_financial_exposure ?? '')
+    && isZeroMoney(settlement.data?.uncertain_exposure ?? '')
+    && !isZeroMoney(settlement.data?.available_to_initiate ?? '0');
   const executors = useQuery({
     queryKey: ['diner', 'card-payment-executors', settlement.data?.currency ?? checkCurrency],
     queryFn: () => dinerApi.getCardPaymentExecutors(settlement.data?.currency ?? checkCurrency),
@@ -90,11 +89,29 @@ export function CheckReviewPage() {
         customer_payment_source: source,
         payment_customer_identity: paymentCustomerIdentity,
       }, paymentIntentKey.current);
-      setPaymentResult(result);
+      navigate(`/check/${authoritative.check_id}/payments/${result.id}`);
     } catch (unknownError) {
-      if (!(unknownError instanceof ApiError && unknownError.state === 'SESSION_CLOSED')) {
+      if (unknownError instanceof ApiError && unknownError.status === 0) {
+        const [latestSettlement] = await Promise.all([
+          settlement.refetch(),
+          checkQuery.refetch(),
+        ]);
+        const unresolvedPayments = latestSettlement.data?.payments.filter((payment) => (
+          ['RESERVED', 'IN_PROGRESS', 'UNCERTAIN'].includes(payment.state)
+        )) ?? [];
+        const unresolvedPayment = unresolvedPayments[unresolvedPayments.length - 1];
+        if (unresolvedPayment) {
+          navigate(`/check/${authoritative.check_id}/payments/${unresolvedPayment.id}`);
+          return;
+        }
         setPaymentResult({
-          state: unknownError instanceof ApiError && unknownError.status === 0 ? 'UNCERTAIN' : 'FAILED',
+          state: 'UNCERTAIN',
+          amount: authoritative.available_to_initiate,
+          currency: authoritative.currency,
+        });
+      } else if (!(unknownError instanceof ApiError && unknownError.state === 'SESSION_CLOSED')) {
+        setPaymentResult({
+          state: 'FAILED',
           amount: authoritative.available_to_initiate,
           currency: authoritative.currency,
         });
@@ -126,7 +143,12 @@ export function CheckReviewPage() {
 
   const check = checkQuery.data;
   const hasUncertainPayment = !isZeroMoney(check.uncertain_exposure);
-  const canTokenizeCard = check.status === 'OPEN' && !hasUncertainPayment && !isZeroMoney(check.outstanding);
+  const unresolvedPayments = settlement.data?.payments.filter((payment) => (
+    ['RESERVED', 'IN_PROGRESS', 'UNCERTAIN'].includes(payment.state)
+  )) ?? [];
+  const unresolvedPayment = unresolvedPayments[unresolvedPayments.length - 1];
+  const showPaymentSection = ['OPEN', 'FROZEN'].includes(check.status)
+    && (!isZeroMoney(check.outstanding) || hasUncertainPayment || unresolvedPayment !== undefined);
   const status = hasUncertainPayment
     ? { eyebrow: 'Cuenta activa · Pago sin confirmar', title: 'Pago pendiente de confirmación', description: 'El restaurante aún verifica una operación. No vuelvas a pagar por el momento.' }
     : statusCopy(check.status);
@@ -165,9 +187,15 @@ export function CheckReviewPage() {
             {check.signal === 'SERVICE_CONTINUATION_DECISION_REQUIRED' && <p className="check-financial-note">El restaurante indica que después deberá decidirse si el servicio continúa.</p>}
           </aside>
         </div>
-        {canTokenizeCard && (
+        {showPaymentSection && (
           <div className="check-payment-section">
-            {paymentResult ? (
+            {settlement.isPending ? (
+              <section className="conekta-tokenizer" aria-busy="true"><h2>Consultando pagos</h2><p role="status">Verificando el estado financiero del restaurante…</p></section>
+            ) : settlement.isError ? (
+              <section className="conekta-tokenizer" role="alert"><h2>Estado de pago no disponible</h2><p>No fue posible confirmar el estado financiero. No inicies otro pago.</p><button className="secondary-button" type="button" onClick={() => settlement.refetch()}>Reintentar</button></section>
+            ) : unresolvedPayment ? (
+              <section className="payment-result payment-result--uncertain" role="alert"><h2>Hay un pago pendiente de confirmación</h2><p>No inicies otro pago. Consulta el intento existente para conocer su estado autoritativo.</p><Link className="primary-button button-link" to={`/check/${check.id}/payments/${unresolvedPayment.id}`}>Consultar pago</Link></section>
+            ) : paymentResult ? (
               <section className={`payment-result payment-result--${paymentResult.state.toLowerCase()}`} role="status" aria-live="polite">
                 {paymentResult.state === 'SUCCEEDED' ? <><h2>Pago registrado correctamente</h2><p>El restaurante confirmó el registro inicial de este pago.</p></>
                   : paymentResult.state === 'REJECTED' ? <><h2>Pago no aprobado</h2><p>La tarjeta no fue aprobada. No se registró como pago confirmado.</p><button className="secondary-button" type="button" onClick={prepareFreshCard}>Intentar con otra tarjeta</button></>
@@ -177,10 +205,6 @@ export function CheckReviewPage() {
               </section>
             ) : submittingPayment ? (
               <section className="payment-result" role="status" aria-busy="true"><h2>Procesando pago</h2><p>Espera la respuesta autoritativa del restaurante. No inicies otro intento.</p></section>
-            ) : settlement.isPending ? (
-              <section className="conekta-tokenizer" aria-busy="true"><h2>Preparando el importe</h2><p role="status">Consultando el saldo disponible del restaurante…</p></section>
-            ) : settlement.isError ? (
-              <section className="conekta-tokenizer" role="alert"><h2>Pago con tarjeta no disponible</h2><p>No fue posible confirmar el importe disponible. Ningún pago fue realizado.</p><button className="secondary-button" type="button" onClick={() => settlement.refetch()}>Reintentar</button></section>
             ) : !settlementCanInitiate ? (
               <section className="payment-result payment-result--uncertain" role="status"><h2>Pago no disponible</h2><p>El estado financiero actual no permite iniciar otro pago.</p></section>
             ) : executors.isPending ? (

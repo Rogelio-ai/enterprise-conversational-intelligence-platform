@@ -168,6 +168,18 @@ class PaymentResponse(BaseModel):
     attempts: tuple[PaymentAttemptResponse, ...]
 
 
+class DinerPaymentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    check_id: int
+    amount: Decimal
+    currency: str
+    method_category: str
+    state: str
+    instrument_display: str | None
+    terminal_at: Any
+
+
 class SettlementResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     check_id: int
@@ -189,6 +201,31 @@ def _staff_execution(context: AuthenticatedContext) -> ExecutionContext:
 
 def _diner_execution(context: DinerAuthenticatedContext) -> ExecutionContext:
     return ExecutionContext(ActorType.DINER, context.tenant_id, context.diner_session_id, None, get_correlation_id())
+
+
+async def _authorized_diner_payment(
+    *,
+    db: AsyncSession,
+    context: DinerAuthenticatedContext,
+    check_id: int,
+    payment_id: int,
+) -> object:
+    try:
+        settlement = await service.get_check_settlement(
+            db,
+            tenant_id=context.tenant_id,
+            check_id=check_id,
+            owner_diner_session_id=context.diner_session_id,
+        )
+    except errors.CheckNotPayableError as exc:
+        raise errors.PaymentNotFoundError() from exc
+    payment = next(
+        (value for value in settlement.payments if value.id == payment_id),
+        None,
+    )
+    if payment is None:
+        raise errors.PaymentNotFoundError()
+    return payment
 
 
 def _customer_payment_source(
@@ -397,6 +434,55 @@ async def diner_get_settlement(
         return await service.get_check_settlement(
             db, tenant_id=context.tenant_id, check_id=check_id,
             owner_diner_session_id=context.diner_session_id,
+        )
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@router.get(
+    '/diner/restaurant-checks/{check_id}/payments/{payment_id}',
+    response_model=DinerPaymentResponse,
+)
+async def diner_get_payment(
+    check_id: int,
+    payment_id: int,
+    context: Annotated[DinerAuthenticatedContext, Depends(get_diner_authenticated_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> object:
+    try:
+        return await _authorized_diner_payment(
+            db=db,
+            context=context,
+            check_id=check_id,
+            payment_id=payment_id,
+        )
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@router.post(
+    '/diner/restaurant-checks/{check_id}/payments/{payment_id}/recover',
+    response_model=DinerPaymentResponse,
+)
+async def diner_recover_payment(
+    check_id: int,
+    payment_id: int,
+    context: Annotated[DinerAuthenticatedContext, Depends(get_diner_authenticated_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> object:
+    try:
+        await _authorized_diner_payment(
+            db=db,
+            context=context,
+            check_id=check_id,
+            payment_id=payment_id,
+        )
+        return await service.recover_payment(
+            db,
+            context=_diner_execution(context),
+            payment_id=payment_id,
+            executor_registry=db.info['payment_executor_registry'],
+            credential_resolver=db.info.get('merchant_credential_resolver'),
         )
     except Exception as exc:
         raise _error(exc) from exc

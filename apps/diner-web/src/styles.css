@@ -420,6 +420,20 @@ button, a, input { -webkit-tap-highlight-color: transparent; }
 .payment-confirmation h2, .payment-result h2 { margin: 0; font-family: var(--font-display); font-size: clamp(1.45rem, 5vw, 1.9rem); }
 .payment-confirmation p, .payment-result p { color: var(--color-text-secondary); line-height: 1.55; }
 .payment-result--uncertain { border-color: color-mix(in srgb, var(--color-primary) 50%, var(--color-border)); }
+.payment-status-main { display: grid; gap: var(--space-lg); width: min(100% - 2rem, 52rem); margin: 0 auto; padding: clamp(1.5rem, 6vw, 4rem) 0; }
+.payment-status-card { padding: clamp(1.25rem, 5vw, 2rem); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-elevated); box-shadow: var(--shadow-card); }
+.payment-status-card h1, .payment-status-card h2 { margin: 0; font-family: var(--font-display); font-size: clamp(1.6rem, 6vw, 2.35rem); }
+.payment-status-card > p { line-height: 1.6; color: var(--color-text-secondary); }
+.payment-status-card--success { border-color: color-mix(in srgb, var(--color-success) 55%, var(--color-border)); }
+.payment-status-card--uncertain { border-color: color-mix(in srgb, var(--color-primary) 55%, var(--color-border)); }
+.payment-status-card--failure { border-color: color-mix(in srgb, var(--color-danger) 55%, var(--color-border)); }
+.payment-status-summary { display: grid; gap: .75rem; margin: var(--space-lg) 0; }
+.payment-status-summary div { display: flex; align-items: baseline; justify-content: space-between; gap: 1rem; padding-bottom: .7rem; border-bottom: 1px solid var(--color-border); }
+.payment-status-summary dt { color: var(--color-text-secondary); }
+.payment-status-summary dd { margin: 0; font-weight: 800; text-align: right; }
+.payment-status-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
+.payment-status-warning, .payment-status-feedback { padding: var(--space-md); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface)); color: var(--color-text); font-weight: 700; }
+@media (max-width: 30rem) { .payment-status-actions > * { width: 100%; } .payment-status-summary div { align-items: flex-start; flex-direction: column; gap: .2rem; } .payment-status-summary dd { text-align: left; } }
 .draft-empty { display: grid; justify-items: center; padding: clamp(2rem, 8vw, 4rem); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-elevated); box-shadow: var(--shadow-card); text-align: center; }
 .draft-empty > span { display: grid; width: 4rem; height: 4rem; place-items: center; border: 1px solid var(--color-primary); border-radius: 50%; color: var(--color-primary); font-size: 1.5rem; }
 .draft-empty h2 { margin: var(--space-md) 0 0; font-family: var(--font-display); font-size: 2rem; }
