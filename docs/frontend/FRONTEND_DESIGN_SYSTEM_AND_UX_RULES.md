@@ -1,10 +1,11 @@
 # FRONTEND DESIGN SYSTEM AND UX RULES
 
 **Project:** Restaurant Intelligence Platform
-**Document Type:** Authoritative Frontend Design, UX, Interaction and Experience Rules
-**Status:** ACTIVE
+**Document Type:** Authoritative Frontend Design, UX, Interaction, Experience, Boundary and Change-Control Rules
+**Status:** ACTIVE — AUTHORITATIVE
 **Initial Scope:** Diner Experience
 **Future Scope:** Diner, Host, Waiter, Kitchen, Cashier, Manager and future operational interfaces
+**Applies To:** Frontend architecture, frontend functionality, frontend design, frontend/backend boundaries, UX implementation and Codex-assisted frontend changes
 
 ---
 
@@ -25,7 +26,33 @@ Its purpose is to ensure that every frontend surface is:
 * channel-compatible,
 * visually excellent,
 * emotionally impressive,
+* functionally correct,
+* safely evolvable,
 * and strictly separated from backend business authority.
+
+This document also establishes the authoritative boundaries between:
+
+```text
+FUNCTIONALITY
+and
+DESIGN
+```
+
+```text
+BACKEND
+and
+FRONTEND
+```
+
+and:
+
+```text
+FRONTEND FUNCTIONALITY
+and
+BACKEND FUNCTIONALITY
+```
+
+It additionally governs how frontend-related changes may be delegated to Codex.
 
 This document governs frontend implementation unless a later explicit architectural decision supersedes a rule.
 
@@ -2017,15 +2044,16 @@ C2 — Menu + Product + Configuration
 C3 — Draft + Order
 C4 — Account + Payment
 C5 — Assistance + Post-Settlement + Continuation
-C6 — Digital Waiter UI Integration
+C6A — Digital Waiter Backend Completion
+C6B — Digital Waiter UI Integration
 C7 — Focused Diner Journey Validation
 ```
 
 These are implementation slices, not mandatory independent architectural workstreams.
 
-Merge slices when implementation is small.
+Merge slices only when their changes are genuinely dependent and cannot be safely implemented independently.
 
-Do NOT automatically create seven review/certification cycles.
+Do NOT automatically create separate review/certification workstreams for every slice.
 
 ---
 
@@ -3143,7 +3171,7 @@ It is a requirement for overall product quality.
 
 ---
 
-# 152. FINAL AUTHORITATIVE RULE
+# 152. FINAL AUTHORITATIVE EXPERIENCE RULE
 
 Every frontend decision should contribute to at least one of:
 
@@ -3178,3 +3206,2704 @@ INTELLIGENT EXPERIENCE
 RESTAURANT INTELLIGENCE PLATFORM
 ```
 
+---
+
+# 153. AUTHORITATIVE IMPLEMENTATION BOUNDARIES
+
+From the beginning of frontend implementation, every requested change MUST respect explicit architectural boundaries.
+
+At minimum distinguish:
+
+```text
+FUNCTIONALITY
+        ↕
+DESIGN
+```
+
+```text
+BACKEND
+        ↕
+FRONTEND
+```
+
+```text
+BACKEND FUNCTIONALITY
+        ↕
+FRONTEND FUNCTIONALITY
+```
+
+These boundaries exist to prevent:
+
+```text
+responsibility leakage
+business-rule duplication
+uncontrolled coupling
+accidental redesign
+unnecessary backend changes
+unnecessary frontend changes
+regressions
+collateral damage
+```
+
+No implementation request should begin until the responsibility of the requested change is understood.
+
+---
+
+# 154. FUNCTIONALITY VS DESIGN BOUNDARY
+
+Functionality answers:
+
+```text
+WHAT DOES THE SYSTEM DO?
+```
+
+Design answers:
+
+```text
+HOW DOES THE USER EXPERIENCE AND INTERACT WITH IT?
+```
+
+Examples of functionality:
+
+```text
+join diner session
+retrieve menu
+configure product
+add product to draft
+confirm order
+retrieve account
+initiate payment
+request assistance
+answer continuation decision
+```
+
+Examples of design:
+
+```text
+visual hierarchy
+color
+typography
+spacing
+layout
+animation
+component appearance
+navigation presentation
+responsive adaptation
+interaction feedback
+```
+
+The two collaborate but MUST NOT be treated as the same responsibility.
+
+---
+
+# 155. DESIGN MUST NOT CHANGE BUSINESS SEMANTICS
+
+A design change MUST NOT silently alter:
+
+```text
+business rules
+API semantics
+domain state
+financial state
+session ownership
+order lifecycle
+payment lifecycle
+authorization
+availability
+price
+promotion
+settlement
+billing
+inventory
+```
+
+Example:
+
+Changing:
+
+```text
+button position
+```
+
+MUST NOT cause:
+
+```text
+different backend action
+different payment behavior
+different business validation
+```
+
+unless the requested change explicitly includes that functional change.
+
+---
+
+# 156. FUNCTIONAL CHANGE MUST NOT TRIGGER UNRELATED REDESIGN
+
+A functional change MUST NOT automatically authorize:
+
+```text
+visual redesign
+navigation redesign
+theme replacement
+component-library replacement
+CSS restructuring
+unrelated UX changes
+```
+
+unless those changes are required by the requested functionality.
+
+Canonical rule:
+
+```text
+FUNCTIONAL CHANGE
+        ≠
+DESIGN REDESIGN
+```
+
+---
+
+# 157. DESIGN CHANGE MUST NOT TRIGGER UNRELATED FUNCTIONAL CHANGE
+
+Likewise:
+
+```text
+DESIGN CHANGE
+        ≠
+FUNCTIONAL REDESIGN
+```
+
+A request to improve:
+
+```text
+visual appearance
+spacing
+typography
+layout
+responsive behavior
+microinteraction
+```
+
+does not authorize changes to backend business behavior.
+
+---
+
+# 158. BACKEND VS FRONTEND BOUNDARY
+
+The backend is authoritative for business truth.
+
+The frontend is authoritative for presentation and interaction.
+
+Canonical architecture:
+
+```text
+FRONTEND
+    │
+    │ user intention
+    ↓
+BACKEND
+    │
+    │ authoritative decision
+    ↓
+FRONTEND
+    │
+    │ understandable presentation
+    ↓
+USER
+```
+
+The frontend requests.
+
+The backend decides.
+
+The frontend presents.
+
+---
+
+# 159. BACKEND AUTHORITY
+
+Backend owns authoritative decisions concerning:
+
+```text
+authentication
+authorization
+tenant ownership
+organization ownership
+location ownership
+session validity
+product availability
+product configuration validity
+pricing
+promotions
+commercial totals
+order acceptance
+Check state
+financial liability
+payment state
+Settlement state
+cash management
+billing
+fiscal evidence
+inventory consumption
+session closure eligibility
+idempotency
+concurrency
+transactional invariants
+```
+
+Frontend MUST NOT independently reproduce these decisions.
+
+---
+
+# 160. FRONTEND FUNCTIONAL AUTHORITY
+
+Frontend functionality owns client-side behavior necessary to let the user interact with backend capabilities.
+
+Examples:
+
+```text
+screen navigation
+form interaction
+temporary form state
+selected UI options
+opening/closing dialogs
+display filtering over already-authorized data
+presentation sorting
+loading state
+visual feedback
+local formatting
+focus management
+responsive interaction
+theme preference
+accessibility behavior
+```
+
+This functionality is legitimate frontend functionality because it does not establish business truth.
+
+---
+
+# 161. FRONTEND MUST NOT BECOME BUSINESS AUTHORITY
+
+Frontend MUST NOT decide:
+
+```text
+whether a diner may order
+whether a product is truly available
+what a product ultimately costs
+whether a promotion applies
+whether an order is accepted
+whether a Check can be created
+whether payment succeeded
+whether a Settlement exists
+whether an invoice is valid
+whether a diner or table may close
+```
+
+It may present these outcomes only after receiving authoritative evidence.
+
+---
+
+# 162. FRONTEND CONVENIENCE VALIDATION
+
+Frontend MAY perform convenience validation to improve interaction.
+
+Examples:
+
+```text
+required field empty
+invalid email syntax
+invalid local character count
+obvious input-format problem
+```
+
+But:
+
+```text
+CLIENT VALIDATION
+        ≠
+BUSINESS VALIDATION
+```
+
+Backend MUST still validate authoritative requirements.
+
+---
+
+# 163. API CONTRACT BOUNDARY
+
+The API contract is the formal boundary between frontend and backend.
+
+Frontend SHOULD consume explicit API contracts rather than depend on:
+
+```text
+database structure
+ORM models
+backend implementation details
+internal service classes
+internal exceptions
+private backend constants
+```
+
+Backend changes that preserve API semantics SHOULD normally remain invisible to frontend.
+
+Frontend design changes SHOULD normally remain invisible to backend.
+
+---
+
+# 164. NO DATABASE ACCESS FROM FRONTEND
+
+Frontend MUST NEVER access the platform database directly.
+
+Canonical:
+
+```text
+FRONTEND
+    ↓
+API
+    ↓
+DOMAIN
+    ↓
+PERSISTENCE
+```
+
+Never:
+
+```text
+FRONTEND
+    ↓
+DATABASE
+```
+
+---
+
+# 165. NO BACKEND WORKAROUNDS IN FRONTEND
+
+If backend lacks an authoritative capability required for correct operation, frontend MUST NOT invent a substitute business implementation.
+
+Instead:
+
+```text
+IDENTIFY GAP
+    ↓
+CLASSIFY AS BACKEND
+    ↓
+IMPLEMENT MINIMUM BACKEND CAPABILITY
+    ↓
+EXPOSE CONTRACT
+    ↓
+CONSUME FROM FRONTEND
+```
+
+This is particularly important for the Digital Waiter.
+
+Frontend MUST NOT implement natural-language business interpretation merely because a backend orchestration endpoint is incomplete.
+
+---
+
+# 166. NO FRONTEND WORKAROUNDS IN BACKEND
+
+Likewise, backend SHOULD NOT accumulate presentation-specific logic merely to avoid implementing correct frontend interaction.
+
+Examples that normally belong to frontend:
+
+```text
+modal visibility
+button layout
+screen navigation
+CSS theme
+animation timing
+responsive layout
+local display formatting
+```
+
+Keep presentation responsibility in the presentation layer.
+
+---
+
+# 167. CHANGE CLASSIFICATION BEFORE IMPLEMENTATION
+
+Every change SHOULD first be classified as one or more of:
+
+```text
+DESIGN
+FRONTEND FUNCTIONALITY
+BACKEND FUNCTIONALITY
+API CONTRACT
+CROSS-BOUNDARY
+```
+
+This classification determines permitted scope.
+
+Example:
+
+```text
+CHANGE:
+Make product cards more attractive
+
+CLASSIFICATION:
+DESIGN
+
+PERMITTED:
+frontend presentation
+
+NOT PERMITTED:
+backend product semantics
+pricing
+database
+order logic
+```
+
+Another example:
+
+```text
+CHANGE:
+Allow diner transcript recovery after refresh
+
+CLASSIFICATION:
+BACKEND FUNCTIONALITY + API CONTRACT + FRONTEND FUNCTIONALITY
+
+PERMITTED:
+minimum backend read capability
+API contract
+frontend transcript recovery
+
+NOT PERMITTED:
+conversation subsystem redesign
+new chatbot architecture
+unrelated UI redesign
+```
+
+---
+
+# 168. CROSS-BOUNDARY CHANGE RULE
+
+Some valid changes require both frontend and backend.
+
+That does NOT eliminate the boundary.
+
+Instead:
+
+```text
+BACKEND PORTION
+        ↓
+EXPLICIT CONTRACT
+        ↓
+FRONTEND PORTION
+```
+
+Each side MUST retain its own responsibility.
+
+Cross-boundary change does not mean unrestricted cross-layer modification.
+
+---
+
+# 169. MINIMUM NECESSARY CHANGE
+
+Every implementation MUST follow:
+
+```text
+REQUESTED OUTCOME
+        ↓
+IDENTIFY MINIMUM REQUIRED SCOPE
+        ↓
+CHANGE ONLY THAT SCOPE
+        ↓
+VERIFY DIRECT EFFECT
+        ↓
+VERIFY RELEVANT PRESERVATION
+```
+
+Do not expand scope because nearby code could also be improved.
+
+---
+
+# 170. ONE PROMPT PER INDEPENDENT CHANGE
+
+Canonical Codex rule:
+
+```text
+ONE INDEPENDENT CHANGE
+        =
+ONE CODEX PROMPT
+```
+
+A prompt MUST have one clearly defined implementation objective.
+
+Examples of independent changes:
+
+```text
+create frontend foundation
+```
+
+```text
+implement diner access screen
+```
+
+```text
+implement menu browsing
+```
+
+```text
+implement product configuration
+```
+
+```text
+correct one identified responsive defect
+```
+
+These SHOULD NOT automatically be combined into one giant prompt.
+
+---
+
+# 171. DEPENDENT CHANGE EXCEPTION
+
+Two or more changes MAY be included in one Codex prompt only when they are genuinely dependent.
+
+Dependency means:
+
+```text
+CHANGE B CANNOT BE CORRECTLY IMPLEMENTED
+WITHOUT CHANGE A
+```
+
+or:
+
+```text
+SEPARATING THEM WOULD CREATE
+A TEMPORARILY INVALID OR UNUSABLE IMPLEMENTATION
+```
+
+Then:
+
+```text
+DEPENDENT CHANGE A
+        +
+DEPENDENT CHANGE B
+        =
+ONE COHERENT PROMPT
+```
+
+---
+
+# 172. PROXIMITY IS NOT DEPENDENCY
+
+Changes are not dependent merely because:
+
+```text
+they affect the same screen
+they affect nearby files
+they belong to the same workstream
+they are both frontend changes
+they are both visually related
+they are convenient to implement together
+```
+
+Dependency must be functional or architectural.
+
+---
+
+# 173. PROMPT ATOMICITY
+
+Every Codex prompt SHOULD be atomic enough that its result can be answered clearly:
+
+```text
+DID THE REQUESTED CHANGE SUCCEED?
+YES / NO
+```
+
+Avoid prompts whose success requires evaluating many unrelated objectives.
+
+Atomic prompts improve:
+
+```text
+precision
+reviewability
+rollback
+debugging
+credit efficiency
+regression attribution
+```
+
+---
+
+# 174. PROMPT SCOPE MUST BE EXPLICIT
+
+Every implementation prompt SHOULD explicitly state:
+
+```text
+OBJECTIVE
+BOUNDARY
+ALLOWED SCOPE
+FORBIDDEN SCOPE
+ACCEPTANCE CRITERIA
+FOCUSED VERIFICATION
+REPORT FORMAT
+```
+
+This prevents Codex from interpreting a local change as permission to redesign adjacent architecture.
+
+---
+
+# 175. NO UNRELATED MODIFICATIONS
+
+Absolute rule:
+
+```text
+DO NOT TOUCH ANYTHING
+THAT IS NOT REQUIRED
+FOR THE REQUESTED CHANGE
+```
+
+Codex MUST preserve unrelated:
+
+```text
+files
+modules
+services
+components
+styles
+tests
+configuration
+migrations
+API contracts
+domain behavior
+documentation
+```
+
+unless modification is technically necessary for the requested change.
+
+---
+
+# 176. NO OPPORTUNISTIC REFACTORING
+
+While implementing a requested change, Codex MUST NOT perform unrelated:
+
+```text
+cleanup
+renaming
+formatting sweeps
+dependency upgrades
+architecture restructuring
+component migrations
+service rewrites
+test rewrites
+directory reorganizations
+```
+
+merely because it identifies an opportunity.
+
+Potential improvements may be reported separately.
+
+They MUST NOT be silently included.
+
+---
+
+# 177. NO SCOPE EXPANSION BY CODEX
+
+Codex is an implementation executor within the authorized scope.
+
+It MUST NOT independently decide to enlarge the change.
+
+If implementation reveals a required additional modification outside the authorized boundary:
+
+```text
+STOP
+    ↓
+REPORT BLOCKER
+    ↓
+EXPLAIN REQUIRED ADDITIONAL CHANGE
+    ↓
+WAIT FOR NEW DECISION
+```
+
+unless the additional modification is an inseparable technical dependency already covered by the prompt.
+
+---
+
+# 178. PRESERVE CERTIFIED BEHAVIOR
+
+Previously implemented and certified behavior is presumed valid.
+
+A new change MUST preserve it unless the new requirement explicitly supersedes it.
+
+Canonical:
+
+```text
+NEW CHANGE
+    +
+PRESERVE EXISTING CERTIFIED BEHAVIOR
+```
+
+Not:
+
+```text
+NEW CHANGE
+    →
+REINTERPRET OLD SYSTEM
+```
+
+---
+
+# 179. PRESERVE BACKEND AUTHORITY
+
+Frontend implementation MUST NOT weaken backend authority for convenience.
+
+Examples of prohibited shortcuts:
+
+```text
+hardcoded prices
+frontend-computed settlement truth
+frontend-generated availability
+frontend-only authorization
+frontend-only payment success
+frontend-created session closure truth
+```
+
+---
+
+# 180. PRESERVE FRONTEND DESIGN AUTHORITY
+
+Backend changes MUST NOT unnecessarily dictate visual implementation.
+
+An API SHOULD expose semantic state.
+
+Frontend determines how that state is presented according to this document.
+
+Example:
+
+Backend:
+
+```text
+PAYMENT_UNCERTAIN
+```
+
+Frontend:
+
+```text
+appropriate warning surface
+message
+status affordance
+visual hierarchy
+```
+
+Backend should not prescribe CSS/layout.
+
+---
+
+# 181. DIRECT DAMAGE DEFINITION
+
+A direct damage is an unintended defect in the exact capability being changed.
+
+Example:
+
+```text
+CHANGE:
+Improve diner access form.
+
+DIRECT DAMAGE:
+The form no longer submits correctly.
+```
+
+Every change MUST verify absence of direct damage.
+
+---
+
+# 182. SECONDARY DAMAGE DEFINITION
+
+A secondary damage is an unintended defect in a capability directly connected to the changed capability.
+
+Example:
+
+```text
+CHANGE:
+Modify diner authentication handling.
+
+SECONDARY DAMAGE:
+Authenticated menu requests stop working.
+```
+
+Relevant secondary effects MUST be verified.
+
+---
+
+# 183. COLLATERAL DAMAGE DEFINITION
+
+A collateral damage is an unintended defect outside the primary change path caused by shared dependencies, shared components, configuration or infrastructure.
+
+Example:
+
+```text
+CHANGE:
+Modify global Button component.
+
+COLLATERAL DAMAGE:
+Payment confirmation button becomes visually or functionally broken.
+```
+
+Verification MUST consider plausible collateral impact.
+
+---
+
+# 184. REGRESSION DEFINITION
+
+A regression exists when behavior that previously worked correctly stops working correctly because of the new change.
+
+Regression may be:
+
+```text
+functional
+visual
+responsive
+accessibility-related
+contractual
+security-related
+performance-related
+```
+
+depending on the scope of the change.
+
+---
+
+# 185. CHANGE IMPACT RADIUS
+
+Before verification, determine the plausible impact radius.
+
+Conceptually:
+
+```text
+CHANGED CODE
+    ↓
+DIRECT DEPENDENCIES
+    ↓
+SHARED DEPENDENCIES
+    ↓
+RELEVANT USER JOURNEYS
+```
+
+Verification SHOULD cover this radius.
+
+It MUST NOT automatically expand to the entire platform.
+
+---
+
+# 186. PROPORTIONAL REGRESSION VERIFICATION
+
+After each Codex change:
+
+```text
+VERIFY ENOUGH
+TO CERTIFY THE CHANGE
+```
+
+but:
+
+```text
+DO NOT RUN EVERYTHING
+BY DEFAULT
+```
+
+Verification must be proportional to risk.
+
+---
+
+# 187. FOCUSED VERIFICATION FIRST
+
+Codex SHOULD normally perform:
+
+```text
+1. changed capability test
+2. directly affected integration test
+3. relevant shared-component test if applicable
+4. build/type/lint check when appropriate
+```
+
+This is preferable to automatically running the entire repository test suite.
+
+---
+
+# 188. FULL REGRESSION IS NOT A PER-PROMPT REQUIREMENT
+
+A full platform regression MUST NOT automatically run after every small frontend change.
+
+Full regression is appropriate when:
+
+```text
+closing a major integration stage
+changing shared architecture
+changing highly central infrastructure
+preparing pilot/release
+or when focused evidence reveals broader risk
+```
+
+This prevents verification from becoming more expensive than implementation.
+
+---
+
+# 189. CODEX MUST NOT SPEND TIME ON UNNECESSARY BROAD REGRESSION
+
+Codex SHOULD NOT be used to wait for long, deterministic test suites when agent reasoning is unnecessary.
+
+Canonical execution allocation:
+
+```text
+CODEX
+=
+bounded implementation
++
+focused verification
+
+CHATGPT
+=
+architecture
++
+analysis
++
+review
+
+LOCAL TERMINAL
+=
+long deterministic regression suites
+```
+
+This rule is especially important for conserving Codex usage.
+
+---
+
+# 190. VERIFICATION MUST MATCH CHANGE TYPE
+
+For a design-only change, verification may emphasize:
+
+```text
+build correctness
+affected component rendering
+responsive behavior
+accessibility basics
+visual consistency
+absence of functional behavior change
+```
+
+For frontend-functional changes:
+
+```text
+interaction
+API integration
+state handling
+error handling
+affected journey
+```
+
+For backend-functional changes:
+
+```text
+domain behavior
+transactional invariants
+API contract
+focused backend tests
+```
+
+For cross-boundary changes:
+
+```text
+backend contract
+frontend consumption
+integration between both
+```
+
+---
+
+# 191. DESIGN REGRESSION
+
+A frontend change can be functionally correct and still cause a design regression.
+
+Examples:
+
+```text
+broken responsive layout
+incorrect spacing
+inconsistent typography
+unreadable contrast
+hidden action
+overlapping component
+broken dark mode
+lost focus indication
+```
+
+Relevant design regressions MUST be considered part of certification.
+
+---
+
+# 192. FUNCTIONAL REGRESSION
+
+A visual improvement MUST NOT break:
+
+```text
+navigation
+submission
+authentication
+API calls
+draft state
+order actions
+payment actions
+continuation
+assistance
+```
+
+Visual certification therefore includes preservation of affected functional behavior.
+
+---
+
+# 193. ACCESSIBILITY REGRESSION
+
+Changes to shared interactive components MUST preserve:
+
+```text
+semantic element behavior
+keyboard interaction
+focus visibility
+labels
+touch target
+screen-reader meaning
+contrast where applicable
+```
+
+Accessibility is not optional collateral behavior.
+
+---
+
+# 194. RESPONSIVE REGRESSION
+
+Changes to layout or shared visual components MUST consider supported responsive ranges.
+
+A desktop-correct implementation is not certified if it breaks the primary mobile diner experience.
+
+Likewise, mobile-first does not authorize obviously broken desktop behavior.
+
+---
+
+# 195. API CONTRACT REGRESSION
+
+Frontend implementation MUST NOT silently rely on undocumented backend behavior.
+
+Backend implementation MUST NOT silently break frontend-consumed contracts.
+
+Any intentional API contract change must be explicit.
+
+---
+
+# 196. SECURITY REGRESSION
+
+No frontend change may weaken:
+
+```text
+authentication
+authorization
+tenant isolation
+session isolation
+secret handling
+PII protection
+```
+
+Frontend behavior must never be treated as a security boundary.
+
+---
+
+# 197. FINANCIAL REGRESSION
+
+Changes affecting account/payment surfaces require special care.
+
+The frontend MUST preserve authoritative distinctions between:
+
+```text
+preview
+Check
+Payment
+Settlement
+payment success
+payment failure
+payment uncertainty
+```
+
+No visual simplification may collapse these semantics.
+
+---
+
+# 198. CERTIFICATION AFTER CHANGE
+
+Every Codex implementation prompt MUST end with a bounded certification step.
+
+The certification should answer:
+
+```text
+REQUESTED CHANGE: PASS / FAIL
+
+DIRECT DAMAGE: NONE / FOUND
+
+SECONDARY DAMAGE: NONE / FOUND
+
+COLLATERAL DAMAGE: NONE / FOUND
+
+REGRESSION IN VERIFIED SCOPE: NONE / FOUND
+```
+
+This is evidence-based certification.
+
+It is not permission to launch an unlimited audit.
+
+---
+
+# 199. CERTIFICATION SCOPE MUST BE STATED
+
+Codex MUST state what it actually verified.
+
+Example:
+
+```text
+VERIFIED:
+- diner access component
+- join API integration
+- authenticated transition
+- existing menu route accessibility
+- frontend build
+
+NOT RUN:
+- full backend regression
+- unrelated staff flows
+```
+
+Never imply that the entire platform was certified when only focused tests were performed.
+
+---
+
+# 200. NO FALSE CERTIFICATION
+
+Codex MUST NOT state:
+
+```text
+NO REGRESSIONS
+```
+
+as an absolute platform-wide claim unless evidence actually supports it.
+
+Preferred:
+
+```text
+No regression detected within the verified impact scope.
+```
+
+Certification must be precise.
+
+---
+
+# 201. STOP ON REAL REGRESSION
+
+If verification discovers a real regression caused by the requested change:
+
+```text
+DO NOT IGNORE IT
+DO NOT CERTIFY PASS
+```
+
+Codex should determine whether the correction is:
+
+```text
+directly part of the requested change
+```
+
+If yes, correct it within the same prompt.
+
+If the correction requires unrelated architectural scope:
+
+```text
+STOP
+REPORT
+REQUEST DECISION
+```
+
+---
+
+# 202. NO REVIEW-OF-REVIEW LOOP
+
+After:
+
+```text
+IMPLEMENTATION
+    ↓
+FOCUSED VERIFICATION
+    ↓
+PASS
+```
+
+the change is complete.
+
+Do NOT automatically create:
+
+```text
+review prompt
+review-of-review prompt
+second certification
+third certification
+```
+
+unless new evidence reveals a real problem.
+
+---
+
+# 203. DEFECT REMEDIATION RULE
+
+If verification identifies a genuine defect:
+
+```text
+DEFECT
+    ↓
+MINIMUM REMEDIATION
+    ↓
+RETEST AFFECTED SCOPE
+    ↓
+PASS
+    ↓
+CLOSE
+```
+
+Do not restart the entire implementation.
+
+Do not repeat unrelated tests without reason.
+
+---
+
+# 204. PARTIAL WORK PRESERVATION
+
+If Codex or VS Code is interrupted:
+
+```text
+DO NOT RESTART AUTOMATICALLY
+```
+
+First inspect:
+
+```text
+git status
+git diff
+```
+
+Preserve legitimate partial work.
+
+Continue from the existing state when safe.
+
+This reduces:
+
+```text
+duplicate work
+credit consumption
+merge risk
+accidental divergence
+```
+
+---
+
+# 205. CHANGE TRACEABILITY
+
+Each prompt SHOULD make it possible to identify:
+
+```text
+what changed
+why it changed
+which files changed
+what was verified
+what remains unchanged
+```
+
+Traceability should be concise.
+
+It MUST NOT become bureaucratic documentation overhead.
+
+---
+
+# 206. CODEX REPORT FORMAT
+
+Unless a specific change requires additional information, Codex reports SHOULD remain compact.
+
+Preferred:
+
+```text
+STATUS
+CHANGES
+VERIFICATION
+REGRESSION / DAMAGE CHECK
+ISSUES
+GIT
+```
+
+Avoid multi-thousand-line implementation reports.
+
+---
+
+# 207. STATUS
+
+Codex should report:
+
+```text
+STATUS: COMPLETE
+```
+
+or:
+
+```text
+STATUS: BLOCKED
+```
+
+or:
+
+```text
+STATUS: FAILED
+```
+
+Do not hide incomplete implementation behind ambiguous wording.
+
+---
+
+# 208. CHANGES
+
+`CHANGES` should describe only meaningful modifications.
+
+Example:
+
+```text
+CHANGES
+- Added diner frontend application shell.
+- Added diner join form.
+- Added authenticated session bootstrap.
+```
+
+Do not paste large code diffs unless specifically requested.
+
+---
+
+# 209. VERIFICATION
+
+`VERIFICATION` should contain:
+
+```text
+commands or checks performed
+PASS/FAIL result
+focused scope
+```
+
+It should not contain unnecessary raw test output.
+
+---
+
+# 210. REGRESSION / DAMAGE CHECK
+
+Codex should explicitly report:
+
+```text
+DIRECT DAMAGE: NONE DETECTED
+SECONDARY DAMAGE: NONE DETECTED
+COLLATERAL DAMAGE: NONE DETECTED
+REGRESSION: NONE DETECTED IN VERIFIED SCOPE
+```
+
+or identify the actual problem.
+
+---
+
+# 211. ISSUES
+
+Only unresolved real issues belong in:
+
+```text
+ISSUES
+```
+
+Do not populate the section with speculative future enhancements.
+
+---
+
+# 212. GIT
+
+Report concise Git state:
+
+```text
+branch
+changed files
+working-tree status
+commit if explicitly requested
+```
+
+Do not automatically commit unless the prompt authorizes it.
+
+---
+
+# 213. PROMPT CREDIT EFFICIENCY
+
+Prompt design MUST consider Codex usage efficiency.
+
+Prefer:
+
+```text
+small prompt
+clear target
+known files where possible
+bounded change
+focused verification
+short report
+```
+
+Avoid:
+
+```text
+large architectural rediscovery
++
+implementation
++
+full regression
++
+audit
++
+documentation rewrite
++
+review
+```
+
+inside one prompt.
+
+---
+
+# 214. DO NOT MAKE CODEX REDISCOVER ESTABLISHED ARCHITECTURE
+
+Once architecture has been established and documented, subsequent prompts SHOULD reference the authoritative rule rather than asking Codex to rediscover it.
+
+Example:
+
+```text
+Follow:
+docs/frontend/FRONTEND_DESIGN_SYSTEM_AND_UX_RULES.md
+```
+
+Then provide only the change-specific instructions.
+
+---
+
+# 215. ARCHITECTURE DECISIONS BELONG BEFORE IMPLEMENTATION
+
+Codex SHOULD NOT be forced to make major architectural decisions while implementing a small change.
+
+Preferred:
+
+```text
+CHATGPT / ARCHITECTURE DECISION
+        ↓
+BOUNDED CODEX PROMPT
+        ↓
+IMPLEMENTATION
+```
+
+This keeps implementation deterministic.
+
+---
+
+# 216. DESIGN DECISIONS MUST ALSO BE CONTROLLED
+
+Codex MUST NOT invent a different visual language on each screen.
+
+Once established:
+
+```text
+tokens
+typography
+spacing
+radius
+navigation
+button hierarchy
+surface hierarchy
+motion
+```
+
+must be reused.
+
+A new screen extends the design system.
+
+It does not independently redefine it.
+
+---
+
+# 217. SHARED COMPONENT CHANGE RISK
+
+Changes to shared components have larger collateral radius.
+
+Examples:
+
+```text
+Button
+Input
+Dialog
+AppShell
+Navigation
+Card
+API client
+session provider
+theme tokens
+```
+
+Therefore a shared-component change SHOULD verify at least one representative dependent use when practical.
+
+---
+
+# 218. LOCAL COMPONENT CHANGE RISK
+
+Changes isolated to a feature-local component normally require only local and directly connected verification.
+
+Do not run platform-wide regression merely because one isolated visual component changed.
+
+---
+
+# 219. DEPENDENCY UPDATE RULE
+
+Do not update dependencies incidentally.
+
+Dependency changes require explicit need.
+
+Before adding a dependency ask:
+
+```text
+Does existing stack already solve this?
+
+Is this dependency necessary?
+
+Does it materially reduce implementation complexity?
+
+Is it maintained?
+
+Does it introduce significant bundle/runtime/security cost?
+```
+
+Dependency upgrades unrelated to the requested change are prohibited.
+
+---
+
+# 220. FRONTEND INFRASTRUCTURE CHANGE RULE
+
+Changes to:
+
+```text
+build system
+router
+API client
+server-state layer
+authentication bootstrap
+theme foundation
+test infrastructure
+```
+
+are higher-impact than ordinary screen changes.
+
+They require focused verification of representative consumers.
+
+They still do NOT automatically require full platform regression.
+
+---
+
+# 221. BACKEND CHANGE DURING FRONTEND IMPLEMENTATION
+
+Frontend work may expose a genuine backend gap.
+
+When this occurs:
+
+```text
+DO NOT PATCH AROUND IT IN FRONTEND
+```
+
+Classify the gap.
+
+Then implement only the minimum backend capability required.
+
+Example:
+
+```text
+Diner needs transcript after refresh
+        ↓
+backend lacks diner-authorized transcript read
+        ↓
+add bounded backend read contract
+        ↓
+consume from frontend
+```
+
+Do not redesign the entire Conversation domain.
+
+---
+
+# 222. FRONTEND CHANGE DURING BACKEND REMEDIATION
+
+When a backend gap is remediated, frontend changes should consume the resulting contract.
+
+Do not combine unrelated visual redesign merely because the frontend file is already being edited.
+
+---
+
+# 223. CHANGE DEPENDENCY GRAPH
+
+For complex changes, think conceptually in terms of:
+
+```text
+A
+↓
+B
+↓
+C
+```
+
+If B requires A and C requires B, they may form one coherent change when splitting them would create invalid intermediate states.
+
+But if:
+
+```text
+A    B    C
+```
+
+are independent, they should normally be separate prompts.
+
+---
+
+# 224. ONE PROMPT DOES NOT MEAN ONE FILE
+
+A single change may legitimately require several files.
+
+Example:
+
+```text
+Diner Access
+```
+
+may require:
+
+```text
+route
+screen
+form component
+API call
+session state
+focused test
+```
+
+These belong in one prompt when together they implement one coherent change.
+
+Atomicity is about the change objective, not file count.
+
+---
+
+# 225. ONE FILE DOES NOT MEAN ONE CHANGE
+
+Conversely, two unrelated changes in one file remain two changes.
+
+Do not combine them merely because Codex will edit the same file.
+
+---
+
+# 226. DEFINITION OF A CHANGE
+
+A change is a coherent externally understandable outcome.
+
+Good:
+
+```text
+Implement diner login using the existing join API.
+```
+
+Too broad:
+
+```text
+Build frontend.
+```
+
+Too implementation-fragmented:
+
+```text
+Create one input.
+```
+
+unless that input itself is the requested outcome.
+
+---
+
+# 227. CHANGE ACCEPTANCE CRITERIA
+
+Every prompt SHOULD define observable completion.
+
+Example:
+
+```text
+A diner can enter name, optional email and access code,
+submit through the authoritative join endpoint,
+receive authenticated diner context,
+and reach the authenticated diner shell.
+```
+
+Acceptance criteria should describe behavior, not merely files created.
+
+---
+
+# 228. PRESERVATION CRITERIA
+
+Prompts SHOULD also state what must remain unchanged.
+
+Example:
+
+```text
+MUST PRESERVE:
+- existing backend join semantics
+- token format
+- session lifecycle
+- tenant/location authority
+- existing API behavior
+```
+
+This makes non-regression part of implementation rather than an afterthought.
+
+---
+
+# 229. FORBIDDEN-SCOPE CRITERIA
+
+Important prompts SHOULD explicitly state forbidden scope.
+
+Example:
+
+```text
+DO NOT:
+- redesign backend authentication
+- add new diner identity fields
+- add social login
+- change database schema
+- implement staff frontend
+```
+
+This materially reduces accidental scope expansion.
+
+---
+
+# 230. DESIGN ACCEPTANCE CRITERIA
+
+Frontend prompts involving user-visible screens SHOULD include experience acceptance criteria.
+
+At minimum where relevant:
+
+```text
+mobile-first
+responsive
+accessible
+consistent with tokens
+clear primary action
+appropriate loading state
+appropriate error state
+premium visual quality
+no generic CRUD appearance
+```
+
+---
+
+# 231. WOW ACCEPTANCE WITHOUT SUBJECTIVE CHAOS
+
+The WOW requirement does not authorize arbitrary redesign.
+
+Evaluate it through concrete properties:
+
+```text
+strong hierarchy
+balanced spacing
+excellent typography
+coherent surfaces
+smooth interaction
+clear feedback
+responsive polish
+restaurant warmth
+visual consistency
+fast perceived response
+```
+
+This makes visual excellence implementable and reviewable.
+
+---
+
+# 232. VISUAL CHANGE IS A REAL CHANGE
+
+A design modification is not “just CSS” if it changes the user experience.
+
+It must respect:
+
+```text
+scope
+responsive behavior
+accessibility
+shared-component impact
+design consistency
+focused verification
+```
+
+But it does not require backend regression when backend behavior is untouched.
+
+---
+
+# 233. FUNCTIONAL CHANGE IS NOT AUTOMATIC VISUAL AUTHORIZATION
+
+When implementing a new frontend capability, create only the visual presentation necessary to meet the established design standard.
+
+Do not use the feature request as an excuse to redesign existing unrelated screens.
+
+---
+
+# 234. PRESERVE USER JOURNEY CONTINUITY
+
+Changes must preserve the coherent diner journey:
+
+```text
+ACCESS
+→ MENU
+→ PRODUCT
+→ CONFIGURATION
+→ DRAFT
+→ ORDER
+→ ACCOUNT
+→ PAYMENT
+→ POST-PAYMENT
+→ CONTINUATION
+```
+
+A local improvement must not create a dead end in adjacent journey steps.
+
+---
+
+# 235. PRESERVE REFRESH RECOVERY
+
+Where authoritative backend state exists, frontend changes should preserve or improve the ability to recover state after browser refresh.
+
+Do not make critical business continuity depend solely on ephemeral component state.
+
+---
+
+# 236. PRESERVE MANUAL / CONVERSATIONAL CONVERGENCE
+
+Frontend changes MUST preserve:
+
+```text
+MANUAL UI
+        ↓
+SAME DOMAIN CAPABILITY
+        ↑
+DIGITAL WAITER
+```
+
+Do not create separate business semantics for the conversational interface.
+
+---
+
+# 237. PRESERVE FUTURE VOICE COMPATIBILITY
+
+Frontend implementation should avoid coupling domain actions exclusively to mouse or keyboard events.
+
+Future voice should be able to invoke the same backend actions without domain redesign.
+
+This does not require implementing voice now.
+
+---
+
+# 238. PRESERVE MULTI-TENANT AUTHORITY
+
+No frontend convenience may introduce arbitrary tenant or location selection for diners.
+
+Context comes from the authenticated restaurant/session lifecycle.
+
+Backend remains authoritative.
+
+---
+
+# 239. PRESERVE FINANCIAL TRUTH
+
+No frontend change may derive financial truth by combining stale or unrelated local data.
+
+Financial presentation must come from authoritative projections and responses.
+
+---
+
+# 240. PRESERVE PAYMENT UNCERTAINTY
+
+Any payment-related frontend change MUST preserve the special meaning of:
+
+```text
+UNCERTAIN
+```
+
+Never transform uncertainty into:
+
+```text
+SUCCESS
+```
+
+or:
+
+```text
+FAILURE
+```
+
+without authoritative evidence.
+
+---
+
+# 241. PRESERVE CONTINUATION SEMANTICS
+
+Payment completion does not automatically mean service-session closure.
+
+Frontend must preserve:
+
+```text
+SETTLEMENT
+    ↓
+CONTINUATION_REQUIRED
+    ↓
+¿Desean algo más?
+```
+
+No frontend shortcut may silently infer NO.
+
+---
+
+# 242. PRESERVE ACCOUNT PREVIEW SEMANTICS
+
+Frontend must preserve:
+
+```text
+VIEW ACCOUNT
+≠
+CREATE CHECK
+```
+
+Visual navigation to account information must remain informational unless the diner explicitly initiates the authoritative Check/payment flow.
+
+---
+
+# 243. PRESERVE CASH BOUNDARY
+
+Diner frontend does not operate physical cash custody.
+
+Cash interaction remains:
+
+```text
+DINER
+→ REQUEST CASH ASSISTANCE
+→ STAFF
+→ CASH MANAGEMENT
+```
+
+Do not expose CashSession controls to diners.
+
+---
+
+# 244. PRESERVE BILLING BOUNDARY
+
+Frontend may request or present billing workflow.
+
+It does not become fiscal authority.
+
+PAC credentials, signing, stamping, fiscal validation and issuance truth remain backend responsibilities.
+
+---
+
+# 245. PRESERVE INVENTORY BOUNDARY
+
+Frontend may display product availability exposed by backend.
+
+It does not calculate theoretical stock or recipe consumption to determine availability independently.
+
+---
+
+# 246. PRESERVE PREPARATION BOUNDARY
+
+Frontend may display appropriate order/preparation status when exposed.
+
+It must not fabricate kitchen state based on elapsed time or frontend assumptions.
+
+---
+
+# 247. PRESERVE OPERATIONAL REQUEST EVIDENCE
+
+When requesting:
+
+```text
+human assistance
+cash assistance
+invoice assistance
+paid print
+```
+
+frontend must only claim durable request success when backend confirms it.
+
+---
+
+# 248. CHANGE COMPLETION RULE
+
+A change is complete when:
+
+```text
+requested behavior implemented
++
+acceptance criteria satisfied
++
+focused verification passed
++
+relevant direct/secondary/collateral risk checked
++
+no unresolved regression within impact scope
+```
+
+Then:
+
+```text
+CLOSE THE CHANGE
+```
+
+Do not create additional work without evidence.
+
+---
+
+# 249. WORKSTREAM COMPLETION RULE
+
+A workstream is complete when all changes required for its objective are complete.
+
+Do not keep a workstream open merely to perform repetitive verification.
+
+Broader integration belongs at intentional integration boundaries.
+
+---
+
+# 250. PRODUCTION-PATH PRIORITY
+
+When choosing between:
+
+```text
+another optional improvement
+```
+
+and:
+
+```text
+completing the next essential production-path capability
+```
+
+prefer the production-path capability.
+
+The project objective is to finish the Restaurant Intelligence Platform.
+
+The process exists to support that objective.
+
+The objective does not exist to support the process.
+
+---
+
+# 251. CHANGE GOVERNANCE MUST REMAIN LIGHTWEIGHT
+
+These rules exist to reduce risk and waste.
+
+They MUST NOT become a new bureaucratic layer.
+
+The desired execution pattern is:
+
+```text
+UNDERSTAND
+↓
+CLASSIFY
+↓
+BOUND
+↓
+IMPLEMENT
+↓
+VERIFY
+↓
+CLOSE
+```
+
+Not:
+
+```text
+DISCOVER
+↓
+AUDIT
+↓
+REVIEW
+↓
+IMPLEMENT
+↓
+AUDIT
+↓
+REVIEW
+↓
+CERTIFY
+↓
+REVIEW CERTIFICATION
+↓
+REVIEW REVIEW
+```
+
+---
+
+# 252. DEFAULT CODEX CHANGE TEMPLATE
+
+Unless a particular change requires otherwise, frontend Codex prompts SHOULD conceptually follow:
+
+```text
+CHANGE
+[one coherent change]
+
+OBJECTIVE
+[observable outcome]
+
+CLASSIFICATION
+[DESIGN / FRONTEND FUNCTIONALITY /
+ BACKEND FUNCTIONALITY / API CONTRACT / CROSS-BOUNDARY]
+
+BOUNDARY
+[what layer owns the change]
+
+ALLOWED SCOPE
+[minimum files/capabilities necessary]
+
+MUST PRESERVE
+[relevant existing behavior]
+
+DO NOT
+[explicit forbidden scope]
+
+IMPLEMENT
+[bounded requirements]
+
+VERIFY
+[focused tests/checks proportional to impact]
+
+CERTIFY
+- requested change
+- direct damage
+- secondary damage
+- collateral damage
+- regression within verified scope
+
+REPORT
+STATUS
+CHANGES
+VERIFICATION
+REGRESSION / DAMAGE CHECK
+ISSUES
+GIT
+```
+
+The actual prompt SHOULD remain as short as practical.
+
+---
+
+# 253. DEFAULT CERTIFICATION LANGUAGE
+
+Preferred successful certification:
+
+```text
+STATUS: COMPLETE
+
+REQUESTED CHANGE: PASS
+
+DIRECT DAMAGE:
+None detected.
+
+SECONDARY DAMAGE:
+None detected in the verified affected scope.
+
+COLLATERAL DAMAGE:
+None detected in the verified impact radius.
+
+REGRESSION:
+No regression detected within the verified scope.
+```
+
+This wording is intentionally bounded.
+
+---
+
+# 254. DESIGN-ONLY CHANGE TEMPLATE RULE
+
+For a design-only change, Codex SHOULD explicitly preserve functionality.
+
+Conceptually:
+
+```text
+CLASSIFICATION:
+DESIGN
+
+DO NOT CHANGE:
+backend
+API contract
+business semantics
+navigation semantics unless requested
+domain state
+financial behavior
+
+VERIFY:
+affected visual component
+responsive behavior
+accessibility basics
+existing affected interaction
+frontend build
+```
+
+Do not run backend full regression for a purely visual change unless there is concrete evidence that backend behavior could be affected.
+
+---
+
+# 255. FRONTEND-FUNCTIONAL CHANGE TEMPLATE RULE
+
+For frontend-functional changes:
+
+```text
+CLASSIFICATION:
+FRONTEND FUNCTIONALITY
+
+PRESERVE:
+backend authority
+API semantics
+business rules
+design system
+
+VERIFY:
+interaction
+state transitions
+API integration
+controlled errors
+directly affected journey
+build/type checks
+```
+
+---
+
+# 256. BACKEND-FUNCTIONAL CHANGE TEMPLATE RULE
+
+When frontend implementation exposes a required backend gap:
+
+```text
+CLASSIFICATION:
+BACKEND FUNCTIONALITY
+or
+CROSS-BOUNDARY
+
+IMPLEMENT:
+minimum missing authoritative capability
+
+PRESERVE:
+existing domain architecture
+existing business semantics
+unrelated API contracts
+
+VERIFY:
+focused backend behavior
+contract
+direct frontend consumer when applicable
+```
+
+No broad backend redesign is authorized.
+
+---
+
+# 257. SHARED-DESIGN CHANGE TEMPLATE RULE
+
+For shared tokens/components:
+
+```text
+CLASSIFICATION:
+DESIGN / FRONTEND FOUNDATION
+
+VERIFY:
+changed primitive
+representative consumers
+light/dark where relevant
+responsive behavior where relevant
+accessibility where relevant
+build
+```
+
+This recognizes the larger collateral radius without requiring exhaustive application-wide testing.
+
+---
+
+# 258. CHANGE FAILURE RULE
+
+If the requested outcome cannot be safely implemented within the authorized boundary:
+
+Codex MUST NOT improvise a large solution.
+
+Report:
+
+```text
+STATUS: BLOCKED
+
+BLOCKER:
+[precise reason]
+
+REQUIRED ADDITIONAL CHANGE:
+[minimal additional scope]
+
+NO UNRELATED CHANGES MADE
+```
+
+Then await architectural decision.
+
+---
+
+# 259. ARCHITECTURAL ESCALATION RULE
+
+Escalate from implementation to architectural decision only when the requested change reveals:
+
+```text
+missing ownership boundary
+contradictory contracts
+missing authoritative backend capability
+security conflict
+financial invariant conflict
+unavoidable cross-domain coupling
+```
+
+Do not escalate ordinary implementation details.
+
+---
+
+# 260. FRONTEND DEVELOPMENT OPERATING MODEL
+
+The authoritative frontend operating model is:
+
+```text
+PRODUCT REQUIREMENT
+        ↓
+ARCHITECTURAL BOUNDARY
+        ↓
+ONE COHERENT CHANGE
+        ↓
+ONE BOUNDED CODEX PROMPT
+        ↓
+MINIMUM IMPLEMENTATION
+        ↓
+FOCUSED VERIFICATION
+        ↓
+DAMAGE / REGRESSION CERTIFICATION
+        ↓
+CLOSE
+        ↓
+NEXT CHANGE
+```
+
+Dependent changes may share a prompt.
+
+Independent changes do not.
+
+---
+
+# 261. FINAL CHANGE-CONTROL PRINCIPLE
+
+Every requested change MUST maximize:
+
+```text
+PRECISION
++
+PRESERVATION
++
+TRACEABILITY
++
+VERIFIABILITY
++
+PRODUCTION PROGRESS
+```
+
+while minimizing:
+
+```text
+SCOPE
++
+UNRELATED MODIFICATION
++
+REGRESSION RISK
++
+CODEX CONSUMPTION
++
+PROCESS OVERHEAD
+```
+
+---
+
+# 262. FINAL FRONTEND/BACKEND PRINCIPLE
+
+The architectural relationship is:
+
+```text
+BACKEND
+=
+AUTHORITATIVE BUSINESS INTELLIGENCE
++
+DOMAIN TRUTH
++
+SECURITY
++
+TRANSACTIONAL CORRECTNESS
+
+FRONTEND
+=
+USER EXPERIENCE
++
+INTERACTION
++
+PRESENTATION
++
+ACCESSIBILITY
++
+VISUAL QUALITY
++
+PERCEIVED INTELLIGENCE
+```
+
+Together:
+
+```text
+AUTHORITATIVE BACKEND
+        +
+EXCEPTIONAL FRONTEND
+        =
+TRUSTWORTHY
+INTELLIGENT
+PREMIUM
+RESTAURANT EXPERIENCE
+```
+
+Neither layer should absorb the other's responsibility merely for implementation convenience.
+
+---
+
+# 263. FINAL PRESERVATION PRINCIPLE
+
+The default assumption for every new change is:
+
+```text
+EVERYTHING ALREADY WORKING
+REMAINS WORKING
+```
+
+unless the requirement explicitly changes that behavior.
+
+Therefore:
+
+```text
+CHANGE WHAT IS REQUESTED
+PRESERVE WHAT IS NOT
+VERIFY THE RELEVANT IMPACT
+CLOSE WHEN EVIDENCE IS SUFFICIENT
+```
+
+---
+
+# 264. FINAL ANTI-REGRESSION PRINCIPLE
+
+Regression prevention does NOT mean testing everything after every change.
+
+It means:
+
+```text
+UNDERSTAND THE CHANGE
+        ↓
+UNDERSTAND ITS IMPACT RADIUS
+        ↓
+VERIFY THAT RADIUS
+        ↓
+ESCALATE ONLY IF EVIDENCE JUSTIFIES IT
+```
+
+This produces stronger engineering evidence with less unnecessary work.
+
+---
+
+# 265. FINAL CODEX PRINCIPLE
+
+Codex is not authorized to redesign the Restaurant Intelligence Platform every time it receives a prompt.
+
+Codex is authorized to:
+
+```text
+IMPLEMENT
+THE REQUESTED CHANGE
+WITHIN
+THE ESTABLISHED ARCHITECTURE
+```
+
+and then:
+
+```text
+VERIFY
+THE RELEVANT IMPACT
+```
+
+Nothing more unless explicitly authorized.
+
+---
+
+# 266. FINAL PRODUCTION PRINCIPLE
+
+The Restaurant Intelligence Platform is being built to reach production.
+
+Therefore every process rule in this document is subordinate to the following objective:
+
+```text
+BUILD THE RIGHT THING
+        ↓
+BUILD IT CORRECTLY
+        ↓
+PRESERVE WHAT ALREADY WORKS
+        ↓
+VERIFY ENOUGH TO TRUST IT
+        ↓
+MOVE FORWARD
+```
+
+Do not sacrifice correctness for speed.
+
+Do not sacrifice progress for unnecessary verification.
+
+The desired balance is:
+
+```text
+CORRECTNESS
++
+FOCUS
++
+MINIMAL CHANGE
++
+SUFFICIENT EVIDENCE
++
+CONTINUOUS PRODUCTION PROGRESS
+```
+
+---
+
+# 267. FINAL AUTHORITATIVE RULE
+
+From this point forward, frontend development of the Restaurant Intelligence Platform SHALL follow all rules established in this document.
+
+For every change:
+
+```text
+1. IDENTIFY THE REQUIREMENT.
+
+2. CLASSIFY THE CHANGE:
+   DESIGN
+   FRONTEND FUNCTIONALITY
+   BACKEND FUNCTIONALITY
+   API CONTRACT
+   CROSS-BOUNDARY.
+
+3. ESTABLISH THE RESPONSIBILITY BOUNDARY.
+
+4. DETERMINE WHETHER THE CHANGE IS
+   INDEPENDENT OR DEPENDENT ON ANOTHER CHANGE.
+
+5. USE ONE CODEX PROMPT PER INDEPENDENT CHANGE.
+
+6. COMBINE CHANGES ONLY WHEN THEY ARE
+   GENUINELY DEPENDENT.
+
+7. IMPLEMENT THE MINIMUM NECESSARY CHANGE.
+
+8. DO NOT MODIFY UNRELATED IMPLEMENTATION.
+
+9. PRESERVE EXISTING CERTIFIED BEHAVIOR.
+
+10. VERIFY THE DIRECT CHANGE.
+
+11. VERIFY RELEVANT SECONDARY IMPACT.
+
+12. VERIFY PLAUSIBLE COLLATERAL IMPACT.
+
+13. CERTIFY ONLY THE SCOPE ACTUALLY VERIFIED.
+
+14. REMEDIATE ONLY REAL DEFECTS.
+
+15. DO NOT CREATE REVIEW-OF-REVIEW LOOPS.
+
+16. CLOSE THE CHANGE WHEN SUFFICIENT
+    EVIDENCE EXISTS.
+
+17. MOVE TO THE NEXT PRODUCTION-PATH CHANGE.
+```
+
+Canonical summary:
+
+```text
+CLEAR BOUNDARIES
+        +
+ONE COHERENT CHANGE
+        +
+MINIMUM NECESSARY IMPLEMENTATION
+        +
+PRESERVATION OF EXISTING BEHAVIOR
+        +
+PROPORTIONAL VERIFICATION
+        +
+EXPLICIT DAMAGE/REGRESSION CERTIFICATION
+        +
+NO UNNECESSARY REVIEW LOOPS
+        =
+CONTROLLED FRONTEND DEVELOPMENT
+```
+
+And the final product objective remains:
+
+```text
+ENTERPRISE-GRADE BACKEND POWER
+            +
+CONSUMER-GRADE SIMPLICITY
+            +
+PREMIUM VISUAL QUALITY
+            +
+INTELLIGENT INTERACTION
+            +
+CONTROLLED CHANGE
+            +
+PRODUCTION RELIABILITY
+            =
+RESTAURANT INTELLIGENCE PLATFORM
+```
+
+---
+
+# DOCUMENT STATUS
+
+```text
+DOCUMENT:
+FRONTEND_DESIGN_SYSTEM_AND_UX_RULES.md
+
+STATUS:
+ACTIVE — AUTHORITATIVE
+
+BASELINE:
+Previous authoritative frontend design and UX rules preserved.
+
+INTEGRATED GOVERNANCE:
+Functionality vs Design boundary
+Backend vs Frontend boundary
+Frontend Functionality vs Backend Functionality boundary
+One Prompt per Independent Change
+Dependent Change Exception
+Minimum Necessary Change
+No Unrelated Modification
+No Opportunistic Refactoring
+Direct Damage Verification
+Secondary Damage Verification
+Collateral Damage Verification
+Regression Verification
+Proportional Certification
+Codex Credit Efficiency
+No Review-of-Review
+Production-Path Priority
+
+APPLIES FROM:
+Beginning of Restaurant Intelligence Platform frontend implementation.
+
+PRIMARY OBJECTIVE:
+Build the Restaurant Intelligence Platform frontend rapidly,
+safely and incrementally without sacrificing backend authority,
+existing certified behavior, visual excellence or production quality.
+```
