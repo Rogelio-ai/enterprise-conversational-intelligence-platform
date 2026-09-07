@@ -85,7 +85,13 @@ export function AccountPreviewPage() {
             <span aria-hidden="true">◇</span>
             <h2>Aún no tienes consumo disponible</h2>
             <p>Tu consumo elegible actual es {accountMoney(preview.eligible_total, preview.currency)}.</p>
-            <Link className="primary-button button-link" to="/menu">Volver al menú</Link>
+            {preview.active_check_id !== null ? (
+              <Link className="primary-button button-link" to={`/check/${preview.active_check_id}`}>Revisar cuenta activa</Link>
+            ) : preview.has_active_nonempty_draft ? (
+              <Link className="primary-button button-link" to="/order">Revisar pedido en borrador</Link>
+            ) : (
+              <Link className="primary-button button-link" to="/menu">Volver al menú</Link>
+            )}
           </section>
         ) : (
           <div className="account-layout">
@@ -115,6 +121,13 @@ export function AccountPreviewPage() {
               <h2 id="account-summary-title">Consumo disponible</h2>
               <strong>{accountMoney(preview.eligible_total, preview.currency)}</strong>
               <p>Esta consulta no crea una cuenta ni reserva tu consumo.</p>
+              {preview.active_check_id !== null ? (
+                <Link className="primary-button button-link" to={`/check/${preview.active_check_id}`}>Revisar cuenta activa</Link>
+              ) : preview.has_active_nonempty_draft ? (
+                <Link className="secondary-button button-link" to="/order">Revisar pedido en borrador</Link>
+              ) : (
+                <Link className="primary-button button-link" to="/check/new">Preparar cuenta para pagar</Link>
+              )}
             </aside>
           </div>
         )}

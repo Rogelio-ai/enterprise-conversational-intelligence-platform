@@ -13,6 +13,9 @@ import type {
   ReplaceDraftGroupSelectionsRequest,
   RestaurantOrderResponse,
   SetDraftItemQuantityRequest,
+  CheckCreateRequest,
+  EligibleConsumptionResponse,
+  RestaurantCheckResponse,
 } from './contracts';
 import { readStoredSession } from '../session/storage';
 
@@ -159,5 +162,21 @@ export const dinerApi = {
 
   getAccountPreview(): Promise<AccountPreviewResponse> {
     return request('/diner/account-preview', {}, true);
+  },
+
+  getEligibleConsumption(): Promise<EligibleConsumptionResponse[]> {
+    return request('/diner/eligible-consumption', {}, true);
+  },
+
+  createCheck(payload: CheckCreateRequest, idempotencyKey: string): Promise<RestaurantCheckResponse> {
+    return request('/diner/restaurant-checks', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(payload),
+    }, true);
+  },
+
+  getCheck(checkId: number): Promise<RestaurantCheckResponse> {
+    return request(`/diner/restaurant-checks/${checkId}?view=detailed`, {}, true);
   },
 };

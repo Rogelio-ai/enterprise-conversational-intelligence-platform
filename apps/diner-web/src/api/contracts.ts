@@ -316,3 +316,80 @@ export interface AccountPreviewResponse {
   has_active_nonempty_draft: boolean;
   experience: ExperienceResponse;
 }
+
+export interface EligibleConsumptionResponse {
+  diner_session_id: number;
+  service_session_id: number;
+  resource_id: number;
+  display_name: string;
+  eligible_order_ids: number[];
+  eligible_total: string;
+  currency: string | null;
+  active_check_id: number | null;
+  has_active_nonempty_draft: boolean;
+}
+
+export type CheckCreateMode = 'INDIVIDUAL' | 'GLOBAL_TABLE' | 'SELECTED';
+
+export interface CheckCreateRequest {
+  mode: CheckCreateMode;
+  diner_session_ids?: number[];
+}
+
+export interface CheckItemResponse {
+  item_id: number;
+  product_id: number;
+  product_name: string;
+  quantity: string;
+  commercial_amount: string;
+}
+
+export interface CheckOrderResponse {
+  order_id: number;
+  diner_session_id: number;
+  service_session_id: number;
+  resource_id: number;
+  accepted_at: string;
+  accepted_payable_amount: string;
+  accepted_commercial_fingerprint: string;
+  items: CheckItemResponse[];
+}
+
+export interface CheckDinerResponse {
+  diner_session_id: number;
+  display_name: string;
+  orders: CheckOrderResponse[];
+}
+
+export interface CheckResourceResponse {
+  resource_id: number;
+  service_session_id: number;
+  diners: CheckDinerResponse[];
+}
+
+export interface RestaurantCheckResponse {
+  id: number;
+  tenant_id: number;
+  organization_id: number;
+  location_id: number;
+  status: string;
+  version: number;
+  fingerprint: string;
+  currency: string;
+  controller_diner_session_id: number | null;
+  member_ids: number[];
+  diner_scope_ids: number[];
+  table_scope_session_ids: number[];
+  consumption_total: string;
+  gratuity_total: string;
+  liability_total: string;
+  confirmed_settlement: string;
+  outstanding: string;
+  uncertain_exposure: string;
+  frozen_at: string | null;
+  settled_at: string | null;
+  continuation_decision: string;
+  cancelled_at: string | null;
+  details: CheckResourceResponse[] | null;
+  signal: string | null;
+}

@@ -114,6 +114,7 @@ describe('account preview', () => {
     expect(screen.getByText('$10.00')).toBeInTheDocument();
     expect(screen.getAllByText('$190.00')).toHaveLength(2);
     expect(screen.getByRole('link', { name: 'Mi cuenta' })).toHaveAttribute('href', '/account');
+    expect(screen.getByRole('link', { name: 'Preparar cuenta para pagar' })).toHaveAttribute('href', '/check/new');
 
     const accountCalls = fetchMock.mock.calls.filter(([input]) => String(input).endsWith('/diner/account-preview'));
     expect(accountCalls).toHaveLength(1);
@@ -134,6 +135,7 @@ describe('account preview', () => {
 
     expect(await screen.findByText('Ya existe una cuenta activa.')).toBeInTheDocument();
     expect(screen.getByText('Tienes un pedido en borrador.')).toBeInTheDocument();
+    expect(screen.getByRole('link', { name: 'Revisar cuenta activa' })).toHaveAttribute('href', '/check/77');
     expect(screen.queryByRole('button', { name: /pagar|crear cuenta/i })).not.toBeInTheDocument();
   });
 
