@@ -1,14 +1,17 @@
+import type { ReactNode } from 'react';
 import { Navigate, Route, Routes } from 'react-router-dom';
 import { LoadingState } from '../components/LoadingState';
 import { StateMessage } from '../components/StateMessage';
 import { DinerHomePage } from '../pages/DinerHomePage';
 import { JoinPage } from '../pages/JoinPage';
+import { MenuPage } from '../pages/MenuPage';
+import { ProductRouteBoundary } from '../pages/ProductRouteBoundary';
 import { useAuth } from '../session/AuthContext';
 
-function SessionBoundary() {
+function SessionBoundary({ children }: { children: ReactNode }) {
   const { status, retryRestoration, leaveSession } = useAuth();
   if (status === 'checking') return <LoadingState message="Comprobando tu acceso…" />;
-  if (status === 'authenticated') return <DinerHomePage />;
+  if (status === 'authenticated') return children;
   if (status === 'restoration-error') {
     return <StateMessage eyebrow="Conexión interrumpida" title="No pudimos comprobar tu acceso"><p>Revisa tu conexión. Conservamos tu sesión para que puedas intentarlo de nuevo.</p><button className="primary-button" type="button" onClick={retryRestoration}>Reintentar</button></StateMessage>;
   }
@@ -26,7 +29,9 @@ export function AppRoutes() {
     <Routes>
       <Route path="/" element={<JoinPage />} />
       <Route path="/join/:joinContextKey" element={<JoinPage />} />
-      <Route path="/app" element={<SessionBoundary />} />
+      <Route path="/app" element={<SessionBoundary><DinerHomePage /></SessionBoundary>} />
+      <Route path="/menu" element={<SessionBoundary><MenuPage /></SessionBoundary>} />
+      <Route path="/products/:productId" element={<SessionBoundary><ProductRouteBoundary /></SessionBoundary>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

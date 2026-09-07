@@ -2,6 +2,7 @@ import type {
   ApiErrorBody,
   DinerJoinRequest,
   DinerJoinResponse,
+  DinerMenuResponse,
   DinerSessionResponse,
 } from './contracts';
 import { readStoredSession } from '../session/storage';
@@ -81,5 +82,9 @@ export const dinerApi = {
 
   getCurrentSession(): Promise<DinerSessionResponse> {
     return request('/diner-session', {}, true);
+  },
+
+  getMenu(): Promise<DinerMenuResponse> {
+    return request('/diner/menu', {}, true);
   },
 };

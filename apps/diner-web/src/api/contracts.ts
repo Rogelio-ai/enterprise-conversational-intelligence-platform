@@ -38,3 +38,49 @@ export interface ApiErrorBody {
   };
   correlation_id?: string;
 }
+
+export interface ExperienceResponse {
+  state: string;
+  code: string;
+  required_input: string[];
+  allowed_actions: string[];
+  next_action: string | null;
+}
+
+export interface PriceResponse {
+  amount: string;
+  currency: string;
+}
+
+export interface CategoryResponse {
+  id: number;
+  name: string;
+}
+
+export interface ProductSummaryResponse {
+  id: number;
+  name: string;
+  description: string | null;
+  category_path: CategoryResponse[];
+  price: PriceResponse | null;
+  orderable: boolean;
+  configuration_available: boolean;
+  configuration_required: boolean;
+}
+
+export interface MenuSectionResponse {
+  id: number;
+  name: string;
+  products: ProductSummaryResponse[];
+}
+
+export interface MenuResponse {
+  id: number;
+  name: string;
+  sections: MenuSectionResponse[];
+}
+
+export interface DinerMenuResponse {
+  menus: MenuResponse[];
+  experience: ExperienceResponse;
+}
