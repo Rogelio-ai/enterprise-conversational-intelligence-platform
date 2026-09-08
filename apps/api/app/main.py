@@ -38,6 +38,7 @@ from app.api.routes.restaurant_service_sessions import router as restaurant_serv
 from app.api.routes.restaurant_orders import router as restaurant_orders_router
 from app.api.routes.restaurant_checks import router as restaurant_checks_router
 from app.api.routes.restaurant_payments import router as restaurant_payments_router
+from app.api.routes.staff_operational_requests import router as staff_operational_requests_router
 from app.api.routes.tenants import router as tenants_router
 from app.core.config import Settings, get_settings
 from app.core.errors import register_error_handlers
@@ -150,6 +151,7 @@ def create_app(
     app.include_router(restaurant_checks_router)
     app.include_router(paid_check_printing_router)
     app.include_router(restaurant_payments_router)
+    app.include_router(staff_operational_requests_router)
     app.include_router(billing_router)
     app.include_router(fiscal_issuance_router)
     app.include_router(pos_submissions_router)

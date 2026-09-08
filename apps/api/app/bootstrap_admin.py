@@ -28,6 +28,8 @@ CORE_PERMISSIONS = {
     'organization.manage': 'Manage Tenant organizations.',
     'location.read': 'Read Tenant locations.',
     'location.manage': 'Manage Tenant locations.',
+    'operational_request.read': 'Read diner operational requests for authorized locations.',
+    'operational_request.manage': 'Acknowledge and complete diner operational requests.',
     'resource.read': 'Read Tenant resources.',
     'resource.manage': 'Manage Tenant resources.',
     'customer.read': 'Read Tenant customers.',

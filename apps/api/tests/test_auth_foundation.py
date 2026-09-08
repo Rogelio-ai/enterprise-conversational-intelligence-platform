@@ -315,6 +315,7 @@ def test_bootstrap_is_idempotent(integration_settings, sql_connection) -> None:
               AND P.code IN (
                   'organization.read', 'organization.manage',
                   'location.read', 'location.manage',
+                  'operational_request.read', 'operational_request.manage',
                   'resource.read', 'resource.manage',
                   'customer.read', 'customer.manage',
                   'product.read', 'product.manage',
@@ -337,6 +338,8 @@ def test_bootstrap_is_idempotent(integration_settings, sql_connection) -> None:
             'location.read',
             'menu.manage',
             'menu.read',
+            'operational_request.manage',
+            'operational_request.read',
             'order_draft.manage',
             'order_draft.read',
             'organization.manage',
