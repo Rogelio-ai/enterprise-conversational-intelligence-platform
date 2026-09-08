@@ -94,6 +94,15 @@ def _organization_location(connection, tenant_id: int, suffix: str) -> tuple[int
     return organization_id, location_id
 
 
+def _grant_location(connection, authority: Authority, location_id: int) -> None:
+    _execute(
+        connection,
+        'INSERT INTO membership_location_grants '
+        '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
+        (authority.tenant_id, authority.membership_id, location_id),
+    )
+
+
 def _headers(client: TestClient, authority: Authority) -> dict[str, str]:
     response = client.post(
         '/auth/login', json={'email': authority.email, 'password': PASSWORD}
@@ -356,6 +365,231 @@ def test_tenant_isolation_and_scoped_foreign_keys(client, sql_connection) -> Non
                 '1' * 64,
             ),
         )
+
+
+def test_active_session_discovery_resumes_without_browser_session_id(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    authority = _authority(
+        connection,
+        prefix,
+        ('resource.manage', 'cash_session.manage', 'cash_management.read'),
+    )
+    _, location_id = _organization_location(connection, authority.tenant_id, 'DISCOVER')
+    _grant_location(connection, authority, location_id)
+    headers = _headers(client, authority)
+    register = _resource(client, headers, location_id, 'REGISTER')
+    opened = client.post(
+        f"/resources/{register['id']}/cash-sessions",
+        headers={**headers, 'Idempotency-Key': 'discover-open'},
+        json={'currency': 'MXN'},
+    )
+    assert opened.status_code == 201, opened.text
+
+    url = (
+        f"/cash-sessions/active?location_id={location_id}"
+        f"&resource_id={register['id']}"
+    )
+    first = client.get(url, headers=headers)
+    repeated = client.get(url, headers=headers)
+    assert first.status_code == 200, first.text
+    assert repeated.status_code == 200, repeated.text
+    assert first.json() == opened.json()
+    assert repeated.json()['id'] == opened.json()['id']
+    assert client.get(
+        f"/cash-sessions/{first.json()['id']}", headers=headers
+    ).json() == first.json()
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM cash_sessions WHERE resource_id=%s',
+            (register['id'],),
+        )
+        assert cursor.fetchone()['count'] == 1
+
+
+def test_active_session_discovery_no_session_terminal_and_register_scope(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    authority = _authority(
+        connection,
+        prefix,
+        (
+            'resource.manage',
+            'cash_session.manage',
+            'cash_management.read',
+        ),
+    )
+    _, location_id = _organization_location(connection, authority.tenant_id, 'CURRENT')
+    _, other_location_id = _organization_location(
+        connection, authority.tenant_id, 'OTHER'
+    )
+    _grant_location(connection, authority, location_id)
+    _grant_location(connection, authority, other_location_id)
+    headers = _headers(client, authority)
+    register = _resource(client, headers, location_id, 'REGISTER')
+    other_register = _resource(client, headers, other_location_id, 'OTHER-REGISTER')
+    table = _resource(client, headers, location_id, 'TABLE', 'TABLE')
+
+    def current(resource_id: int, requested_location_id: int = location_id):
+        return client.get(
+            '/cash-sessions/active',
+            headers=headers,
+            params={
+                'location_id': requested_location_id,
+                'resource_id': resource_id,
+            },
+        )
+
+    assert current(register['id']).status_code == 404
+    assert current(table['id']).status_code == 404
+    assert current(other_register['id']).status_code == 404
+    opened = client.post(
+        f"/resources/{register['id']}/cash-sessions",
+        headers={**headers, 'Idempotency-Key': 'terminal-open'},
+        json={'currency': 'MXN'},
+    )
+    assert opened.status_code == 201, opened.text
+    session_id = opened.json()['id']
+    count = client.post(
+        f'/cash-sessions/{session_id}/counts',
+        headers={**headers, 'Idempotency-Key': 'terminal-count'},
+        json={'counted_amount': '0', 'currency': 'MXN'},
+    )
+    assert count.status_code == 201, count.text
+    closed = client.post(
+        f'/cash-sessions/{session_id}/close',
+        headers={**headers, 'Idempotency-Key': 'terminal-close'},
+        json={'cash_count_id': count.json()['id']},
+    )
+    assert closed.status_code == 200, closed.text
+    assert closed.json()['status'] == 'CLOSED'
+    assert current(register['id']).status_code == 404
+    assert client.get(f'/cash-sessions/{session_id}', headers=headers).status_code == 200
+
+
+def test_active_session_discovery_enforces_permission_location_and_tenant(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    owner = _authority(
+        connection,
+        prefix,
+        ('resource.manage', 'cash_session.manage', 'cash_management.read'),
+    )
+    same_tenant_user_id = _execute(
+        connection,
+        'INSERT INTO users (email,password_hash,display_name,status) VALUES (%s,%s,%s,%s)',
+        (
+            f'{prefix}-same@example.test',
+            hash_password(PASSWORD),
+            'Same tenant cashier',
+            'ACTIVE',
+        ),
+    )
+    same_tenant_membership_id = _execute(
+        connection,
+        'INSERT INTO tenant_memberships (tenant_id,user_id,status) VALUES (%s,%s,%s)',
+        (owner.tenant_id, same_tenant_user_id, 'ACTIVE'),
+    )
+    same_tenant_role_id = _execute(
+        connection,
+        'INSERT INTO roles (tenant_id,name,description,status) VALUES (%s,%s,%s,%s)',
+        (owner.tenant_id, 'SAME_TENANT_CASHIER', 'Cash tests', 'ACTIVE'),
+    )
+    _execute(
+        connection,
+        'INSERT INTO membership_roles (tenant_id,membership_id,role_id) VALUES (%s,%s,%s)',
+        (owner.tenant_id, same_tenant_membership_id, same_tenant_role_id),
+    )
+    _permission(connection, same_tenant_role_id, 'cash_management.read')
+    same_tenant = Authority(
+        owner.tenant_id,
+        same_tenant_membership_id,
+        same_tenant_role_id,
+        f'{prefix}-same@example.test',
+    )
+    no_permission_user_id = _execute(
+        connection,
+        'INSERT INTO users (email,password_hash,display_name,status) VALUES (%s,%s,%s,%s)',
+        (
+            f'{prefix}-no-permission@example.test',
+            hash_password(PASSWORD),
+            'No permission cashier',
+            'ACTIVE',
+        ),
+    )
+    no_permission_membership_id = _execute(
+        connection,
+        'INSERT INTO tenant_memberships (tenant_id,user_id,status) VALUES (%s,%s,%s)',
+        (owner.tenant_id, no_permission_user_id, 'ACTIVE'),
+    )
+    no_permission_role_id = _execute(
+        connection,
+        'INSERT INTO roles (tenant_id,name,description,status) VALUES (%s,%s,%s,%s)',
+        (owner.tenant_id, 'NO_PERMISSION_CASHIER', 'Cash tests', 'ACTIVE'),
+    )
+    _execute(
+        connection,
+        'INSERT INTO membership_roles (tenant_id,membership_id,role_id) VALUES (%s,%s,%s)',
+        (owner.tenant_id, no_permission_membership_id, no_permission_role_id),
+    )
+    no_permission = Authority(
+        owner.tenant_id,
+        no_permission_membership_id,
+        no_permission_role_id,
+        f'{prefix}-no-permission@example.test',
+    )
+    foreign = _authority(
+        connection,
+        f'{prefix}-foreign',
+        ('cash_management.read', 'resource.manage'),
+    )
+    _, location_id = _organization_location(connection, owner.tenant_id, 'SECURE')
+    _, foreign_location_id = _organization_location(
+        connection, foreign.tenant_id, 'FOREIGN'
+    )
+    _grant_location(connection, owner, location_id)
+    _grant_location(connection, foreign, foreign_location_id)
+    owner_headers = _headers(client, owner)
+    register = _resource(client, owner_headers, location_id, 'REGISTER')
+    opened = client.post(
+        f"/resources/{register['id']}/cash-sessions",
+        headers={**owner_headers, 'Idempotency-Key': 'secure-open'},
+        json={'currency': 'MXN'},
+    )
+    assert opened.status_code == 201, opened.text
+    params = {'location_id': location_id, 'resource_id': register['id']}
+
+    assert client.get(
+        '/cash-sessions/active', headers=_headers(client, same_tenant), params=params
+    ).status_code == 404
+
+    _grant_location(connection, same_tenant, location_id)
+    assert client.get(
+        '/cash-sessions/active', headers=_headers(client, same_tenant), params=params
+    ).status_code == 200
+
+    _grant_location(connection, no_permission, location_id)
+    assert client.get(
+        '/cash-sessions/active', headers=_headers(client, no_permission), params=params
+    ).status_code == 403
+
+    assert client.get(
+        '/cash-sessions/active', headers=_headers(client, foreign), params=params
+    ).status_code == 404
+    foreign_register = _resource(
+        client, _headers(client, foreign), foreign_location_id, 'FOREIGN-REGISTER'
+    )
+    assert client.get(
+        '/cash-sessions/active',
+        headers=owner_headers,
+        params={
+            'location_id': location_id,
+            'resource_id': foreign_register['id'],
+        },
+    ).status_code == 404
 
 
 def test_cash_management_does_not_change_payment(sql_connection) -> None:

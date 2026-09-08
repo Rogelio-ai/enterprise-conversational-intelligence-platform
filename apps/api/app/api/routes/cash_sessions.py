@@ -4,11 +4,16 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
-from fastapi import APIRouter, Depends, Header, HTTPException, Path, Response, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response, status
 from pydantic import BeforeValidator, BaseModel, ConfigDict, Field
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedContext, get_db, require_permission
+from app.api.deps import (
+    AuthenticatedContext,
+    get_db,
+    require_location_permission,
+    require_permission,
+)
 from app.core.execution import ActorType, ExecutionContext
 from app.core.middleware import get_correlation_id
 from app.restaurant.cash_management import errors, service
@@ -286,6 +291,29 @@ async def close_cash_session(
     if replayed:
         response.status_code = status.HTTP_200_OK
     return value
+
+
+@router.get(
+    '/cash-sessions/active', response_model=CashSessionResponse
+)
+async def get_active_cash_session(
+    location_id: Annotated[int, Query(gt=0)],
+    resource_id: Annotated[int, Query(gt=0)],
+    context: Annotated[
+        AuthenticatedContext,
+        Depends(require_location_permission('cash_management.read')),
+    ],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Any:
+    try:
+        return await service.get_active_cash_session(
+            db,
+            tenant_id=context.tenant_id,
+            location_id=location_id,
+            resource_id=resource_id,
+        )
+    except Exception as exc:
+        raise _error(exc) from exc
 
 
 @router.get(

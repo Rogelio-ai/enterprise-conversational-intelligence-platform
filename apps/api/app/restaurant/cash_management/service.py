@@ -292,6 +292,29 @@ async def get_cash_session(
     return await _session_projection(db, value)
 
 
+async def get_active_cash_session(
+    db: AsyncSession, *, tenant_id: int, location_id: int, resource_id: int
+) -> CashSessionProjection:
+    register = await db.scalar(select(Resource).where(
+        Resource.id == resource_id,
+        Resource.tenant_id == tenant_id,
+        Resource.location_id == location_id,
+        Resource.resource_type == 'CASH_REGISTER',
+    ))
+    if register is None:
+        raise errors.CashRegisterNotFoundError()
+    value = await db.scalar(select(CashSession).where(
+        CashSession.tenant_id == tenant_id,
+        CashSession.location_id == location_id,
+        CashSession.resource_id == register.id,
+        CashSession.status == 'OPEN',
+        CashSession.open_slot == 1,
+    ))
+    if value is None:
+        raise errors.CashSessionNotFoundError()
+    return await _session_projection(db, value)
+
+
 def _validate_manual_movement(
     *, movement_type: str, amount: Decimal, currency: str,
     reason: str | None, reference: str | None,
