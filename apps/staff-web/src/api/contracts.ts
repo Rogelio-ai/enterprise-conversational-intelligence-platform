@@ -18,8 +18,41 @@ export interface StaffIdentity {
   display_name: string;
   tenant_id: number;
   membership_id: number;
+  authorized_location_ids: number[];
   roles: string[];
   permissions: string[];
+}
+
+export type OperationalRequestStatus = 'PENDING' | 'ACKNOWLEDGED' | 'COMPLETED' | 'CANCELLED';
+export type OperationalRequestType =
+  | 'HUMAN_ASSISTANCE'
+  | 'CASH_PAYMENT_ASSISTANCE'
+  | 'INVOICE_ASSISTANCE'
+  | 'PAID_CHECK_PRINT';
+
+export interface StaffOperationalRequest {
+  id: number;
+  organization_id: number;
+  location_id: number;
+  resource_id: number;
+  resource_code: string;
+  resource_name: string;
+  service_session_id: number;
+  diner_session_id: number;
+  diner_display_name: string;
+  request_type: OperationalRequestType;
+  status: OperationalRequestStatus;
+  related_restaurant_check_id: number | null;
+  resolved_by_membership_id: number | null;
+  resolved_at: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface StaffOperationalRequestListResponse {
+  items: StaffOperationalRequest[];
+  limit: number;
+  offset: number;
 }
 
 export interface Tenant {

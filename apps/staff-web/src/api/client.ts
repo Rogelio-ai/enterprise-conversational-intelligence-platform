@@ -10,6 +10,10 @@ import type {
   ClosedServiceSessionResponse,
   CurrentServiceSession,
   StaffIdentity,
+  StaffOperationalRequest,
+  StaffOperationalRequestListResponse,
+  OperationalRequestStatus,
+  OperationalRequestType,
   Tenant,
 } from './contracts';
 import { readCredential } from '../session/storage';
@@ -117,5 +121,36 @@ export const staffApi = {
   },
   closeServiceSession(sessionId: number): Promise<ClosedServiceSessionResponse> {
     return request(`/restaurant-service-sessions/${sessionId}/close`, { method: 'POST' });
+  },
+  operationalRequests(
+    locationId: number,
+    filters: { status?: OperationalRequestStatus; requestType?: OperationalRequestType },
+  ): Promise<StaffOperationalRequestListResponse> {
+    const query = new URLSearchParams({
+      location_id: String(locationId),
+      limit: '100',
+      offset: '0',
+    });
+    if (filters.status) query.set('status', filters.status);
+    if (filters.requestType) query.set('request_type', filters.requestType);
+    return request(`/staff/operational-requests?${query.toString()}`);
+  },
+  acknowledgeOperationalRequest(
+    requestId: number,
+    locationId: number,
+  ): Promise<StaffOperationalRequest> {
+    const query = new URLSearchParams({ location_id: String(locationId) });
+    return request(`/staff/operational-requests/${requestId}/acknowledge?${query.toString()}`, {
+      method: 'POST',
+    });
+  },
+  completeOperationalRequest(
+    requestId: number,
+    locationId: number,
+  ): Promise<StaffOperationalRequest> {
+    const query = new URLSearchParams({ location_id: String(locationId) });
+    return request(`/staff/operational-requests/${requestId}/complete?${query.toString()}`, {
+      method: 'POST',
+    });
   },
 };

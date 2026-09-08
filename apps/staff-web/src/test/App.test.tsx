@@ -15,6 +15,7 @@ const identity: StaffIdentity = {
   display_name: 'Ana Operaciones',
   tenant_id: 11,
   membership_id: 13,
+  authorized_location_ids: [21],
   roles: ['HOST'],
   permissions: ['location.read', 'resource.read', 'restaurant_service.read'],
 };
