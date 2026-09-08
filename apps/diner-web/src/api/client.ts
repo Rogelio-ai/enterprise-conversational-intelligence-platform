@@ -22,6 +22,8 @@ import type {
   PaymentResponse,
   DinerPaymentResponse,
   SettlementResponse,
+  OperationalRequestResponse,
+  OperationalRequestType,
 } from './contracts';
 import { readStoredSession } from '../session/storage';
 
@@ -216,6 +218,38 @@ export const dinerApi = {
       { method: 'POST' },
       true,
     );
+  },
+
+  createOperationalRequest(
+    requestType: OperationalRequestType,
+    relatedCheckId: number | null,
+    idempotencyKey: string,
+  ): Promise<OperationalRequestResponse> {
+    return request('/diner/operational-requests', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({
+        request_type: requestType,
+        related_restaurant_check_id: relatedCheckId,
+      }),
+    }, true);
+  },
+
+  decideContinuation(
+    checkId: number,
+    expectedVersion: number,
+    decision: 'YES' | 'NO',
+    idempotencyKey: string,
+  ): Promise<RestaurantCheckResponse> {
+    return request(`/diner/restaurant-checks/${checkId}/continuation-decision`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({ expected_version: expectedVersion, decision }),
+    }, true);
+  },
+
+  endCurrentSession(): Promise<DinerSessionResponse> {
+    return request('/diner-session/end', { method: 'POST' }, true);
   },
 
   getCardPaymentExecutors(currency: string): Promise<AvailablePaymentExecutorResponse[]> {

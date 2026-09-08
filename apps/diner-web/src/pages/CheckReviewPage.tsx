@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from 'react-router-dom';
 import { ApiError, dinerApi } from '../api/client';
 import type { PaymentResponse, RestaurantCheckResponse } from '../api/contracts';
 import { DinerHeader } from '../components/DinerHeader';
+import { PostSettlementExperience } from '../components/PostSettlementExperience';
 import { ConektaCardTokenizer, type EphemeralCustomerPaymentSource } from '../components/ConektaCardTokenizer';
 import { PaymentContactForm, type PaymentCustomerIdentity } from '../components/PaymentContactForm';
 import { useAuth } from '../session/AuthContext';
@@ -149,6 +150,11 @@ export function CheckReviewPage() {
   const unresolvedPayment = unresolvedPayments[unresolvedPayments.length - 1];
   const showPaymentSection = ['OPEN', 'FROZEN'].includes(check.status)
     && (!isZeroMoney(check.outstanding) || hasUncertainPayment || unresolvedPayment !== undefined);
+  const financiallyComplete = settlement.data?.check_status === 'SETTLED'
+    && check.status === 'SETTLED'
+    && isZeroMoney(check.outstanding)
+    && isZeroMoney(settlement.data.reserved_financial_exposure)
+    && isZeroMoney(settlement.data.uncertain_exposure);
   const status = hasUncertainPayment
     ? { eyebrow: 'Cuenta activa · Pago sin confirmar', title: 'Pago pendiente de confirmación', description: 'El restaurante aún verifica una operación. No vuelvas a pagar por el momento.' }
     : statusCopy(check.status);
@@ -241,6 +247,7 @@ export function CheckReviewPage() {
             )}
           </div>
         )}
+        {financiallyComplete && <PostSettlementExperience check={check} />}
       </main>
     </div>
   );

@@ -476,6 +476,22 @@ export interface DinerPaymentResponse {
   terminal_at: string | null;
 }
 
+export type OperationalRequestType =
+  | 'HUMAN_ASSISTANCE'
+  | 'CASH_PAYMENT_ASSISTANCE'
+  | 'INVOICE_ASSISTANCE'
+  | 'PAID_CHECK_PRINT';
+
+export interface OperationalRequestResponse {
+  id: number;
+  request_type: OperationalRequestType;
+  status: string;
+  related_restaurant_check_id: number | null;
+  created_at: string;
+  resolved_at: string | null;
+  experience: ExperienceResponse;
+}
+
 export interface SettlementResponse {
   check_id: number;
   check_status: string;

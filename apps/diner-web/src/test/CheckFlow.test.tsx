@@ -97,6 +97,27 @@ afterEach(() => {
 });
 
 describe('check creation and review', () => {
+  it('reconstructs the post-settlement experience on Check Review for non-card completion paths', async () => {
+    const settledCheck = check({
+      status: 'SETTLED', confirmed_settlement: '190.0000', outstanding: '0.0000',
+      continuation_decision: 'PENDING', settled_at: '2026-09-07T20:00:00Z',
+      signal: 'SERVICE_CONTINUATION_DECISION_REQUIRED',
+    });
+    const fetchMock = mockFetch((url) => {
+      if (url.includes('/diner/restaurant-checks/77?view=detailed')) return Promise.resolve(json(settledCheck));
+      return Promise.reject(new Error(`Unexpected request: ${url}`));
+    }, session, settlement({
+      check_status: 'SETTLED', confirmed_settlement: '190.0000',
+      available_to_initiate: '0.0000',
+    }));
+    renderPath('/check/77');
+
+    expect(await screen.findByRole('heading', { name: 'Gracias. ¿Necesitas algo más?' }, { timeout: 5_000 })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'Solicitar factura' })).toBeInTheDocument();
+    expect(screen.getByRole('button', { name: 'No, hemos terminado' })).toBeInTheDocument();
+    expect(fetchMock.mock.calls.some(([, init]) => init?.method === 'POST')).toBe(false);
+  });
+
   it('does not create on entry and sends the exact individual command only after confirmation', async () => {
     let releasePost: ((value: Response) => void) | undefined;
     const pendingPost = new Promise<Response>((resolve) => { releasePost = resolve; });

@@ -433,7 +433,32 @@ button, a, input { -webkit-tap-highlight-color: transparent; }
 .payment-status-summary dd { margin: 0; font-weight: 800; text-align: right; }
 .payment-status-actions { display: flex; flex-wrap: wrap; gap: var(--space-sm); }
 .payment-status-warning, .payment-status-feedback { padding: var(--space-md); border-radius: var(--radius-sm); background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface)); color: var(--color-text); font-weight: 700; }
-@media (max-width: 30rem) { .payment-status-actions > * { width: 100%; } .payment-status-summary div { align-items: flex-start; flex-direction: column; gap: .2rem; } .payment-status-summary dd { text-align: left; } }
+.post-settlement { display: grid; gap: var(--space-lg); padding: clamp(1.35rem, 5vw, 2.25rem); border: 1px solid color-mix(in srgb, var(--color-success) 55%, var(--color-border)); border-radius: var(--radius-lg); background: var(--color-surface-elevated); box-shadow: var(--shadow-card); }
+.post-settlement-heading { display: flex; align-items: flex-start; gap: var(--space-md); }
+.post-settlement-heading h2, .post-settlement-section h3 { margin: 0; font-family: var(--font-display); }
+.post-settlement-heading h2 { font-size: clamp(1.8rem, 7vw, 2.6rem); }
+.post-settlement-heading p:last-child, .post-settlement-section > p:not(.panel-kicker) { color: var(--color-text-secondary); line-height: 1.55; }
+.post-settlement-mark { display: grid; width: 3rem; height: 3rem; flex: 0 0 3rem; place-items: center; border-radius: 50%; color: var(--color-surface); background: var(--color-success); font-size: 1.25rem; font-weight: 800; }
+.post-settlement-section { padding-top: var(--space-lg); border-top: 1px solid var(--color-border); }
+.post-settlement-section h3 { font-size: clamp(1.4rem, 5vw, 1.85rem); }
+.post-settlement-requests { display: grid; gap: var(--space-sm); margin-top: var(--space-lg); }
+.post-settlement-requests article { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: center; gap: var(--space-md); padding: var(--space-md); border: 1px solid var(--color-border); border-radius: var(--radius-md); background: var(--color-background); }
+.post-settlement-requests h4 { margin: 0; font-size: 1rem; }
+.post-settlement-requests article > div p { margin: .35rem 0 0; color: var(--color-text-secondary); font-size: .85rem; line-height: 1.45; }
+.post-settlement-requests .secondary-button { min-height: 46px; }
+.request-acknowledgement { display: grid; gap: .2rem; margin: 0; color: var(--color-success); font-size: .86rem; text-align: right; }
+.request-acknowledgement span { color: var(--color-text-secondary); }
+.request-error, .continuation-notice { grid-column: 1 / -1; margin: 0; padding: .75rem; border-radius: var(--radius-sm); color: var(--color-danger); background: color-mix(in srgb, var(--color-danger) 7%, var(--color-surface)); font-size: .86rem; line-height: 1.45; }
+.continuation-panel { padding: var(--space-lg); border: 1px solid color-mix(in srgb, var(--color-primary) 35%, var(--color-border)); border-radius: var(--radius-md); background: color-mix(in srgb, var(--color-primary) 5%, var(--color-surface)); }
+.continuation-actions { display: grid; grid-template-columns: 1fr 1fr; gap: var(--space-sm); margin-top: var(--space-lg); }
+.continuation-actions .primary-button { margin: 0; }
+.continuation-actions .secondary-button { min-height: 54px; }
+.continuation-result { display: flex; align-items: center; justify-content: space-between; gap: var(--space-md); margin-top: var(--space-lg); }
+.continuation-result p { color: var(--color-text-secondary); }
+.continuation-result a { color: var(--color-primary); font-weight: 700; }
+.continuation-result .primary-button { width: auto; margin: 0; }
+.continuation-notice { margin-top: var(--space-md); color: var(--color-text-primary); background: color-mix(in srgb, var(--color-primary) 10%, var(--color-surface)); }
+@media (max-width: 30rem) { .payment-status-actions > * { width: 100%; } .payment-status-summary div { align-items: flex-start; flex-direction: column; gap: .2rem; } .payment-status-summary dd { text-align: left; } .post-settlement-heading { flex-direction: column; } .post-settlement-requests article { grid-template-columns: 1fr; } .post-settlement-requests .secondary-button, .request-acknowledgement { width: 100%; text-align: left; } .continuation-actions { grid-template-columns: 1fr; } .continuation-result { align-items: stretch; flex-direction: column; } .continuation-result .primary-button { width: 100%; } }
 .draft-empty { display: grid; justify-items: center; padding: clamp(2rem, 8vw, 4rem); border: 1px solid var(--color-border); border-radius: var(--radius-lg); background: var(--color-surface-elevated); box-shadow: var(--shadow-card); text-align: center; }
 .draft-empty > span { display: grid; width: 4rem; height: 4rem; place-items: center; border: 1px solid var(--color-primary); border-radius: 50%; color: var(--color-primary); font-size: 1.5rem; }
 .draft-empty h2 { margin: var(--space-md) 0 0; font-family: var(--font-display); font-size: 2rem; }

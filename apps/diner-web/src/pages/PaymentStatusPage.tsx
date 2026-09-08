@@ -4,6 +4,7 @@ import { Link, useParams } from 'react-router-dom';
 import { ApiError, dinerApi } from '../api/client';
 import type { DinerPaymentResponse } from '../api/contracts';
 import { DinerHeader } from '../components/DinerHeader';
+import { PostSettlementExperience } from '../components/PostSettlementExperience';
 import { formatPrice } from '../utils/formatters';
 
 function isZeroMoney(value: string): boolean {
@@ -165,6 +166,7 @@ export function PaymentStatusPage() {
           {financiallyComplete && <p role="status">El restaurante confirmó que no queda saldo pendiente ni exposición financiera sin resolver.</p>}
           {mayStartAnotherPayment && <Link className="primary-button button-link" to={`/check/${parsedCheckId}`}>Volver a opciones de pago</Link>}
         </section>
+        {financiallyComplete && <PostSettlementExperience check={currentCheck} paymentId={parsedPaymentId} />}
       </main>
     </div>
   );

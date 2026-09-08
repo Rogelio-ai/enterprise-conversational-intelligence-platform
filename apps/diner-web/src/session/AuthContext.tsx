@@ -34,6 +34,7 @@ interface AuthContextValue {
   authenticate: (response: DinerJoinResponse) => void;
   retryRestoration: () => void;
   leaveSession: () => void;
+  markSessionClosed: () => void;
 }
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -104,9 +105,11 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setAuth({ status: 'unauthenticated', session: null });
   }, []);
 
+  const markSessionClosed = useCallback(() => invalidate('closed'), [invalidate]);
+
   const value = useMemo(
-    () => ({ status: auth.status, session: auth.session, knownEmail, authenticate, retryRestoration, leaveSession }),
-    [auth, knownEmail, authenticate, retryRestoration, leaveSession],
+    () => ({ status: auth.status, session: auth.session, knownEmail, authenticate, retryRestoration, leaveSession, markSessionClosed }),
+    [auth, knownEmail, authenticate, retryRestoration, leaveSession, markSessionClosed],
   );
 
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;
