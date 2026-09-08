@@ -14,6 +14,11 @@ import type {
   StaffOperationalRequestListResponse,
   OperationalRequestStatus,
   OperationalRequestType,
+  PreparationAreaListResponse,
+  PreparationDispatch,
+  PreparationState,
+  PreparationTransitionResult,
+  PreparationWork,
   Tenant,
 } from './contracts';
 import { readCredential } from '../session/storage';
@@ -152,5 +157,42 @@ export const staffApi = {
     return request(`/staff/operational-requests/${requestId}/complete?${query.toString()}`, {
       method: 'POST',
     });
+  },
+  preparationAreas(locationId: number): Promise<PreparationAreaListResponse> {
+    const query = new URLSearchParams({ location_id: String(locationId) });
+    return request(`/preparation-areas?${query.toString()}`);
+  },
+  preparationWorks(
+    locationId: number,
+    filters: { state?: PreparationState; areaId?: number },
+  ): Promise<PreparationWork[]> {
+    const query = new URLSearchParams({ location_id: String(locationId), limit: '200' });
+    if (filters.state) query.set('execution_state', filters.state);
+    if (filters.areaId) query.set('preparation_area_id', String(filters.areaId));
+    return request(`/preparation-works?${query.toString()}`);
+  },
+  transitionPreparationItem(
+    itemId: number,
+    expectedState: PreparationState,
+    expectedVersion: number,
+    toState: PreparationState,
+    idempotencyKey: string,
+  ): Promise<PreparationTransitionResult> {
+    return request(`/preparation-work-items/${itemId}/transitions`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({
+        expected_state: expectedState,
+        expected_version: expectedVersion,
+        to_state: toState,
+      }),
+    });
+  },
+  preparationDispatches(locationId: number): Promise<PreparationDispatch[]> {
+    const query = new URLSearchParams({ location_id: String(locationId), limit: '200' });
+    return request(`/preparation-dispatches?${query.toString()}`);
+  },
+  reprintPreparationDispatch(dispatchId: number): Promise<PreparationDispatch> {
+    return request(`/preparation-dispatches/${dispatchId}/reprints`, { method: 'POST' });
   },
 };

@@ -7,6 +7,7 @@ import { canUseWorkspace, workspaces, type Workspace } from '../navigation/works
 import { LoginPage } from '../pages/LoginPage';
 import { StaffHomePage } from '../pages/StaffHomePage';
 import { HostPage } from '../pages/HostPage';
+import { KitchenPage } from '../pages/KitchenPage';
 import { WaiterPage } from '../pages/WaiterPage';
 import { WorkspacePlaceholder } from '../pages/WorkspacePlaceholder';
 import { useAuth } from '../session/AuthContext';
@@ -50,7 +51,9 @@ export function AppRoutes() {
         <Route key={workspace.key} path={workspace.path} element={
           <ProtectedApp>
             <WorkspaceBoundary workspace={workspace}>
-              {workspace.key === 'host' ? <HostPage /> : workspace.key === 'waiter' ? <WaiterPage /> : undefined}
+              {workspace.key === 'host' ? <HostPage />
+                : workspace.key === 'waiter' ? <WaiterPage />
+                  : workspace.key === 'kitchen' ? <KitchenPage /> : undefined}
             </WorkspaceBoundary>
           </ProtectedApp>
         } />
