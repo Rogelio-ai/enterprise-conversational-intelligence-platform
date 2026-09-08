@@ -14,6 +14,7 @@ export function DinerHeader() {
           <NavLink to="/menu">Menú</NavLink>
           <NavLink to="/order">Mi pedido</NavLink>
           <NavLink to="/account">Mi cuenta</NavLink>
+          <NavLink to="/waiter">Asistente</NavLink>
         </nav>
         <ThemeButton />
       </div>

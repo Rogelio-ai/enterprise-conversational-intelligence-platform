@@ -505,3 +505,67 @@ export interface SettlementResponse {
   available_to_initiate: string;
   payments: PaymentResponse[];
 }
+
+export type RestaurantIntentCode =
+  | 'MENU_QUERY'
+  | 'PRODUCT_QUERY'
+  | 'PRICE_QUERY'
+  | 'PROMOTION_QUERY'
+  | 'ORDER_EXPRESSION'
+  | 'DRAFT_REVIEW'
+  | 'ORDER_CONFIRMATION'
+  | 'ORDER_STATUS_QUERY'
+  | 'ACCOUNT_QUERY'
+  | 'CHECK_QUERY'
+  | 'PAYMENT_REQUEST'
+  | 'PAYMENT_STATUS_QUERY'
+  | 'PAYMENT_RECOVERY'
+  | 'INVOICE_REQUEST'
+  | 'PAID_PRINT_REQUEST'
+  | 'SERVICE_CONTINUATION'
+  | 'HUMAN_ASSISTANCE_REQUEST'
+  | 'UNKNOWN';
+
+export interface ConversationActionRequest {
+  modality: 'TEXT';
+  content_text: string;
+  intent_code?: RestaurantIntentCode;
+  operation?: 'ADD' | 'CONFIGURE' | 'MODIFY' | 'REMOVE';
+  reference_text?: string;
+  product_id?: number;
+  quantity?: string;
+  draft_item_id?: number;
+  choice_group_id?: number;
+  choice_reference_text?: string;
+  option_ids?: number[];
+  expected_draft_version?: number;
+  expected_commercial_fingerprint?: string;
+  check_id?: number;
+  check_scope?: 'INDIVIDUAL' | 'GLOBAL_TABLE' | 'SELECTED';
+  selected_diner_session_ids?: number[];
+  payment_method?: 'CARD' | 'CASH' | 'TRANSFER';
+  continuation_decision?: 'YES' | 'NO';
+  expected_check_version?: number;
+  payment_id?: number;
+  language?: string;
+  language_source?: 'DECLARED' | 'DETECTED' | 'INHERITED';
+}
+
+export interface ConversationMessageReference {
+  id: number;
+  sequence_number: number;
+  modality: string;
+  content_text: string;
+}
+
+export interface ConversationActionResponse {
+  source_message: ConversationMessageReference;
+  response_message: ConversationMessageReference;
+  intent_code: RestaurantIntentCode;
+  experience: ExperienceResponse;
+  authoritative_data: unknown;
+  replayed: boolean;
+  message: string;
+  ui_action: string | null;
+  pending_context: Record<string, unknown>;
+}

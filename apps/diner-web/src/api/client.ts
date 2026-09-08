@@ -24,6 +24,8 @@ import type {
   SettlementResponse,
   OperationalRequestResponse,
   OperationalRequestType,
+  ConversationActionRequest,
+  ConversationActionResponse,
 } from './contracts';
 import { readStoredSession } from '../session/storage';
 
@@ -265,5 +267,16 @@ export const dinerApi = {
       {},
       true,
     );
+  },
+
+  sendConversationAction(
+    payload: ConversationActionRequest,
+    idempotencyKey: string,
+  ): Promise<ConversationActionResponse> {
+    return request('/diner/conversation/actions', {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify(payload),
+    }, true);
   },
 };

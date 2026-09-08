@@ -12,6 +12,7 @@ import { ActiveCheckPage } from '../pages/ActiveCheckPage';
 import { CheckCreationPage } from '../pages/CheckCreationPage';
 import { CheckReviewPage } from '../pages/CheckReviewPage';
 import { PaymentStatusPage } from '../pages/PaymentStatusPage';
+import { DigitalWaiterPage } from '../pages/DigitalWaiterPage';
 import { useAuth } from '../session/AuthContext';
 
 function SessionBoundary({ children }: { children: ReactNode }) {
@@ -40,6 +41,7 @@ export function AppRoutes() {
       <Route path="/products/:productId" element={<SessionBoundary><ProductDetailPage /></SessionBoundary>} />
       <Route path="/order" element={<SessionBoundary><DraftReviewPage /></SessionBoundary>} />
       <Route path="/account" element={<SessionBoundary><AccountPreviewPage /></SessionBoundary>} />
+      <Route path="/waiter" element={<SessionBoundary><DigitalWaiterPage /></SessionBoundary>} />
       <Route path="/check" element={<SessionBoundary><ActiveCheckPage /></SessionBoundary>} />
       <Route path="/check/new" element={<SessionBoundary><CheckCreationPage /></SessionBoundary>} />
       <Route path="/check/:checkId" element={<SessionBoundary><CheckReviewPage /></SessionBoundary>} />
