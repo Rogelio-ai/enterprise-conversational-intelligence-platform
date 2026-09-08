@@ -6,6 +6,7 @@ import pytest
 from app.main import create_app
 from test_cash_session_foundation import (
     _authority,
+    _grant_location,
     _headers,
     _organization_location,
     _permission,
@@ -31,11 +32,13 @@ def _setup(connection, prefix: str, client: TestClient):
         ),
     )
     _, location_id = _organization_location(connection, authority.tenant_id, 'OPS')
+    _grant_location(connection, authority, location_id)
     headers = _headers(client, authority)
     register = _resource(client, headers, location_id, 'REGISTER')
     opened = client.post(
         f"/resources/{register['id']}/cash-sessions",
         headers={**headers, 'Idempotency-Key': 'open-1'},
+        params={'location_id': location_id},
         json={'currency': 'MXN'},
     )
     assert opened.status_code == 201, opened.text
@@ -272,6 +275,7 @@ def test_close_freezes_variance_blocks_writes_and_allows_new_session(
     cannot_open = client.post(
         f"/resources/{register['id']}/cash-sessions",
         headers={**headers, 'Idempotency-Key': 'inactive-open'},
+        params={'location_id': register['location_id']},
         json={'currency': 'MXN'},
     )
     assert cannot_open.status_code == 409
@@ -283,6 +287,7 @@ def test_close_freezes_variance_blocks_writes_and_allows_new_session(
     reopened = client.post(
         f"/resources/{register['id']}/cash-sessions",
         headers={**headers, 'Idempotency-Key': 'open-2'},
+        params={'location_id': register['location_id']},
         json={'currency': 'MXN'},
     )
     assert reopened.status_code == 201
@@ -309,6 +314,7 @@ def test_balanced_shortage_scope_and_cross_session_count_are_controlled(
     second = client.post(
         f"/resources/{register['id']}/cash-sessions",
         headers={**headers, 'Idempotency-Key': 'open-second'},
+        params={'location_id': register['location_id']},
         json={'currency': 'MXN'},
     ).json()
     wrong_count = _close(

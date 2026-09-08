@@ -19,6 +19,7 @@ from test_restaurant_payment_settlement_foundation import (
     _grant,
     _order,
 )
+from test_staff_check_query import _grant_location, _membership_id
 
 
 def _grant_cash_permissions(connection, tenant_id: int) -> None:
@@ -54,6 +55,7 @@ def _register_and_session(
     session = client.post(
         f"/resources/{register.json()['id']}/cash-sessions",
         headers={**headers, 'Idempotency-Key': f'open-{code}'},
+        params={'location_id': location_id or scope.location_id},
         json={'currency': currency},
     )
     assert session.status_code == 201, session.text
@@ -136,12 +138,22 @@ def test_activated_cash_requires_valid_open_scoped_session_and_allows_inactive_r
             client, scope, headers, code='USD', currency='USD'
         )
         wrong_location_id = _location(connection, scope)
+        owner_membership_id = _membership_id(connection, scope.email)
+        _grant_location(
+            connection, scope.tenant_id, owner_membership_id, wrong_location_id
+        )
         _, wrong_location = _register_and_session(
             client, scope, headers, code='WRONG-LOCATION',
             location_id=wrong_location_id,
         )
         wrong_organization_id = _location(
             connection, scope, other_organization=True
+        )
+        _grant_location(
+            connection,
+            scope.tenant_id,
+            owner_membership_id,
+            wrong_organization_id,
         )
         _, wrong_organization = _register_and_session(
             client, scope, headers, code='WRONG-ORGANIZATION',

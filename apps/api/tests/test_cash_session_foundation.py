@@ -179,16 +179,19 @@ def test_open_read_permissions_identity_lifecycle_and_inactive_survival(
     connection, prefix = sql_connection
     authority = _authority(connection, prefix, ('resource.manage',))
     _, location_id = _organization_location(connection, authority.tenant_id, 'ONE')
+    _grant_location(connection, authority, location_id)
     headers = _headers(client, authority)
     register = _resource(client, headers, location_id, 'REGISTER')
 
     url = f"/resources/{register['id']}/cash-sessions"
     assert client.post(
-        url, headers={**headers, 'Idempotency-Key': 'open'}, json={'currency': 'MXN'}
+        url, headers={**headers, 'Idempotency-Key': 'open'},
+        params={'location_id': location_id}, json={'currency': 'MXN'},
     ).status_code == 403
     _permission(connection, authority.role_id, 'cash_session.manage')
     opened = client.post(
-        url, headers={**headers, 'Idempotency-Key': 'open'}, json={'currency': 'mxn'}
+        url, headers={**headers, 'Idempotency-Key': 'open'},
+        params={'location_id': location_id}, json={'currency': 'mxn'},
     )
     assert opened.status_code == 201, opened.text
     body = opened.json()
@@ -223,6 +226,7 @@ def test_open_rejects_non_register_inactive_register_invalid_currency_and_second
     permissions = ('resource.manage', 'cash_session.manage')
     authority = _authority(connection, prefix, permissions)
     _, location_id = _organization_location(connection, authority.tenant_id, 'ONE')
+    _grant_location(connection, authority, location_id)
     headers = _headers(client, authority)
     table = _resource(client, headers, location_id, 'TABLE', 'TABLE')
     register = _resource(client, headers, location_id, 'REGISTER')
@@ -231,6 +235,7 @@ def test_open_rejects_non_register_inactive_register_invalid_currency_and_second
         return client.post(
             f'/resources/{resource_id}/cash-sessions',
             headers={**headers, 'Idempotency-Key': key},
+            params={'location_id': location_id},
             json={'currency': currency},
         )
 
@@ -258,6 +263,7 @@ def test_open_idempotency_replay_conflict_and_concurrent_open(
         connection, prefix, ('resource.manage', 'cash_session.manage')
     )
     _, location_id = _organization_location(connection, authority.tenant_id, 'ONE')
+    _grant_location(connection, authority, location_id)
     headers = _headers(client, authority)
     first = _resource(client, headers, location_id, 'FIRST')
     second = _resource(client, headers, location_id, 'SECOND')
@@ -267,6 +273,7 @@ def test_open_idempotency_replay_conflict_and_concurrent_open(
         return client.post(
             f'/resources/{resource_id}/cash-sessions',
             headers={**headers, 'Idempotency-Key': key},
+            params={'location_id': location_id},
             json={'currency': currency},
         )
 
@@ -313,6 +320,8 @@ def test_tenant_isolation_and_scoped_foreign_keys(client, sql_connection) -> Non
         connection, first.tenant_id, 'ONE'
     )
     _, other_location_id = _organization_location(connection, second.tenant_id, 'TWO')
+    _grant_location(connection, first, location_id)
+    _grant_location(connection, second, other_location_id)
     first_headers = _headers(client, first)
     second_headers = _headers(client, second)
     register = _resource(client, first_headers, location_id, 'REGISTER')
@@ -321,6 +330,7 @@ def test_tenant_isolation_and_scoped_foreign_keys(client, sql_connection) -> Non
     opened = client.post(
         f"/resources/{register['id']}/cash-sessions",
         headers={**first_headers, 'Idempotency-Key': 'open'},
+        params={'location_id': location_id},
         json={'currency': 'MXN'},
     )
     assert opened.status_code == 201
@@ -331,6 +341,7 @@ def test_tenant_isolation_and_scoped_foreign_keys(client, sql_connection) -> Non
     assert client.post(
         f"/resources/{register['id']}/cash-sessions",
         headers={**second_headers, 'Idempotency-Key': 'foreign'},
+        params={'location_id': location_id},
         json={'currency': 'MXN'},
     ).status_code == 404
 
@@ -383,6 +394,7 @@ def test_active_session_discovery_resumes_without_browser_session_id(
     opened = client.post(
         f"/resources/{register['id']}/cash-sessions",
         headers={**headers, 'Idempotency-Key': 'discover-open'},
+        params={'location_id': location_id},
         json={'currency': 'MXN'},
     )
     assert opened.status_code == 201, opened.text
@@ -448,6 +460,7 @@ def test_active_session_discovery_no_session_terminal_and_register_scope(
     opened = client.post(
         f"/resources/{register['id']}/cash-sessions",
         headers={**headers, 'Idempotency-Key': 'terminal-open'},
+        params={'location_id': location_id},
         json={'currency': 'MXN'},
     )
     assert opened.status_code == 201, opened.text
@@ -557,6 +570,7 @@ def test_active_session_discovery_enforces_permission_location_and_tenant(
     opened = client.post(
         f"/resources/{register['id']}/cash-sessions",
         headers={**owner_headers, 'Idempotency-Key': 'secure-open'},
+        params={'location_id': location_id},
         json={'currency': 'MXN'},
     )
     assert opened.status_code == 201, opened.text

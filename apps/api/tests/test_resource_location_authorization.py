@@ -55,6 +55,7 @@ def test_location_filtered_resource_discovery_is_authorized_and_resumes_cash_ses
     opened = client.post(
         f"/resources/{register['id']}/cash-sessions",
         headers={**headers, 'Idempotency-Key': 'resource-discovery-open'},
+        params={'location_id': location_id},
         json={'currency': 'MXN'},
     )
     assert opened.status_code == 201, opened.text

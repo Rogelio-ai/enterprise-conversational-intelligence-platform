@@ -182,14 +182,35 @@ async def _assert_open_replay(
     return await _session_projection(db, value)
 
 
+async def require_cash_register_open_location(
+    db: AsyncSession, *, tenant_id: int, resource_id: int, location_id: int,
+) -> None:
+    resource = await db.scalar(select(Resource).where(
+        Resource.id == resource_id,
+        Resource.tenant_id == tenant_id,
+    ))
+    if resource is None:
+        raise errors.CashRegisterNotFoundError()
+    if resource.resource_type != 'CASH_REGISTER':
+        raise errors.InvalidCashRegisterError('Resource is not a CASH_REGISTER')
+    if resource.location_id != location_id:
+        raise errors.CashRegisterNotFoundError()
+
+
 async def open_cash_session(
     db: AsyncSession, *, context: ExecutionContext, resource_id: int,
-    currency: str, idempotency_key: str,
+    location_id: int, currency: str, idempotency_key: str,
 ) -> tuple[CashSessionProjection, bool]:
     if context.actor_type is not ActorType.EMPLOYEE or context.principal_id is None:
         raise errors.CashSessionPermissionError(
             'Only an authenticated tenant member may open a CashSession'
         )
+    await require_cash_register_open_location(
+        db,
+        tenant_id=context.tenant_id,
+        resource_id=resource_id,
+        location_id=location_id,
+    )
     currency = _canonical_currency(currency)
     fingerprint = _sha({
         'schema_version': REQUEST_SCHEMA_VERSION,
@@ -203,13 +224,8 @@ async def open_cash_session(
     if existing is not None:
         return await _assert_open_replay(db, existing, fingerprint), True
     try:
-        resource_identity = await db.scalar(select(Resource).where(
-            Resource.id == resource_id, Resource.tenant_id == context.tenant_id,
-        ))
-        if resource_identity is None:
-            raise errors.CashRegisterNotFoundError()
         location = await db.scalar(select(Location).where(
-            Location.id == resource_identity.location_id,
+            Location.id == location_id,
             Location.tenant_id == context.tenant_id,
         ).with_for_update())
         if location is None:
@@ -217,10 +233,12 @@ async def open_cash_session(
         resource = await db.scalar(select(Resource).where(
             Resource.id == resource_id,
             Resource.tenant_id == context.tenant_id,
-            Resource.location_id == location.id,
+            Resource.location_id == location_id,
         ).with_for_update())
         if resource is None:
             raise errors.CashRegisterNotFoundError()
+        if resource.resource_type != 'CASH_REGISTER':
+            raise errors.InvalidCashRegisterError('Resource is not a CASH_REGISTER')
         replay = await _by_open_key(
             db, context=context, idempotency_key=idempotency_key, lock=True
         )
@@ -228,8 +246,6 @@ async def open_cash_session(
             projection = await _assert_open_replay(db, replay, fingerprint)
             await db.commit()
             return projection, True
-        if resource.resource_type != 'CASH_REGISTER':
-            raise errors.InvalidCashRegisterError('Resource is not a CASH_REGISTER')
         if resource.status != 'ACTIVE':
             raise errors.CashRegisterInactiveError()
         if location.cash_management_activated_at is None:

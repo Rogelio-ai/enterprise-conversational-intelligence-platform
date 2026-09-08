@@ -13,6 +13,7 @@ from app.api.deps import (
     get_db,
     require_location_permission,
     require_permission,
+    require_staff_location_access,
 )
 from app.core.execution import ActorType, ExecutionContext
 from app.core.middleware import get_correlation_id
@@ -175,6 +176,7 @@ def _error(exc: Exception) -> HTTPException:
 )
 async def open_cash_session(
     resource_id: Annotated[int, Path(gt=0)],
+    location_id: Annotated[int, Query(gt=0)],
     payload: OpenCashSessionRequest,
     response: Response,
     context: Annotated[
@@ -184,10 +186,18 @@ async def open_cash_session(
     idempotency_key: IdempotencyKey,
 ) -> Any:
     try:
+        await service.require_cash_register_open_location(
+            db,
+            tenant_id=context.tenant_id,
+            resource_id=resource_id,
+            location_id=location_id,
+        )
+        await require_staff_location_access(location_id, context, db)
         value, replayed = await service.open_cash_session(
             db,
             context=_execution(context),
             resource_id=resource_id,
+            location_id=location_id,
             currency=payload.currency,
             idempotency_key=idempotency_key,
         )
