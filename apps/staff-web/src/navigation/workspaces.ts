@@ -40,7 +40,7 @@ export const workspaces: Workspace[] = [
     label: 'Gerencia',
     description: 'Control operativo',
     path: '/manager',
-    permissions: ['resource.read', 'preparation.read', 'restaurant_check.read', 'restaurant_payment.read', 'cash_management.read'],
+    permissions: ['location.read', 'resource.read', 'restaurant_service.read', 'restaurant_order.read', 'operational_request.read', 'preparation.read', 'restaurant_check.read', 'restaurant_payment.read', 'cash_management.read'],
   },
 ];
 

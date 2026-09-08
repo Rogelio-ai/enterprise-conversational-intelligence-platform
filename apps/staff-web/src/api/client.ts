@@ -11,6 +11,7 @@ import type {
   LocationListResponse,
   LoginRequest,
   LoginResponse,
+  ManagerOperationalOverview,
   Organization,
   OpenServiceSessionResponse,
   PaidCheckDispatch,
@@ -102,6 +103,9 @@ export const staffApi = {
   },
   me(): Promise<StaffIdentity> {
     return request('/auth/me');
+  },
+  managerOperationalOverview(locationId: number): Promise<ManagerOperationalOverview> {
+    return request(`/staff/manager/operational-overview?location_id=${locationId}`);
   },
   currentTenant(): Promise<Tenant> {
     return request('/tenants/current');

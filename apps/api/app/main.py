@@ -24,6 +24,7 @@ from app.api.routes.fiscal_profiles import router as fiscal_profiles_router
 from app.api.routes.locations import router as locations_router
 from app.api.routes.inventory import router as inventory_router
 from app.api.routes.menus import router as menus_router
+from app.api.routes.manager_overview import router as manager_overview_router
 from app.api.routes.organizations import router as organizations_router
 from app.api.routes.order_drafts import router as order_drafts_router
 from app.api.routes.products import router as products_router
@@ -153,6 +154,7 @@ def create_app(
     app.include_router(paid_check_printing_router)
     app.include_router(restaurant_payments_router)
     app.include_router(staff_operational_requests_router)
+    app.include_router(manager_overview_router)
     app.include_router(billing_router)
     app.include_router(fiscal_issuance_router)
     app.include_router(fiscal_profiles_router)

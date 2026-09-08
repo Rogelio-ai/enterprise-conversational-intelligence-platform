@@ -408,6 +408,91 @@ export interface PaidCheckDispatch {
   attempts: PaidCheckAttempt[];
 }
 
+export interface ManagerServiceSession {
+  id: number;
+  resource_id: number;
+  resource_code: string;
+  resource_name: string;
+  party_size: number;
+  active_diner_count: number;
+  opened_at: string;
+}
+
+export interface ManagerCheckException {
+  id: number;
+  status: string;
+  currency: string;
+  liability_total: string;
+  confirmed_settlement: string;
+  outstanding: string;
+  reserved_exposure: string;
+  uncertain_exposure: string;
+}
+
+export interface ManagerPaymentException {
+  id: number;
+  check_id: number;
+  amount: string;
+  currency: string;
+  method_category: string;
+  state: string;
+  created_at: string;
+}
+
+export interface ManagerCashSession {
+  id: number;
+  resource_id: number;
+  status: string;
+  currency: string;
+  expected_cash: string;
+  frozen_variance: string | null;
+  opened_at: string;
+}
+
+export interface ManagerDispatchException {
+  id: number;
+  reference_id: number;
+  state: string;
+  destination_name: string;
+  attempt_count: number;
+  last_error_kind: string | null;
+  created_at: string;
+}
+
+export interface ManagerFiscalException {
+  id: number;
+  billing_document_id: number;
+  provider_key: string;
+  state: string;
+  attempt_count: number;
+  requested_at: string;
+}
+
+export interface ManagerOperationalOverview {
+  location_id: number;
+  generated_at: string;
+  active_table_count: number;
+  available_table_count: number;
+  active_service_session_count: number;
+  active_diner_count: number;
+  service_sessions: ManagerServiceSession[];
+  request_counts_by_status: Record<string, number>;
+  request_counts_by_type: Record<string, number>;
+  preparation_item_counts: Record<string, number>;
+  preparation_dispatch_counts: Record<string, number>;
+  preparation_dispatch_exceptions: ManagerDispatchException[];
+  check_counts_by_status: Record<string, number>;
+  checks_with_outstanding_count: number;
+  check_exceptions: ManagerCheckException[];
+  uncertain_payments: ManagerPaymentException[];
+  cash_session_counts: Record<string, number>;
+  cash_session_exceptions: ManagerCashSession[];
+  fiscal_issuance_counts: Record<string, number>;
+  fiscal_exceptions: ManagerFiscalException[];
+  paid_print_counts: Record<string, number>;
+  paid_print_exceptions: ManagerDispatchException[];
+}
+
 export interface CurrentServiceSession {
   id: number;
   resource_id: number;

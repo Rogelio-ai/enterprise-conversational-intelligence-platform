@@ -10,6 +10,7 @@ import { HostPage } from '../pages/HostPage';
 import { KitchenPage } from '../pages/KitchenPage';
 import { WaiterPage } from '../pages/WaiterPage';
 import { CashierPage } from '../pages/CashierPage';
+import { ManagerPage } from '../pages/ManagerPage';
 import { WorkspacePlaceholder } from '../pages/WorkspacePlaceholder';
 import { useAuth } from '../session/AuthContext';
 
@@ -55,7 +56,8 @@ export function AppRoutes() {
               {workspace.key === 'host' ? <HostPage />
                 : workspace.key === 'waiter' ? <WaiterPage />
                   : workspace.key === 'kitchen' ? <KitchenPage />
-                    : workspace.key === 'cashier' ? <CashierPage /> : undefined}
+                    : workspace.key === 'cashier' ? <CashierPage />
+                      : workspace.key === 'manager' ? <ManagerPage /> : undefined}
             </WorkspaceBoundary>
           </ProtectedApp>
         } />
