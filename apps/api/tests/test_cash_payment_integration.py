@@ -166,8 +166,8 @@ def test_activated_cash_requires_valid_open_scoped_session_and_allows_inactive_r
             ('missing', None, 409, 'CASH_SESSION_REQUIRED'),
             ('unknown', 999999999, 404, 'CASH_SESSION_NOT_FOUND'),
             ('foreign', foreign['id'], 404, 'CASH_SESSION_NOT_FOUND'),
-            ('location', wrong_location['id'], 409, 'INVALID_CASH_SESSION'),
-            ('organization', wrong_organization['id'], 409, 'INVALID_CASH_SESSION'),
+            ('location', wrong_location['id'], 404, 'CASH_SESSION_NOT_FOUND'),
+            ('organization', wrong_organization['id'], 404, 'CASH_SESSION_NOT_FOUND'),
             ('currency', usd['id'], 409, 'INVALID_CASH_SESSION'),
             ('closed', closed['id'], 409, 'INVALID_CASH_SESSION'),
         )
@@ -175,6 +175,7 @@ def test_activated_cash_requires_valid_open_scoped_session_and_allows_inactive_r
             response = client.post(
                 url,
                 headers={**headers, 'Idempotency-Key': key},
+                params={'location_id': scope.location_id},
                 json=_payment_payload(
                     check, amount='40', tendered='40',
                     cash_session_id=session_id,
@@ -191,6 +192,7 @@ def test_activated_cash_requires_valid_open_scoped_session_and_allows_inactive_r
         accepted = client.post(
             url,
             headers={**headers, 'Idempotency-Key': 'valid-inactive-register'},
+            params={'location_id': scope.location_id},
             json=_payment_payload(
                 check, amount='40', tendered='40',
                 cash_session_id=valid['id'],
@@ -231,10 +233,12 @@ def test_tender_change_relationship_versions_replay_and_close_fencing(
             cash_session_id=session['id'],
         )
         created = client.post(
-            url, headers={**headers, 'Idempotency-Key': 'cash-85'}, json=payload
+            url, headers={**headers, 'Idempotency-Key': 'cash-85'},
+            params={'location_id': scope.location_id}, json=payload,
         )
         replay = client.post(
-            url, headers={**headers, 'Idempotency-Key': 'cash-85'}, json=payload
+            url, headers={**headers, 'Idempotency-Key': 'cash-85'},
+            params={'location_id': scope.location_id}, json=payload,
         )
         assert created.status_code == 201, created.text
         assert replay.status_code == 200, replay.text
@@ -244,6 +248,7 @@ def test_tender_change_relationship_versions_replay_and_close_fencing(
         changed_session = client.post(
             url,
             headers={**headers, 'Idempotency-Key': 'cash-85'},
+            params={'location_id': scope.location_id},
             json={**payload, 'cash_session_id': alternate['id']},
         )
         assert changed_session.status_code == 409
@@ -272,6 +277,7 @@ def test_tender_change_relationship_versions_replay_and_close_fencing(
         after_close = client.post(
             url,
             headers={**headers, 'Idempotency-Key': 'after-close'},
+            params={'location_id': scope.location_id},
             json=_payment_payload(
                 check, amount='15', tendered='15',
                 cash_session_id=session['id'],
@@ -330,6 +336,7 @@ def test_exact_tender_creates_only_tender_and_atomic_failure_rolls_back(
         exact = client.post(
             f"/restaurant-checks/{check['id']}/payments",
             headers={**headers, 'Idempotency-Key': 'exact'},
+            params={'location_id': scope.location_id},
             json=_payment_payload(
                 check, amount='40', tendered='40',
                 cash_session_id=session['id'],
@@ -344,6 +351,7 @@ def test_exact_tender_creates_only_tender_and_atomic_failure_rolls_back(
         failed = client.post(
             f"/restaurant-checks/{check['id']}/payments",
             headers={**headers, 'Idempotency-Key': 'forced-failure'},
+            params={'location_id': scope.location_id},
             json=_payment_payload(
                 check, amount='10', tendered='10',
                 cash_session_id=session['id'],
@@ -394,6 +402,7 @@ def test_legacy_cash_and_non_cash_remain_without_cash_movements(
         legacy = client.post(
             f"/restaurant-checks/{check['id']}/payments",
             headers={**headers, 'Idempotency-Key': 'legacy-cash'},
+            params={'location_id': scope.location_id},
             json=_payment_payload(check, amount='40', tendered='40'),
         )
         assert legacy.status_code == 201, legacy.text
@@ -408,6 +417,7 @@ def test_legacy_cash_and_non_cash_remain_without_cash_movements(
         card = client.post(
             f"/restaurant-checks/{check['id']}/payments",
             headers={**headers, 'Idempotency-Key': 'card'},
+            params={'location_id': scope.location_id},
             json=electronic,
         )
         assert card.status_code == 201, card.text

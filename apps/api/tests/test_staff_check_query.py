@@ -84,7 +84,7 @@ def _membership_id(connection, email: str) -> int:
 def _grant_location(connection, tenant_id: int, membership_id: int, location_id: int):
     _execute(
         connection,
-        'INSERT INTO membership_location_grants '
+        'INSERT IGNORE INTO membership_location_grants '
         '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
         (tenant_id, membership_id, location_id),
     )
@@ -162,10 +162,14 @@ def _new_check(client, connection, scope: Scope, key: str, amount: str = '100'):
     return _check(client, diner_headers, f'check-{key}'), diner_headers
 
 
-def _cash_payment(client, staff_headers, check, diner_id: int, amount: str, key: str):
+def _cash_payment(
+    client, staff_headers, check, diner_id: int, amount: str, key: str,
+    location_id: int,
+):
     return client.post(
         f"/restaurant-checks/{check['id']}/payments",
         headers={**staff_headers, 'Idempotency-Key': key},
+        params={'location_id': location_id},
         json={
             'expected_check_version': check['version'],
             'expected_check_fingerprint': check['fingerprint'],
@@ -217,7 +221,8 @@ def test_staff_check_query_projects_financial_truth_and_is_stable(
             '/diner-session', headers=partial_headers
         ).json()['id']
         partial_payment = _cash_payment(
-            client, staff_headers, partial, partial_diner_id, '40', 'partial-40'
+            client, staff_headers, partial, partial_diner_id, '40', 'partial-40',
+            scope.location_id,
         )
         assert partial_payment.status_code == 201, partial_payment.text
 
@@ -245,7 +250,8 @@ def test_staff_check_query_projects_financial_truth_and_is_stable(
             '/diner-session', headers=settled_headers
         ).json()['id']
         settled_payment = _cash_payment(
-            client, staff_headers, settled, settled_diner_id, '100', 'settled-100'
+            client, staff_headers, settled, settled_diner_id, '100', 'settled-100',
+            scope.location_id,
         )
         assert settled_payment.status_code == 201, settled_payment.text
 

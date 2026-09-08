@@ -40,6 +40,21 @@ def _grant(connection, tenant_id: int, *, configure_executor: bool = True) -> No
                 'INSERT INTO role_permissions (role_id,permission_id) VALUES (%s,%s)',
                 (role_id, permission_id),
             )
+        cursor.execute(
+            'SELECT id FROM tenant_memberships WHERE tenant_id=%s ORDER BY id LIMIT 1',
+            (tenant_id,),
+        )
+        membership_id = cursor.fetchone()['id']
+        cursor.execute(
+            'SELECT id FROM locations WHERE tenant_id=%s ORDER BY id LIMIT 1',
+            (tenant_id,),
+        )
+        location_id = cursor.fetchone()['id']
+        cursor.execute(
+            'INSERT IGNORE INTO membership_location_grants '
+            '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
+            (tenant_id, membership_id, location_id),
+        )
         if configure_executor:
             cursor.execute(
                 '''
@@ -86,7 +101,7 @@ def _grant_staff_location(connection, scope) -> None:
         )
         membership_id = int(cursor.fetchone()['id'])
         cursor.execute(
-            'INSERT INTO membership_location_grants '
+            'INSERT IGNORE INTO membership_location_grants '
             '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
             (scope.tenant_id, membership_id, scope.location_id),
         )
@@ -151,6 +166,7 @@ def test_cash_auto_freeze_exact_settlement_keeps_lock_until_continuation_yes(
         payment = client.post(
             f"/restaurant-checks/{check['id']}/payments",
             headers={**_staff_headers(client, scope), 'Idempotency-Key': 'cash-full'},
+            params={'location_id': scope.location_id},
             json={
                 'expected_check_version': check['version'],
                 'expected_check_fingerprint': check['fingerprint'],
@@ -261,6 +277,7 @@ def test_uncertain_reserves_capacity_multiple_payers_and_recovery_finalizes(
         over = client.post(
             f"/restaurant-checks/{check['id']}/payments",
             headers={**_staff_headers(client, scope), 'Idempotency-Key': 'over-after-uncertain'},
+            params={'location_id': scope.location_id},
             json={
                 **_electronic_payload(check, '70', diner_id),
                 'payer_type': 'OTHER', 'payer_diner_session_id': None,
@@ -272,6 +289,7 @@ def test_uncertain_reserves_capacity_multiple_payers_and_recovery_finalizes(
         second = client.post(
             f"/restaurant-checks/{check['id']}/payments",
             headers={**_staff_headers(client, scope), 'Idempotency-Key': 'other-payer-60'},
+            params={'location_id': scope.location_id},
             json={
                 **_electronic_payload(check, '60', diner_id),
                 'payer_type': 'OTHER', 'payer_diner_session_id': None,
@@ -407,6 +425,7 @@ def test_two_simultaneous_full_balance_payments_have_one_winner(
             return client.post(
                 f"/restaurant-checks/{check['id']}/payments",
                 headers={**staff, 'Idempotency-Key': key},
+                params={'location_id': scope.location_id},
                 json={
                     **_electronic_payload(check, '100', diner_id),
                     'payer_type': 'OTHER', 'payer_diner_session_id': None,
@@ -602,6 +621,7 @@ def test_concurrent_partial_payments_serialize_to_exact_liability(
             return client.post(
                 f"/restaurant-checks/{check['id']}/payments",
                 headers={**_staff_headers(client, scope), 'Idempotency-Key': key},
+                params={'location_id': scope.location_id},
                 json={
                     **_electronic_payload(check, amount, diner_id),
                     'payer_type': 'OTHER', 'payer_diner_session_id': None,
@@ -673,6 +693,7 @@ def test_final_settlement_vs_ordering_reenable_is_atomic(
             return client.post(
                 f"/restaurant-checks/{check['id']}/payments",
                 headers={**staff, 'Idempotency-Key': 'settlement-order-race-cash'},
+                params={'location_id': scope.location_id},
                 json={
                     'expected_check_version': check['version'],
                     'expected_check_fingerprint': check['fingerprint'],
@@ -730,6 +751,7 @@ def test_diner_scope_does_not_lock_unrelated_diner_and_no_closes_only_target(
         paid = client.post(
             f"/restaurant-checks/{check['id']}/payments",
             headers={**_staff_headers(client, scope), 'Idempotency-Key': 'diner-scope-cash'},
+            params={'location_id': scope.location_id},
             json={
                 'expected_check_version': check['version'],
                 'expected_check_fingerprint': check['fingerprint'],
@@ -801,6 +823,7 @@ def test_table_scope_blocks_existing_and_new_diners_until_yes(
         paid = client.post(
             f"/restaurant-checks/{check['id']}/payments",
             headers={**staff, 'Idempotency-Key': 'whole-table-cash'},
+            params={'location_id': scope.location_id},
             json={
                 'expected_check_version': check['version'],
                 'expected_check_fingerprint': check['fingerprint'],
@@ -843,6 +866,7 @@ def test_table_scope_blocks_existing_and_new_diners_until_yes(
         paid_again = client.post(
             f"/restaurant-checks/{second_check['id']}/payments",
             headers={**staff, 'Idempotency-Key': 'whole-table-cash-cycle-2'},
+            params={'location_id': scope.location_id},
             json={
                 'expected_check_version': second_check['version'],
                 'expected_check_fingerprint': second_check['fingerprint'],
@@ -951,6 +975,7 @@ def test_mixed_scope_no_closes_only_exact_independent_candidates(
         payment = client.post(
             f"/restaurant-checks/{check['id']}/payments",
             headers={**staff, 'Idempotency-Key': 'ws25-mixed-cash'},
+            params={'location_id': scope.location_id},
             json={
                 'expected_check_version': check['version'],
                 'expected_check_fingerprint': check['fingerprint'],

@@ -297,9 +297,10 @@ def _error(exc: Exception) -> HTTPException:
 async def _initiate(
     *, db: AsyncSession, execution: ExecutionContext, check_id: int,
     payload: PaymentInitiationRequest, idempotency_key: str,
+    location_id: int | None = None,
 ) -> tuple[object, bool]:
     return await service.initiate_payment(
-        db, context=execution, check_id=check_id,
+        db, context=execution, check_id=check_id, location_id=location_id,
         expected_check_version=payload.expected_check_version,
         expected_check_fingerprint=payload.expected_check_fingerprint,
         amount=payload.amount, currency=payload.currency,
@@ -496,13 +497,18 @@ async def diner_recover_payment(
 @router.post('/restaurant-checks/{check_id}/payments', response_model=PaymentResponse, status_code=status.HTTP_201_CREATED)
 async def staff_initiate_payment(
     check_id: int, payload: PaymentInitiationRequest, response: Response,
-    context: Annotated[AuthenticatedContext, Depends(require_permission('restaurant_payment.manage'))],
+    location_id: Annotated[int, Query(gt=0)],
+    context: Annotated[
+        AuthenticatedContext,
+        Depends(require_location_permission('restaurant_payment.manage')),
+    ],
     db: Annotated[AsyncSession, Depends(get_db)], idempotency_key: IdempotencyKey,
 ) -> object:
     try:
         value, replayed = await _initiate(
             db=db, execution=_staff_execution(context), check_id=check_id,
             payload=payload, idempotency_key=idempotency_key,
+            location_id=location_id,
         )
     except Exception as exc:
         raise _error(exc) from exc

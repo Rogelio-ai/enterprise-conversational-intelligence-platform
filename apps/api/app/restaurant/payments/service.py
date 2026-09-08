@@ -399,9 +399,7 @@ async def _cash_session_for_payment(
         session.organization_id != check.organization_id
         or session.location_id != check.location_id
     ):
-        raise errors.InvalidCashSessionError(
-            'CashSession does not belong to the Restaurant Check location'
-        )
+        raise errors.CashSessionNotFoundError()
     if session.status != 'OPEN':
         raise errors.InvalidCashSessionError('CashSession is not OPEN')
     if session.currency != currency:
@@ -946,6 +944,7 @@ async def _execute_claimed(
 
 async def initiate_payment(
     db: AsyncSession, *, context: ExecutionContext, check_id: int,
+    location_id: int | None = None,
     expected_check_version: int, expected_check_fingerprint: str,
     amount: Decimal, currency: str, method_category: str,
     payer_type: str, payer_diner_session_id: int | None,
@@ -957,6 +956,15 @@ async def initiate_payment(
     customer_payment_source: EphemeralCustomerPaymentSource | None,
     payment_customer_identity: PaymentCustomerIdentity | None,
 ) -> tuple[PaymentProjection, bool]:
+    if location_id is not None:
+        authorized_check_id = await db.scalar(select(RestaurantCheck.id).where(
+            RestaurantCheck.id == check_id,
+            RestaurantCheck.tenant_id == context.tenant_id,
+            RestaurantCheck.location_id == location_id,
+        ))
+        if authorized_check_id is None:
+            raise errors.PaymentNotFoundError()
+
     amount = _validate_amount(amount)
     currency = currency.strip().upper()
     method_category = method_category.strip().upper()
@@ -1014,10 +1022,16 @@ async def initiate_payment(
         return await _payment_projection(db, existing), True
 
     try:
-        check = await db.scalar(select(RestaurantCheck).where(
-            RestaurantCheck.id == check_id, RestaurantCheck.tenant_id == context.tenant_id,
-        ).with_for_update())
+        check_query = select(RestaurantCheck).where(
+            RestaurantCheck.id == check_id,
+            RestaurantCheck.tenant_id == context.tenant_id,
+        )
+        if location_id is not None:
+            check_query = check_query.where(RestaurantCheck.location_id == location_id)
+        check = await db.scalar(check_query.with_for_update())
         if check is None:
+            if location_id is not None:
+                raise errors.PaymentNotFoundError()
             raise errors.CheckNotPayableError('Restaurant Check was not found')
         replay = await _payment_by_key(db, context=context, idempotency_key=idempotency_key, lock=True)
         if replay is not None:

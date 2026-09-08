@@ -209,6 +209,7 @@ def test_concurrent_liability_reservation_never_exceeds_available(
             return client.post(
                 f"/restaurant-checks/{check['id']}/payments",
                 headers={**staff_headers, 'Idempotency-Key': key},
+                params={'location_id': scope.location_id},
                 json={
                     **_electronic_payload(check, '70', diner_id, CUSTOMER_SECRET),
                     'selection_mode': 'EXPLICIT',
@@ -1110,6 +1111,7 @@ def test_credential_failure_possible_provider_effect_and_cash_keep_safe_boundari
                 **_staff_headers(client, scope),
                 'Idempotency-Key': 'b5-cash-regression',
             },
+            params={'location_id': scope.location_id},
             json={
                 'expected_check_version': check['version'],
                 'expected_check_fingerprint': check['fingerprint'],
@@ -1124,6 +1126,7 @@ def test_credential_failure_possible_provider_effect_and_cash_keep_safe_boundari
         projection = client.get(
             f"/restaurant-checks/{check['id']}/settlement",
             headers=_staff_headers(client, scope),
+            params={'location_id': scope.location_id},
         )
 
     assert credential_failure.status_code == 201
