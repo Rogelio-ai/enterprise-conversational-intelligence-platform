@@ -71,6 +71,12 @@ def _scope(
     location_id = _execute(connection, "INSERT INTO locations (tenant_id,organization_id,code,name,timezone,country_code,status) VALUES (%s,%s,%s,'Location','America/Mexico_City','MX','ACTIVE')", (tenant_id, organization_id, f'LOC-{uuid4().hex[:12]}'))
     _execute(
         connection,
+        'INSERT INTO membership_location_grants (tenant_id,membership_id,location_id) '
+        'VALUES (%s,%s,%s)',
+        (tenant_id, membership_id, location_id),
+    )
+    _execute(
+        connection,
         "INSERT INTO restaurant_tax_rules (tenant_id,organization_id,location_id,"
         "tax_classification_code,jurisdiction_code,tax_category,tax_treatment,tax_rate,"
         "calculation_policy,rounding_policy,effective_from,effective_to,status) "

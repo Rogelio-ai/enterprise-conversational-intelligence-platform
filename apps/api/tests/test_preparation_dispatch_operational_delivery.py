@@ -507,6 +507,69 @@ def test_reprint_is_new_employee_operation_and_requires_dispatch_permission(
     ).status_code == 403
 
 
+def test_dispatch_reads_and_reprint_require_staff_location_grant(
+    client, sql_connection,
+):
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    headers, _, _, work_id, _, _, dispatch = _native_dispatch(
+        client, connection, scope,
+    )
+    assert client.get(
+        '/preparation-dispatches',
+        headers=headers,
+        params={'location_id': scope.location_id},
+    ).status_code == 200
+    assert client.get(
+        f"/preparation-dispatches/{dispatch['id']}", headers=headers,
+    ).status_code == 200
+    assert client.get(
+        f'/preparation-works/{work_id}/dispatches', headers=headers,
+    ).status_code == 200
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'DELETE FROM membership_location_grants WHERE location_id=%s',
+            (scope.location_id,),
+        )
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM preparation_dispatches WHERE tenant_id=%s',
+            (scope.tenant_id,),
+        )
+        dispatch_count = cursor.fetchone()['count']
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM preparation_dispatch_attempts WHERE tenant_id=%s',
+            (scope.tenant_id,),
+        )
+        attempt_count = cursor.fetchone()['count']
+
+    assert client.get(
+        '/preparation-dispatches',
+        headers=headers,
+        params={'location_id': scope.location_id},
+    ).status_code == 404
+    assert client.get(
+        f"/preparation-dispatches/{dispatch['id']}", headers=headers,
+    ).status_code == 404
+    assert client.get(
+        f'/preparation-works/{work_id}/dispatches', headers=headers,
+    ).status_code == 404
+    assert client.post(
+        f"/preparation-dispatches/{dispatch['id']}/reprints", headers=headers,
+    ).status_code == 404
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM preparation_dispatches WHERE tenant_id=%s',
+            (scope.tenant_id,),
+        )
+        assert cursor.fetchone()['count'] == dispatch_count
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM preparation_dispatch_attempts WHERE tenant_id=%s',
+            (scope.tenant_id,),
+        )
+        assert cursor.fetchone()['count'] == attempt_count
+
+
 def test_dispatch_reads_are_tenant_safe_and_diner_forbidden(client, sql_connection):
     connection, prefix = sql_connection
     scope_a = _scope(connection, f'{prefix}-a')
@@ -515,6 +578,10 @@ def test_dispatch_reads_are_tenant_safe_and_diner_forbidden(client, sql_connecti
     headers_b = _headers(client, scope_b)
     assert client.get(
         f"/preparation-dispatches/{dispatch['id']}", headers=headers_b,
+    ).status_code == 404
+    assert client.get(
+        '/preparation-dispatches', headers=headers_b,
+        params={'location_id': scope_a.location_id},
     ).status_code == 404
     listed = client.get('/preparation-dispatches', headers=headers_a, params={
         'location_id': scope_a.location_id, 'limit': 1,

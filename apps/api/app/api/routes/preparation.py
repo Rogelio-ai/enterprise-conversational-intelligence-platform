@@ -11,7 +11,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedContext, get_db, require_permission
+from app.api.deps import (
+    AuthenticatedContext,
+    get_db,
+    require_location_permission,
+    require_permission,
+    require_staff_location_access,
+)
 from app.core.execution import ActorType, ExecutionContext
 from app.core.middleware import get_correlation_id
 from app.models import (
@@ -19,6 +25,8 @@ from app.models import (
     LocationPosConnection,
     LocationPreparationConfiguration,
     PreparationArea,
+    PreparationWork,
+    PreparationWorkItem,
     Product,
     ProductPreparationRoute,
     Resource,
@@ -46,6 +54,52 @@ async def _location(db: AsyncSession, tenant_id: int, location_id: int, *, lock:
     if value is None:
         raise _not_found('Location not found')
     return value
+
+
+async def _require_authorized_location(
+    db: AsyncSession,
+    context: AuthenticatedContext,
+    location_id: int,
+) -> None:
+    await require_staff_location_access(location_id=location_id, context=context, db=db)
+
+
+async def _work_location_id(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    work_id: int,
+) -> int:
+    location_id = await db.scalar(select(PreparationWork.location_id).where(
+        PreparationWork.id == work_id,
+        PreparationWork.tenant_id == tenant_id,
+    ))
+    if location_id is None:
+        raise _not_found('Preparation Work not found')
+    return location_id
+
+
+async def _item_location_id(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    item_id: int,
+) -> int:
+    location_id = await db.scalar(
+        select(PreparationWork.location_id)
+        .join(
+            PreparationWorkItem,
+            PreparationWorkItem.preparation_work_id == PreparationWork.id,
+        )
+        .where(
+            PreparationWorkItem.id == item_id,
+            PreparationWorkItem.tenant_id == tenant_id,
+            PreparationWork.tenant_id == tenant_id,
+        )
+    )
+    if location_id is None:
+        raise _not_found('Preparation Work Item not found')
+    return location_id
 
 
 class PreparationConfigurationRequest(BaseModel):
@@ -169,7 +223,10 @@ async def _resource(db: AsyncSession, tenant_id: int, location_id: int, resource
 
 @router.get('/preparation-areas', response_model=PreparationAreaList)
 async def list_areas(
-    context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.read'))],
+    context: Annotated[
+        AuthenticatedContext,
+        Depends(require_location_permission('preparation.read')),
+    ],
     db: Annotated[AsyncSession, Depends(get_db)],
     location_id: int = Query(gt=0),
 ) -> PreparationAreaList:
@@ -215,6 +272,7 @@ async def get_area(
     ))
     if value is None:
         raise _not_found('Preparation Area not found')
+    await _require_authorized_location(db, context, value.location_id)
     return value
 
 
@@ -504,7 +562,10 @@ class PreparationTransitionResultResponse(BaseModel):
 
 @router.get('/preparation-works', response_model=tuple[PreparationExecutionWorkResponse, ...])
 async def list_execution_work(
-    context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.read'))],
+    context: Annotated[
+        AuthenticatedContext,
+        Depends(require_location_permission('preparation.read')),
+    ],
     db: Annotated[AsyncSession, Depends(get_db)],
     location_id: int = Query(gt=0),
     preparation_area_id: int | None = Query(default=None, gt=0),
@@ -535,6 +596,10 @@ async def read_execution_work(
     context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.read'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> object:
+    location_id = await _work_location_id(
+        db, tenant_id=context.tenant_id, work_id=work_id,
+    )
+    await _require_authorized_location(db, context, location_id)
     try:
         return await service.get_preparation_work(db, tenant_id=context.tenant_id, work_id=work_id)
     except Exception as exc:
@@ -547,6 +612,10 @@ async def read_execution_item(
     context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.read'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> object:
+    location_id = await _item_location_id(
+        db, tenant_id=context.tenant_id, item_id=item_id,
+    )
+    await _require_authorized_location(db, context, location_id)
     try:
         return await service.get_preparation_work_item(
             db, tenant_id=context.tenant_id, item_id=item_id
@@ -571,6 +640,10 @@ async def transition_execution_item(
         Header(alias='Idempotency-Key', min_length=1, max_length=128, pattern=r'^[\x21-\x7e]+$'),
     ],
 ) -> object:
+    location_id = await _item_location_id(
+        db, tenant_id=context.tenant_id, item_id=item_id,
+    )
+    await _require_authorized_location(db, context, location_id)
     try:
         result = await service.transition_work_item(
             db,

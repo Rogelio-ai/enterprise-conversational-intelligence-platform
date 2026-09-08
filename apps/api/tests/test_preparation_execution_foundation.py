@@ -37,13 +37,19 @@ def _native_item(client, connection, scope, *, name='Burger'):
     return headers, order_id, area, work['id'], work['items'][0]['id']
 
 
-def _employee(client, connection, scope, *, execute=True, active=True):
+def _employee(client, connection, scope, *, read=True, execute=True, active=True):
     email = f'{uuid4().hex}@example.test'
     user_id = _execute(connection, "INSERT INTO users (email,password_hash,display_name,status) VALUES (%s,%s,'Recorder','ACTIVE')", (email, hash_password(PASSWORD)))
     membership_id = _execute(connection, "INSERT INTO tenant_memberships (tenant_id,user_id,status) VALUES (%s,%s,%s)", (scope.tenant_id, user_id, 'ACTIVE' if active else 'INACTIVE'))
     role_id = _execute(connection, "INSERT INTO roles (tenant_id,name,description,status) VALUES (%s,%s,'Preparation role','ACTIVE')", (scope.tenant_id, f'PREP_{uuid4().hex}'))
     _execute(connection, 'INSERT INTO membership_roles (tenant_id,membership_id,role_id) VALUES (%s,%s,%s)', (scope.tenant_id, membership_id, role_id))
-    codes = ['preparation.read'] + (['preparation.execute'] if execute else [])
+    _execute(
+        connection,
+        'INSERT INTO membership_location_grants (tenant_id,membership_id,location_id) '
+        'VALUES (%s,%s,%s)',
+        (scope.tenant_id, membership_id, scope.location_id),
+    )
+    codes = (['preparation.read'] if read else []) + (['preparation.execute'] if execute else [])
     for code in codes:
         with connection.cursor() as cursor:
             cursor.execute('SELECT id FROM permissions WHERE code=%s', (code,))
@@ -67,6 +73,82 @@ def _transition(client, headers, item_id, key, expected_state, expected_version,
             'to_state': to_state,
         },
     )
+
+
+def test_staff_location_grant_is_required_for_queue_detail_and_transition(
+    client, sql_connection,
+):
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    headers, _, area, work_id, item_id = _native_item(client, connection, scope)
+
+    assert client.get(
+        '/preparation-areas', headers=headers, params={'location_id': scope.location_id},
+    ).status_code == 200
+    assert client.get(
+        '/preparation-works', headers=headers, params={'location_id': scope.location_id},
+    ).status_code == 200
+    assert client.get(f'/preparation-areas/{area["id"]}', headers=headers).status_code == 200
+    assert client.get(f'/preparation-works/{work_id}', headers=headers).status_code == 200
+    assert client.get(f'/preparation-work-items/{item_id}', headers=headers).status_code == 200
+
+    foreign = _scope(connection, f'{prefix}-foreign')
+    foreign_headers = _headers(client, foreign)
+    assert client.get(
+        '/preparation-areas', headers=headers,
+        params={'location_id': foreign.location_id},
+    ).status_code == 404
+    assert client.get(
+        '/preparation-works', headers=headers,
+        params={'location_id': foreign.location_id},
+    ).status_code == 404
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'DELETE FROM membership_location_grants WHERE location_id=%s',
+            (scope.location_id,),
+        )
+
+    assert client.get(
+        '/preparation-areas', headers=headers, params={'location_id': scope.location_id},
+    ).status_code == 404
+    assert client.get(
+        '/preparation-works', headers=headers, params={'location_id': scope.location_id},
+    ).status_code == 404
+    assert client.get(f'/preparation-areas/{area["id"]}', headers=headers).status_code == 404
+    assert client.get(f'/preparation-works/{work_id}', headers=headers).status_code == 404
+    assert client.get(f'/preparation-work-items/{item_id}', headers=headers).status_code == 404
+    denied = _transition(client, headers, item_id, 'ungranted', 'NEW', 0, 'IN_PROGRESS')
+    assert denied.status_code == 404
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT execution_state,execution_version FROM preparation_work_items WHERE id=%s',
+            (item_id,),
+        )
+        assert cursor.fetchone() == {'execution_state': 'NEW', 'execution_version': 0}
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM preparation_item_transitions '
+            'WHERE preparation_work_item_id=%s',
+            (item_id,),
+        )
+        assert cursor.fetchone()['count'] == 0
+
+    _, grant_only_headers = _employee(
+        client, connection, scope, read=False, execute=False,
+    )
+    assert client.get(
+        '/preparation-areas',
+        headers=grant_only_headers,
+        params={'location_id': scope.location_id},
+    ).status_code == 403
+    assert client.get(
+        '/preparation-works',
+        headers=grant_only_headers,
+        params={'location_id': scope.location_id},
+    ).status_code == 403
+
+    assert client.get(f'/preparation-works/{work_id}', headers=foreign_headers).status_code == 404
+    assert client.get(f'/preparation-work-items/{item_id}', headers=foreign_headers).status_code == 404
 
 
 def test_item_lifecycle_history_actor_and_no_observation(client, sql_connection):

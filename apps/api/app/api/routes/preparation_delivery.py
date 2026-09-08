@@ -11,12 +11,19 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedContext, get_db, require_permission
+from app.api.deps import (
+    AuthenticatedContext,
+    get_db,
+    require_location_permission,
+    require_permission,
+    require_staff_location_access,
+)
 from app.core.execution import ActorType, ExecutionContext
 from app.core.middleware import get_correlation_id
 from app.models import (
     Location,
     PreparationArea,
+    PreparationDispatch,
     PreparationDeliveryConnector,
     PreparationDeliveryDestination,
     PreparationWork,
@@ -52,6 +59,29 @@ async def _location(db: AsyncSession, tenant_id: int, location_id: int) -> Locat
     if value is None:
         raise _not_found('Location not found')
     return value
+
+
+async def _require_authorized_location(
+    db: AsyncSession,
+    context: AuthenticatedContext,
+    location_id: int,
+) -> None:
+    await require_staff_location_access(location_id=location_id, context=context, db=db)
+
+
+async def _dispatch_location_id(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    dispatch_id: int,
+) -> int:
+    location_id = await db.scalar(select(PreparationDispatch.location_id).where(
+        PreparationDispatch.id == dispatch_id,
+        PreparationDispatch.tenant_id == tenant_id,
+    ))
+    if location_id is None:
+        raise _not_found('Preparation Dispatch not found')
+    return location_id
 
 
 def _normalize_code(value: str) -> str:
@@ -375,7 +405,10 @@ class DispatchResponse(BaseModel):
 
 @router.get('/preparation-dispatches', response_model=tuple[DispatchResponse, ...])
 async def list_dispatches(
-    context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.read'))],
+    context: Annotated[
+        AuthenticatedContext,
+        Depends(require_location_permission('preparation.read')),
+    ],
     db: Annotated[AsyncSession, Depends(get_db)],
     location_id: int = Query(gt=0),
     state: Literal['PENDING', 'IN_PROGRESS', 'DESTINATION_SUBMISSION_ACCEPTED', 'RETRYABLE_FAILURE', 'UNCERTAIN', 'ACTION_REQUIRED'] | None = None,
@@ -402,6 +435,10 @@ async def read_dispatch(
     context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.read'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> object:
+    location_id = await _dispatch_location_id(
+        db, tenant_id=context.tenant_id, dispatch_id=dispatch_id,
+    )
+    await _require_authorized_location(db, context, location_id)
     try:
         return await service.get_dispatch(db, tenant_id=context.tenant_id, dispatch_id=dispatch_id)
     except Exception as exc:
@@ -419,6 +456,7 @@ async def read_work_dispatches(
     ))
     if work is None:
         raise _not_found('Preparation Work not found')
+    await _require_authorized_location(db, context, work.location_id)
     return await service.list_dispatches(
         db, tenant_id=context.tenant_id, location_id=work.location_id, work_id=work.id,
         limit=200,
@@ -435,6 +473,10 @@ async def reprint_dispatch(
     context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.dispatch'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> object:
+    location_id = await _dispatch_location_id(
+        db, tenant_id=context.tenant_id, dispatch_id=dispatch_id,
+    )
+    await _require_authorized_location(db, context, location_id)
     execution = ExecutionContext(
         actor_type=ActorType.EMPLOYEE,
         tenant_id=context.tenant_id,
