@@ -29,6 +29,8 @@ from app.restaurant.intelligence.orchestration import (
     ConversationActionCommand,
     DinerOrchestrationContext,
     orchestrate_action,
+    response_message,
+    response_pending_context,
 )
 from app.restaurant.conversations import service as conversation_service
 from app.restaurant.orders.errors import ProductNotOrderableError
@@ -194,7 +196,7 @@ class ConversationActionRequest(BaseModel):
 
     modality: Literal['TEXT', 'VOICE', 'TOUCH']
     content_text: str = Field(min_length=1, max_length=10_000)
-    intent_code: RestaurantIntentCode
+    intent_code: RestaurantIntentCode | None = None
     operation: Literal['ADD', 'CONFIGURE', 'MODIFY', 'REMOVE'] | None = None
     reference_text: str | None = Field(default=None, min_length=1, max_length=200)
     product_id: int | None = Field(default=None, gt=0)
@@ -213,6 +215,7 @@ class ConversationActionRequest(BaseModel):
     payment_method: Literal['CASH', 'CARD', 'TRANSFER'] | None = None
     continuation_decision: Literal['YES', 'NO'] | None = None
     expected_check_version: int | None = Field(default=None, ge=1)
+    payment_id: int | None = Field(default=None, gt=0)
     language: str | None = Field(default=None, max_length=63)
     language_source: Literal['DECLARED', 'DETECTED', 'INHERITED'] | None = None
 
@@ -253,6 +256,9 @@ class ConversationActionResponse(BaseModel):
     experience: ExperienceResponse
     authoritative_data: Any = None
     replayed: bool = False
+    message: str
+    ui_action: str | None = None
+    pending_context: dict[str, Any] = Field(default_factory=dict)
 
 
 def _operational_experience(request_status: str) -> ExperienceResponse:
@@ -463,8 +469,9 @@ async def execute_conversation_action(
             correlation_id=get_correlation_id(),
         ),
         command=ConversationActionCommand(
-            intent_code=payload.intent_code,
+            intent_code=payload.intent_code or RestaurantIntentCode.UNKNOWN,
             idempotency_key=idempotency_key,
+            content_text=payload.content_text,
             operation=payload.operation,
             reference_text=payload.reference_text,
             product_id=payload.product_id,
@@ -481,9 +488,12 @@ async def execute_conversation_action(
             payment_method=payload.payment_method,
             continuation_decision=payload.continuation_decision,
             expected_check_version=payload.expected_check_version,
+            payment_id=payload.payment_id,
             language=payload.language,
         ),
     )
+    message = response_message(result)
+    pending_context = response_pending_context(result)
     waiter_id = await db.scalar(
         select(ConversationParticipant.id).where(
             ConversationParticipant.tenant_id == context.tenant_id,
@@ -496,7 +506,7 @@ async def execute_conversation_action(
             status.HTTP_409_CONFLICT,
             {'state': 'ACTION_BLOCKED', 'code': 'DIGITAL_WAITER_PARTICIPANT_MISSING'},
         )
-    response_message = await conversation_service.append_message(
+    waiter_message = await conversation_service.append_message(
         db,
         tenant_id=context.tenant_id,
         conversation_id=context.conversation_id,
@@ -507,6 +517,9 @@ async def execute_conversation_action(
                 'state': result.experience.state.value,
                 'code': result.experience.code,
                 'next_action': result.experience.next_action,
+                'intent_code': result.intent_code.value,
+                'message': message,
+                'pending_context': pending_context,
             },
             sort_keys=True,
             separators=(',', ':'),
@@ -517,10 +530,13 @@ async def execute_conversation_action(
     return ConversationActionResponse(
         source_message=source_reference,
         response_message=ConversationMessageReference.model_validate(
-            response_message, from_attributes=True
+            waiter_message, from_attributes=True
         ),
-        intent_code=payload.intent_code,
+        intent_code=result.intent_code,
         experience=ExperienceResponse.model_validate(result.experience, from_attributes=True),
         authoritative_data=result.authoritative_data,
         replayed=result.replayed,
+        message=message,
+        ui_action=result.experience.next_action,
+        pending_context=pending_context,
     )

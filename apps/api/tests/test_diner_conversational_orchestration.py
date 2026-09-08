@@ -3,6 +3,10 @@ from __future__ import annotations
 from decimal import Decimal
 
 from app.main import create_app
+from app.restaurant.integrations.payments.contracts import (
+    PaymentExecutionOutcome,
+    PaymentRecoveryOutcome,
+)
 from app.restaurant.integrations.payments.mock import DeterministicPaymentExecutor
 from fastapi.testclient import TestClient
 from test_canonical_order_commercial_acceptance import (
@@ -27,6 +31,14 @@ def _action(client, headers, key: str, intent: str, **values):
             'intent_code': intent,
             **values,
         },
+    )
+
+
+def _natural(client, headers, key: str, content_text: str, **values):
+    return client.post(
+        '/diner/conversation/actions',
+        headers={**headers, 'Idempotency-Key': key},
+        json={'modality': 'TEXT', 'content_text': content_text, **values},
     )
 
 
@@ -72,6 +84,53 @@ def test_menu_and_ambiguous_product_use_b1_and_do_not_mutate_draft(
             assert [row['participant_type'] for row in cursor.fetchall()] == [
                 'CUSTOMER', 'DIGITAL_WAITER', 'CUSTOMER', 'DIGITAL_WAITER'
             ]
+
+
+def test_natural_menu_and_configuration_follow_up_reuse_bounded_transcript_context(
+    integration_settings, sql_connection
+):
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    with TestClient(create_app(settings=integration_settings)) as client:
+        _, headers = _open_and_join(client, scope)
+        product_id, _, _ = _configured_product(connection, scope)
+
+        menu = _natural(client, headers, 'natural-menu', 'Quiero ver el menú')
+        assert menu.status_code == 200, menu.text
+        assert menu.json()['intent_code'] == 'MENU_QUERY'
+        assert menu.json()['experience']['state'] == 'OK'
+
+        added = _action(
+            client,
+            headers,
+            'natural-config-add',
+            'ORDER_EXPRESSION',
+            operation='ADD',
+            product_id=product_id,
+            quantity='1',
+            expected_draft_version=1,
+        )
+        assert added.status_code == 200, added.text
+        assert added.json()['ui_action'] == 'CONFIGURE_ITEM'
+        assert added.json()['pending_context']['draft_item_id'] > 0
+        assert added.json()['pending_context']['choice_group_id'] > 0
+
+        configured = _natural(client, headers, 'natural-config-choice', 'Coffee')
+        assert configured.status_code == 200, configured.text
+        assert configured.json()['intent_code'] == 'ORDER_EXPRESSION'
+        assert configured.json()['authoritative_data']['readiness'] == 'READY'
+
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT content_text FROM conversation_messages '
+                'WHERE conversation_id=(SELECT conversation_id FROM diner_sessions '
+                'WHERE tenant_id=%s LIMIT 1) ORDER BY sequence_number',
+                (scope.tenant_id,),
+            )
+            transcript = '\n'.join(row['content_text'] for row in cursor.fetchall())
+        assert 'natural-config-choice' not in transcript
+        assert 'payment_source' not in transcript.casefold()
+        assert 'merchant_credential' not in transcript.casefold()
 
 
 def test_add_configure_review_confirm_account_and_replay_use_authoritative_domains(
@@ -287,19 +346,16 @@ def test_payment_scope_cash_assistance_human_unknown_and_paid_print_boundaries(
             check_id=check['id'],
         )
         assert continued_required.json()['experience']['state'] == 'CONTINUATION_REQUIRED'
-        continued = _action(
+        continued = _natural(
             client,
             headers,
             'continuation-yes',
-            'SERVICE_CONTINUATION',
-            check_id=check['id'],
-            continuation_decision='YES',
-            expected_check_version=check['version'],
+            'Sí, queremos algo más',
         )
         assert continued.status_code == 200, continued.text
         assert continued.json()['authoritative_data']['continuation_decision'] == 'YES'
 
-        unknown = _action(client, headers, 'unknown-1', 'UNKNOWN')
+        unknown = _natural(client, headers, 'unknown-1', 'Sí')
         assert unknown.json()['experience']['state'] == 'CLARIFICATION_REQUIRED'
         with connection.cursor() as cursor:
             cursor.execute(
@@ -318,3 +374,109 @@ def test_payment_scope_cash_assistance_human_unknown_and_paid_print_boundaries(
                 (scope.tenant_id,),
             )
             assert cursor.fetchone()['count'] == 0
+
+
+def test_card_handoff_and_conversational_recovery_preserve_payment_authority(
+    integration_settings, sql_connection
+):
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    _grant(connection, scope.tenant_id)
+    executor = DeterministicPaymentExecutor(
+        execution_outcomes=(PaymentExecutionOutcome.UNCERTAIN,),
+        recovery_outcomes=(PaymentRecoveryOutcome.CONFIRMED_SUCCESS,),
+    )
+    with TestClient(
+        create_app(settings=integration_settings, payment_executors={'deterministic': executor})
+    ) as client:
+        _, headers = _open_and_join(client, scope)
+        diner_id = client.get('/diner-session', headers=headers).json()['id']
+        product_id = _product(connection, scope, amount='100')
+        added = _action(
+            client,
+            headers,
+            'recovery-add',
+            'ORDER_EXPRESSION',
+            operation='ADD',
+            product_id=product_id,
+            quantity='1',
+            expected_draft_version=1,
+        ).json()['authoritative_data']
+        preview = _action(client, headers, 'recovery-review', 'DRAFT_REVIEW').json()[
+            'authoritative_data'
+        ]
+        confirmed = _action(
+            client,
+            headers,
+            'recovery-confirm',
+            'ORDER_CONFIRMATION',
+            expected_draft_version=added['version'],
+            expected_commercial_fingerprint=preview['commercial_fingerprint'],
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        check = _action(
+            client,
+            headers,
+            'recovery-check',
+            'PAYMENT_REQUEST',
+            check_scope='INDIVIDUAL',
+        ).json()['authoritative_data']
+
+        card = _natural(
+            client,
+            headers,
+            'card-handoff',
+            'Voy a pagar con tarjeta',
+            check_id=check['id'],
+        )
+        assert card.status_code == 200, card.text
+        assert card.json()['ui_action'] == 'OPEN_SECURE_PAYMENT_SOURCE'
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT COUNT(*) AS count FROM restaurant_payments WHERE tenant_id=%s',
+                (scope.tenant_id,),
+            )
+            assert cursor.fetchone()['count'] == 0
+
+        created = client.post(
+            f"/diner/restaurant-checks/{check['id']}/payments",
+            headers={**headers, 'Idempotency-Key': 'uncertain-payment'},
+            json=_electronic_payload(check, '100', diner_id),
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()['state'] == 'UNCERTAIN'
+        payment_id = created.json()['id']
+
+        status = _natural(
+            client,
+            headers,
+            'natural-payment-status',
+            '¿Qué pasó con mi pago?',
+            check_id=check['id'],
+        )
+        assert status.status_code == 200, status.text
+        assert status.json()['experience']['state'] == 'PAYMENT_UNCERTAIN'
+        assert status.json()['pending_context']['payment_id'] == payment_id
+        assert 'No realices otro pago' in status.json()['message']
+
+        recovered = _natural(client, headers, 'natural-payment-recovery', 'Consulta el pago')
+        assert recovered.status_code == 200, recovered.text
+        assert recovered.json()['intent_code'] == 'PAYMENT_RECOVERY'
+        assert recovered.json()['authoritative_data']['payment']['state'] == 'SUCCEEDED'
+        assert executor.recovery_calls == 1
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT COUNT(*) AS count FROM restaurant_payments WHERE tenant_id=%s',
+                (scope.tenant_id,),
+            )
+            assert cursor.fetchone()['count'] == 1
+
+        invoice = _natural(
+            client,
+            headers,
+            'natural-invoice',
+            'Quiero factura',
+            check_id=check['id'],
+        )
+        assert invoice.status_code == 200, invoice.text
+        assert invoice.json()['authoritative_data']['request_type'] == 'INVOICE_ASSISTANCE'

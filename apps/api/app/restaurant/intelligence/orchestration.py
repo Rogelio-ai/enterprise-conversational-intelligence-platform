@@ -1,12 +1,17 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import json
+import re
+import unicodedata
+from dataclasses import dataclass, replace
 from decimal import Decimal
 from typing import Literal
 
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.execution import ActorType, ExecutionContext
+from app.models import ConversationMessage, ConversationParticipant
 from app.restaurant.catalog.resolution import resolve_choice, resolve_product
 from app.restaurant.catalog.resolution_contracts import (
     ChoiceResolutionRequest,
@@ -53,6 +58,7 @@ class DinerOrchestrationContext:
 class ConversationActionCommand:
     intent_code: RestaurantIntentCode
     idempotency_key: str
+    content_text: str = ''
     operation: DraftOperation | None = None
     reference_text: str | None = None
     product_id: int | None = None
@@ -69,6 +75,7 @@ class ConversationActionCommand:
     payment_method: str | None = None
     continuation_decision: str | None = None
     expected_check_version: int | None = None
+    payment_id: int | None = None
     language: str | None = None
 
 
@@ -78,6 +85,261 @@ class OrchestrationResult:
     experience: ExperienceGuidance
     authoritative_data: object | None = None
     replayed: bool = False
+
+
+def _normalized_text(value: str) -> str:
+    decomposed = unicodedata.normalize('NFKD', value.casefold())
+    plain = ''.join(character for character in decomposed if not unicodedata.combining(character))
+    return ' '.join(re.sub(r'[^a-z0-9]+', ' ', plain).split())
+
+
+async def _latest_waiter_context(
+    db: AsyncSession, context: DinerOrchestrationContext
+) -> dict[str, object]:
+    content = await db.scalar(
+        select(ConversationMessage.content_text)
+        .join(
+            ConversationParticipant,
+            (ConversationParticipant.id == ConversationMessage.participant_id)
+            & (ConversationParticipant.tenant_id == ConversationMessage.tenant_id)
+            & (ConversationParticipant.conversation_id == ConversationMessage.conversation_id),
+        )
+        .where(
+            ConversationMessage.tenant_id == context.tenant_id,
+            ConversationMessage.conversation_id == context.conversation_id,
+            ConversationParticipant.participant_type == 'DIGITAL_WAITER',
+        )
+        .order_by(ConversationMessage.sequence_number.desc())
+        .limit(1)
+    )
+    if not content:
+        return {}
+    try:
+        value = json.loads(content)
+    except (TypeError, ValueError):
+        return {}
+    return value if isinstance(value, dict) else {}
+
+
+def _decision(text: str) -> Literal['YES', 'NO'] | None:
+    if text in {'si', 'si queremos algo mas', 'queremos algo mas', 'seguimos', 'continuar'}:
+        return 'YES'
+    if text in {'no', 'no ya terminamos', 'ya terminamos', 'eso es todo', 'terminar'}:
+        return 'NO'
+    return None
+
+
+async def _interpret_pending_or_text(
+    db: AsyncSession,
+    context: DinerOrchestrationContext,
+    command: ConversationActionCommand,
+) -> ConversationActionCommand:
+    if command.intent_code is not RestaurantIntentCode.UNKNOWN:
+        return command
+    text = _normalized_text(command.content_text)
+    previous = await _latest_waiter_context(db, context)
+    pending = previous.get('pending_context')
+    pending = pending if isinstance(pending, dict) else {}
+    next_action = previous.get('next_action')
+    code = previous.get('code')
+    decision = _decision(text)
+    if decision is not None and next_action == 'SERVICE_CONTINUATION':
+        check_id = pending.get('check_id')
+        check_version = pending.get('check_version')
+        if isinstance(check_id, int) and isinstance(check_version, int):
+            return replace(
+                command,
+                intent_code=RestaurantIntentCode.SERVICE_CONTINUATION,
+                check_id=check_id,
+                expected_check_version=check_version,
+                continuation_decision=decision,
+            )
+    if decision == 'YES' and next_action == 'CONFIRM_ORDER':
+        version = pending.get('draft_version')
+        fingerprint = pending.get('commercial_fingerprint')
+        if isinstance(version, int) and isinstance(fingerprint, str):
+            return replace(
+                command,
+                intent_code=RestaurantIntentCode.ORDER_CONFIRMATION,
+                expected_draft_version=version,
+                expected_commercial_fingerprint=fingerprint,
+            )
+    if next_action == 'CONFIGURE_ITEM':
+        item_id = pending.get('draft_item_id')
+        group_id = pending.get('choice_group_id')
+        version = pending.get('draft_version')
+        if all(isinstance(value, int) for value in (item_id, group_id, version)):
+            return replace(
+                command,
+                intent_code=RestaurantIntentCode.ORDER_EXPRESSION,
+                operation='CONFIGURE',
+                draft_item_id=item_id,
+                choice_group_id=group_id,
+                choice_reference_text=command.content_text.strip(),
+                expected_draft_version=version,
+            )
+    if code == 'PAYMENT_SCOPE_REQUIRED':
+        if any(value in text for value in ('mi consumo', 'solo yo', 'individual')):
+            return replace(
+                command,
+                intent_code=RestaurantIntentCode.PAYMENT_REQUEST,
+                check_scope='INDIVIDUAL',
+            )
+        if any(value in text for value in ('toda la mesa', 'cuenta completa', 'global')):
+            return replace(
+                command,
+                intent_code=RestaurantIntentCode.PAYMENT_REQUEST,
+                check_scope='GLOBAL_TABLE',
+            )
+    pending_check_id = pending.get('check_id')
+    check_id = command.check_id
+    if check_id is None and isinstance(pending_check_id, int):
+        check_id = pending_check_id
+    if code == 'PAYMENT_METHOD_REQUIRED':
+        if 'efectivo' in text:
+            return replace(
+                command,
+                intent_code=RestaurantIntentCode.PAYMENT_REQUEST,
+                check_id=check_id,
+                payment_method='CASH',
+            )
+        if 'tarjeta' in text:
+            return replace(
+                command,
+                intent_code=RestaurantIntentCode.PAYMENT_REQUEST,
+                check_id=check_id,
+                payment_method='CARD',
+            )
+    if 'factura' in text:
+        return replace(command, intent_code=RestaurantIntentCode.INVOICE_REQUEST, check_id=check_id)
+    if 'impres' in text and ('cuenta' in text or 'ticket' in text):
+        return replace(command, intent_code=RestaurantIntentCode.PAID_PRINT_REQUEST, check_id=check_id)
+    if any(
+        value in text
+        for value in ('necesito ayuda', 'necesito un mesero', 'hablar con alguien')
+    ):
+        return replace(command, intent_code=RestaurantIntentCode.HUMAN_ASSISTANCE_REQUEST)
+    if any(
+        value in text
+        for value in (
+            'que paso con mi pago',
+            'ya paso mi pago',
+            'me cobraron',
+            'estado de mi pago',
+        )
+    ):
+        return replace(
+            command,
+            intent_code=RestaurantIntentCode.PAYMENT_STATUS_QUERY,
+            check_id=check_id,
+        )
+    if any(value in text for value in ('consulta el pago', 'revisa otra vez', 'verifica el pago')):
+        pending_payment_id = pending.get('payment_id')
+        payment_id = command.payment_id
+        if payment_id is None and isinstance(pending_payment_id, int):
+            payment_id = pending_payment_id
+        return replace(
+            command,
+            intent_code=RestaurantIntentCode.PAYMENT_RECOVERY,
+            check_id=check_id,
+            payment_id=payment_id,
+        )
+    if any(value in text for value in ('ver mi cuenta', 'cuanto llevo', 'cuanto debo')):
+        return replace(command, intent_code=RestaurantIntentCode.ACCOUNT_QUERY)
+    if any(value in text for value in ('ver mi pedido', 'que he pedido', 'como va mi pedido')):
+        return replace(command, intent_code=RestaurantIntentCode.ORDER_STATUS_QUERY)
+    words = set(text.split())
+    if (
+        'menu' in text
+        or text.startswith('que tienes')
+        or text.startswith('ensename')
+        or {'que', 'tienes'} <= words
+    ):
+        return replace(
+            command,
+            intent_code=RestaurantIntentCode.MENU_QUERY,
+            reference_text=command.content_text.strip(),
+        )
+    if 'pagar en efectivo' in text:
+        return replace(
+            command,
+            intent_code=RestaurantIntentCode.PAYMENT_REQUEST,
+            check_id=check_id,
+            payment_method='CASH',
+        )
+    if 'pagar con tarjeta' in text or 'pago con tarjeta' in text:
+        return replace(
+            command,
+            intent_code=RestaurantIntentCode.PAYMENT_REQUEST,
+            check_id=check_id,
+            payment_method='CARD',
+        )
+    if any(value in text for value in ('quiero pagar', 'preparame la cuenta')):
+        return replace(command, intent_code=RestaurantIntentCode.PAYMENT_REQUEST)
+    return command
+
+
+def response_message(result: OrchestrationResult) -> str:
+    state = result.experience.state
+    if state is ExperienceState.CLARIFICATION_REQUIRED:
+        return 'Necesito una precisión antes de continuar.'
+    if state is ExperienceState.CONFIGURATION_REQUIRED:
+        return 'Falta completar una opción requerida del producto.'
+    if state is ExperienceState.PRODUCT_UNAVAILABLE:
+        return 'No encontré ese producto disponible en el menú actual.'
+    if state is ExperienceState.PAYMENT_UNCERTAIN:
+        return 'Estamos confirmando el resultado de tu pago. No realices otro pago por ahora.'
+    if state is ExperienceState.STAFF_ASSISTANCE_REQUIRED:
+        return 'Tu solicitud fue registrada para el equipo del restaurante.'
+    if state is ExperienceState.CONTINUATION_REQUIRED:
+        return 'Tu cuenta está liquidada. ¿Desean algo más?'
+    if state is ExperienceState.ACTION_BLOCKED:
+        return 'El estado actual no permite completar esa acción.'
+    if state is ExperienceState.SESSION_CLOSED:
+        return 'Esta sesión ya terminó.'
+    return 'Listo. El restaurante confirmó la información mostrada.'
+
+
+def response_pending_context(result: OrchestrationResult) -> dict[str, object]:
+    data = result.authoritative_data
+    context: dict[str, object] = {}
+    if isinstance(data, dict):
+        for name in ('check_id', 'payment_id', 'draft_version', 'commercial_fingerprint'):
+            value = data.get(name)
+            if isinstance(value, (int, str)):
+                context[name] = value
+        nested = data.get('settlement')
+        if nested is not None:
+            data = nested
+    for attribute, name in (
+        ('check_id', 'check_id'), ('id', 'check_id'), ('version', 'check_version'),
+        ('draft_version', 'draft_version'), ('commercial_fingerprint', 'commercial_fingerprint'),
+    ):
+        value = getattr(data, attribute, None)
+        if isinstance(value, (int, str)):
+            context.setdefault(name, value)
+    payments = () if isinstance(data, dict) else getattr(data, 'payments', ())
+    unresolved = [
+        value
+        for value in payments
+        if getattr(value, 'state', None) in {'RESERVED', 'IN_PROGRESS', 'UNCERTAIN'}
+    ]
+    if unresolved:
+        context['payment_id'] = unresolved[-1].id
+    items = () if isinstance(data, dict) else getattr(data, 'items', ())
+    missing = [
+        (item, group)
+        for item in items
+        for group in getattr(item, 'missing_choice_groups', ())
+    ]
+    if len(missing) == 1:
+        item, group = missing[0]
+        context.update(
+            draft_item_id=item.item_id,
+            choice_group_id=group.group_id,
+            draft_version=getattr(data, 'version', context.get('draft_version')),
+        )
+    return context
 
 
 def _clarification(
@@ -407,7 +669,9 @@ async def _handoff(
         service_session_id=context.service_session_id,
         diner_session_id=context.diner_session_id,
         request_type=request_type,
-        related_restaurant_check_id=command.check_id,
+        related_restaurant_check_id=(
+            None if request_type == 'HUMAN_ASSISTANCE' else command.check_id
+        ),
         idempotency_key=command.idempotency_key,
         correlation_id=context.correlation_id,
     )
@@ -425,6 +689,7 @@ async def orchestrate_action(
     context: DinerOrchestrationContext,
     command: ConversationActionCommand,
 ) -> OrchestrationResult:
+    command = await _interpret_pending_or_text(db, context, command)
     intent = command.intent_code
     try:
         if intent is RestaurantIntentCode.MENU_QUERY:
@@ -476,10 +741,24 @@ async def orchestrate_action(
             )
         if intent is RestaurantIntentCode.ORDER_CONFIRMATION:
             if command.expected_draft_version is None or not command.expected_commercial_fingerprint:
+                preview = None
+                try:
+                    draft = await _draft(db, context, create=False)
+                    if str(draft.readiness) == 'READY':
+                        preview = await commercial_service.resolve_checkout_preview(
+                            db,
+                            tenant_id=context.tenant_id,
+                            draft_id=draft.draft_id,
+                            correlation_id=context.correlation_id,
+                            **_owner(context),
+                        )
+                except draft_errors.DraftNotFoundError:
+                    pass
                 return _clarification(
                     'CONFIRMATION_EVIDENCE_REQUIRED',
                     required_input=('EXPECTED_DRAFT_VERSION', 'COMMERCIAL_FINGERPRINT'),
                     allowed_actions=('REVIEW_DRAFT',),
+                    data=preview,
                 )
             value = await acceptance.confirm_current_order(
                 db,
@@ -512,6 +791,25 @@ async def orchestrate_action(
                 diner_session_id=context.diner_session_id,
             )
             return _result(intent, states.ok('REQUEST_PAYMENT', 'VIEW_ORDER'), value)
+        if intent is RestaurantIntentCode.CHECK_QUERY:
+            if command.check_id is None:
+                return _clarification(
+                    'RESTAURANT_CHECK_REQUIRED',
+                    required_input=('CHECK_ID',),
+                    allowed_actions=('VIEW_ACCOUNT',),
+                )
+            value = await check_service.get_check(
+                db,
+                tenant_id=context.tenant_id,
+                check_id=command.check_id,
+                owner_diner_session_id=context.diner_session_id,
+            )
+            guidance = (
+                states.from_domain_condition(value.signal)
+                if value.signal
+                else states.ok('PAYMENT_STATUS')
+            )
+            return _result(intent, guidance, value)
         if intent is RestaurantIntentCode.PAYMENT_REQUEST:
             if command.payment_method == 'CASH':
                 if command.check_id is None:
@@ -521,6 +819,8 @@ async def orchestrate_action(
                         allowed_actions=('REQUEST_PAYMENT',),
                     )
                 return await _handoff(db, context, command, 'CASH_PAYMENT_ASSISTANCE')
+            if command.payment_method == 'TRANSFER':
+                return _blocked(intent, 'PAYMENT_METHOD_NOT_SUPPORTED')
             if command.check_id is not None:
                 value = await payment_service.get_check_settlement(
                     db,
@@ -528,9 +828,26 @@ async def orchestrate_action(
                     check_id=command.check_id,
                     owner_diner_session_id=context.diner_session_id,
                 )
+                if command.payment_method is None:
+                    return _clarification(
+                        'PAYMENT_METHOD_REQUIRED',
+                        required_input=('PAYMENT_METHOD',),
+                        allowed_actions=('CARD', 'CASH'),
+                        data={'check_id': command.check_id, 'settlement': value},
+                    )
+                if command.payment_method == 'CARD':
+                    return _result(
+                        intent,
+                        states.ok(
+                            'OPEN_SECURE_PAYMENT_SOURCE',
+                            'PAYMENT_STATUS',
+                            next_action='OPEN_SECURE_PAYMENT_SOURCE',
+                        ),
+                        value,
+                    )
                 return _result(
                     intent,
-                    states.ok('INITIATE_PAYMENT', 'PAYMENT_STATUS'),
+                    states.ok('SELECT_PAYMENT_METHOD', 'PAYMENT_STATUS'),
                     value,
                 )
             return await _create_check(db, context, command)
@@ -553,6 +870,49 @@ async def orchestrate_action(
                 else states.ok('VIEW_ACCOUNT', 'SERVICE_CONTINUATION')
             )
             return _result(intent, guidance, value)
+        if intent is RestaurantIntentCode.PAYMENT_RECOVERY:
+            if command.check_id is None or command.payment_id is None:
+                return _clarification(
+                    'PAYMENT_REFERENCE_REQUIRED',
+                    required_input=('CHECK_ID', 'PAYMENT_ID'),
+                    allowed_actions=('PAYMENT_STATUS',),
+                )
+            settlement = await payment_service.get_check_settlement(
+                db,
+                tenant_id=context.tenant_id,
+                check_id=command.check_id,
+                owner_diner_session_id=context.diner_session_id,
+            )
+            if not any(value.id == command.payment_id for value in settlement.payments):
+                raise payment_errors.PaymentNotFoundError()
+            value = await payment_service.recover_payment(
+                db,
+                context=_execution(context),
+                payment_id=command.payment_id,
+                executor_registry=db.info['payment_executor_registry'],
+                credential_resolver=db.info.get('merchant_credential_resolver'),
+            )
+            settlement = await payment_service.get_check_settlement(
+                db,
+                tenant_id=context.tenant_id,
+                check_id=command.check_id,
+                owner_diner_session_id=context.diner_session_id,
+            )
+            guidance = (
+                states.from_domain_condition('UNCERTAIN')
+                if value.state == 'UNCERTAIN'
+                else states.ok('VIEW_PAYMENT_STATUS', 'SERVICE_CONTINUATION')
+            )
+            return _result(
+                intent,
+                guidance,
+                {
+                    'check_id': command.check_id,
+                    'payment_id': command.payment_id,
+                    'payment': value,
+                    'settlement': settlement,
+                },
+            )
         if intent is RestaurantIntentCode.INVOICE_REQUEST:
             if command.check_id is None:
                 return _clarification(
