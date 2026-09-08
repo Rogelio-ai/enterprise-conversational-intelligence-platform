@@ -246,8 +246,25 @@ async def _interpret_pending_or_text(
         )
     if any(value in text for value in ('ver mi cuenta', 'cuanto llevo', 'cuanto debo')):
         return replace(command, intent_code=RestaurantIntentCode.ACCOUNT_QUERY)
-    if any(value in text for value in ('ver mi pedido', 'que he pedido', 'como va mi pedido')):
+    if any(
+        value in text
+        for value in (
+            'como va mi pedido',
+            'estado de mi pedido',
+            'ya salio mi pedido',
+            'ya esta listo mi pedido',
+        )
+    ):
         return replace(command, intent_code=RestaurantIntentCode.ORDER_STATUS_QUERY)
+    if any(
+        value in text
+        for value in ('quiero ver mi pedido', 'muestrame mi pedido', 'que llevo', 'que he pedido')
+    ):
+        try:
+            await _draft(db, context, create=False)
+        except draft_errors.DraftNotFoundError:
+            return command
+        return replace(command, intent_code=RestaurantIntentCode.DRAFT_REVIEW)
     words = set(text.split())
     if (
         'menu' in text

@@ -241,6 +241,71 @@ def test_add_configure_review_confirm_account_and_replay_use_authoritative_domai
             assert cursor.fetchone()['count'] == 0
 
 
+def test_natural_draft_review_and_explicit_order_status_keep_distinct_authority(
+    integration_settings, sql_connection
+):
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    with TestClient(create_app(settings=integration_settings)) as client:
+        _, headers = _open_and_join(client, scope)
+        product_id = _product(connection, scope, name='Tacos', amount='100')
+
+        added = _action(
+            client,
+            headers,
+            'phrase-routing-add',
+            'ORDER_EXPRESSION',
+            operation='ADD',
+            product_id=product_id,
+            quantity='1',
+            expected_draft_version=1,
+        )
+        assert added.status_code == 200, added.text
+
+        draft_review = _natural(
+            client, headers, 'phrase-routing-draft', 'Quiero ver mi pedido'
+        )
+        assert draft_review.status_code == 200, draft_review.text
+        assert draft_review.json()['intent_code'] == 'DRAFT_REVIEW'
+        preview = draft_review.json()['authoritative_data']
+        assert preview['draft_id'] == added.json()['authoritative_data']['draft_id']
+
+        confirmed = _action(
+            client,
+            headers,
+            'phrase-routing-confirm',
+            'ORDER_CONFIRMATION',
+            expected_draft_version=preview['draft_version'],
+            expected_commercial_fingerprint=preview['commercial_fingerprint'],
+        )
+        assert confirmed.status_code == 200, confirmed.text
+        order_id = confirmed.json()['authoritative_data']['id']
+
+        order_status = _natural(
+            client, headers, 'phrase-routing-status', 'Cómo va mi pedido'
+        )
+        assert order_status.status_code == 200, order_status.text
+        assert order_status.json()['intent_code'] == 'ORDER_STATUS_QUERY'
+        assert [order['id'] for order in order_status.json()['authoritative_data']] == [order_id]
+
+        ambiguous_without_draft = _natural(
+            client, headers, 'phrase-routing-ambiguous', 'Quiero ver mi pedido'
+        )
+        assert ambiguous_without_draft.status_code == 200, ambiguous_without_draft.text
+        assert ambiguous_without_draft.json()['experience']['state'] == 'CLARIFICATION_REQUIRED'
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT COUNT(*) AS count FROM restaurant_orders WHERE tenant_id=%s',
+                (scope.tenant_id,),
+            )
+            assert cursor.fetchone()['count'] == 1
+            cursor.execute(
+                'SELECT COUNT(*) AS count FROM order_draft_items WHERE tenant_id=%s',
+                (scope.tenant_id,),
+            )
+            assert cursor.fetchone()['count'] == 1
+
+
 def test_payment_scope_cash_assistance_human_unknown_and_paid_print_boundaries(
     integration_settings, sql_connection
 ):
