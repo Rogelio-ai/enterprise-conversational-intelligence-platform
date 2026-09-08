@@ -20,6 +20,7 @@ from app.api.routes.diner_experience import router as diner_experience_router
 from app.api.routes.conversations import router as conversations_router
 from app.api.routes.health import router as health_router
 from app.api.routes.fiscal_issuance import router as fiscal_issuance_router
+from app.api.routes.fiscal_profiles import router as fiscal_profiles_router
 from app.api.routes.locations import router as locations_router
 from app.api.routes.inventory import router as inventory_router
 from app.api.routes.menus import router as menus_router
@@ -154,6 +155,7 @@ def create_app(
     app.include_router(staff_operational_requests_router)
     app.include_router(billing_router)
     app.include_router(fiscal_issuance_router)
+    app.include_router(fiscal_profiles_router)
     app.include_router(pos_submissions_router)
     app.include_router(preparation_router)
     app.include_router(preparation_delivery_router)

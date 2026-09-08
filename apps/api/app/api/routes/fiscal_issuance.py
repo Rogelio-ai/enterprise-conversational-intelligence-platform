@@ -5,9 +5,15 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedContext, get_db, require_permission
+from app.api.deps import (
+    AuthenticatedContext,
+    get_db,
+    require_permission,
+    require_staff_location_access,
+)
 from app.core.execution import ActorType, ExecutionContext
 from app.core.middleware import get_correlation_id
 from app.restaurant.fiscal_issuance import errors, service
@@ -16,6 +22,7 @@ from app.restaurant.fiscal_issuance.contracts import (
     RecoverFiscalIssuanceCommand,
     RetryFiscalIssuanceCommand,
 )
+from app.models import BillingDocument, BillingIssuance
 
 
 router = APIRouter(tags=['restaurant-fiscal-issuance'])
@@ -99,6 +106,44 @@ def _error(exc: Exception) -> HTTPException:
     raise exc
 
 
+async def _authorize_document_location(
+    db: AsyncSession,
+    context: AuthenticatedContext,
+    *,
+    document_id: int,
+    organization_id: int,
+    location_id: int,
+) -> None:
+    value = await db.scalar(select(BillingDocument.id).where(
+        BillingDocument.id == document_id,
+        BillingDocument.tenant_id == context.tenant_id,
+        BillingDocument.organization_id == organization_id,
+        BillingDocument.location_id == location_id,
+    ))
+    if value is None:
+        raise errors.FiscalBillingDocumentNotFoundError()
+    await require_staff_location_access(location_id, context, db)
+
+
+async def _authorize_issuance_location(
+    db: AsyncSession,
+    context: AuthenticatedContext,
+    *,
+    issuance_id: int,
+    organization_id: int,
+    location_id: int,
+) -> None:
+    value = await db.scalar(select(BillingIssuance.id).where(
+        BillingIssuance.id == issuance_id,
+        BillingIssuance.tenant_id == context.tenant_id,
+        BillingIssuance.organization_id == organization_id,
+        BillingIssuance.location_id == location_id,
+    ))
+    if value is None:
+        raise errors.FiscalIssuanceNotFoundError()
+    await require_staff_location_access(location_id, context, db)
+
+
 @router.post(
     '/billing-documents/{billing_document_id}/issuances',
     response_model=FiscalIssuanceResponse,
@@ -118,6 +163,13 @@ async def initiate_fiscal_issuance(
     location_id: int = Query(gt=0),
 ) -> object:
     try:
+        await _authorize_document_location(
+            db,
+            context,
+            document_id=billing_document_id,
+            organization_id=organization_id,
+            location_id=location_id,
+        )
         value, replayed = await service.initiate_fiscal_issuance(
             db,
             execution=_execution(context),
@@ -155,6 +207,13 @@ async def recover_fiscal_issuance(
     location_id: int = Query(gt=0),
 ) -> object:
     try:
+        await _authorize_issuance_location(
+            db,
+            context,
+            issuance_id=issuance_id,
+            organization_id=organization_id,
+            location_id=location_id,
+        )
         return await service.recover_fiscal_issuance(
             db,
             execution=_execution(context),
@@ -186,6 +245,13 @@ async def retry_fiscal_issuance(
     location_id: int = Query(gt=0),
 ) -> object:
     try:
+        await _authorize_issuance_location(
+            db,
+            context,
+            issuance_id=issuance_id,
+            organization_id=organization_id,
+            location_id=location_id,
+        )
         return await service.retry_fiscal_issuance(
             db,
             execution=_execution(context),
@@ -217,6 +283,13 @@ async def get_fiscal_issuance(
     location_id: int = Query(gt=0),
 ) -> object:
     try:
+        await _authorize_issuance_location(
+            db,
+            context,
+            issuance_id=issuance_id,
+            organization_id=organization_id,
+            location_id=location_id,
+        )
         return await service.get_fiscal_issuance(
             db,
             tenant_id=context.tenant_id,
@@ -224,5 +297,36 @@ async def get_fiscal_issuance(
             location_id=location_id,
             issuance_id=issuance_id,
         )
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@router.get(
+    '/billing-documents/{billing_document_id}/issuances',
+    response_model=tuple[FiscalIssuanceResponse, ...],
+)
+async def list_fiscal_issuances(
+    billing_document_id: int,
+    context: Annotated[
+        AuthenticatedContext, Depends(require_permission('restaurant_check.read'))
+    ],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    organization_id: int = Query(gt=0),
+    location_id: int = Query(gt=0),
+) -> object:
+    try:
+        await _authorize_document_location(
+            db,
+            context,
+            document_id=billing_document_id,
+            organization_id=organization_id,
+            location_id=location_id,
+        )
+        return tuple((await db.scalars(select(BillingIssuance).where(
+            BillingIssuance.tenant_id == context.tenant_id,
+            BillingIssuance.organization_id == organization_id,
+            BillingIssuance.location_id == location_id,
+            BillingIssuance.billing_document_id == billing_document_id,
+        ).order_by(BillingIssuance.id))).all())
     except Exception as exc:
         raise _error(exc) from exc

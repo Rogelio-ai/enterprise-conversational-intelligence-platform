@@ -134,7 +134,10 @@ class ConnectorResponse(BaseModel):
 
 @router.get('/preparation-delivery-connectors', response_model=tuple[ConnectorResponse, ...])
 async def list_connectors(
-    context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.read'))],
+    context: Annotated[
+        AuthenticatedContext,
+        Depends(require_location_permission('preparation.read')),
+    ],
     db: Annotated[AsyncSession, Depends(get_db)],
     location_id: int = Query(gt=0),
 ) -> object:

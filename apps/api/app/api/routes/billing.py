@@ -6,13 +6,20 @@ from typing import Annotated
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedContext, get_db, require_permission
+from app.api.deps import (
+    AuthenticatedContext,
+    get_db,
+    require_permission,
+    require_staff_location_access,
+)
 from app.core.execution import ActorType, ExecutionContext
 from app.core.middleware import get_correlation_id
 from app.restaurant.billing import errors, service
 from app.restaurant.billing.contracts import CreateBillingDocumentCommand
+from app.models import BillingDocument, RestaurantCheck
 
 
 router = APIRouter(tags=['restaurant-billing'])
@@ -127,6 +134,42 @@ def _error(exc: Exception) -> HTTPException:
     raise exc
 
 
+async def _authorize_check_location(
+    db: AsyncSession,
+    context: AuthenticatedContext,
+    *,
+    check_id: int,
+    location_id: int,
+) -> None:
+    value = await db.scalar(select(RestaurantCheck.id).where(
+        RestaurantCheck.id == check_id,
+        RestaurantCheck.tenant_id == context.tenant_id,
+        RestaurantCheck.location_id == location_id,
+    ))
+    if value is None:
+        raise errors.BillingDocumentNotFoundError()
+    await require_staff_location_access(location_id, context, db)
+
+
+async def _authorize_document_location(
+    db: AsyncSession,
+    context: AuthenticatedContext,
+    *,
+    document_id: int,
+    organization_id: int,
+    location_id: int,
+) -> None:
+    value = await db.scalar(select(BillingDocument.id).where(
+        BillingDocument.id == document_id,
+        BillingDocument.tenant_id == context.tenant_id,
+        BillingDocument.organization_id == organization_id,
+        BillingDocument.location_id == location_id,
+    ))
+    if value is None:
+        raise errors.BillingDocumentNotFoundError()
+    await require_staff_location_access(location_id, context, db)
+
+
 @router.post(
     '/restaurant-checks/{check_id}/billing-documents',
     response_model=BillingDocumentResponse,
@@ -144,6 +187,9 @@ async def create_billing_document(
     idempotency_key: IdempotencyKey,
 ) -> object:
     try:
+        await _authorize_check_location(
+            db, context, check_id=check_id, location_id=payload.location_id
+        )
         value, replayed = await service.create_billing_document(
             db,
             context=_execution(context),
@@ -178,6 +224,13 @@ async def get_billing_document(
     location_id: int = Query(gt=0),
 ) -> object:
     try:
+        await _authorize_document_location(
+            db,
+            context,
+            document_id=document_id,
+            organization_id=organization_id,
+            location_id=location_id,
+        )
         return await service.get_billing_document(
             db,
             tenant_id=context.tenant_id,
@@ -185,5 +238,30 @@ async def get_billing_document(
             location_id=location_id,
             document_id=document_id,
         )
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@router.get(
+    '/restaurant-checks/{check_id}/billing-documents',
+    response_model=tuple[BillingDocumentResponse, ...],
+)
+async def list_billing_documents(
+    check_id: int,
+    location_id: Annotated[int, Query(gt=0)],
+    context: Annotated[
+        AuthenticatedContext, Depends(require_permission('restaurant_check.read'))
+    ],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> object:
+    try:
+        await _authorize_check_location(
+            db, context, check_id=check_id, location_id=location_id
+        )
+        return tuple((await db.scalars(select(BillingDocument).where(
+            BillingDocument.tenant_id == context.tenant_id,
+            BillingDocument.location_id == location_id,
+            BillingDocument.restaurant_check_id == check_id,
+        ).order_by(BillingDocument.id))).all())
     except Exception as exc:
         raise _error(exc) from exc

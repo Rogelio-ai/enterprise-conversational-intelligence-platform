@@ -1,19 +1,27 @@
 import type {
   ApiErrorBody,
+  BillingDocument,
+  BillingFiscalContext,
   CashCount,
   CashMovement,
   CashSession,
   CheckSettlement,
+  FiscalIssuance,
+  FiscalProfileBase,
   LocationListResponse,
   LoginRequest,
   LoginResponse,
   Organization,
   OpenServiceSessionResponse,
+  PaidCheckDispatch,
+  PreparationConnector,
+  RecipientFiscalProfile,
   RegeneratedAccessCodeResponse,
   ResourceListResponse,
   RestaurantCheckDetail,
   RestaurantCheckListResponse,
   RestaurantPayment,
+  IssuerFiscalProfile,
   ClosedServiceSessionResponse,
   CurrentServiceSession,
   StaffIdentity,
@@ -180,6 +188,57 @@ export const staffApi = {
   },
   recoverPayment(locationId: number, paymentId: number): Promise<RestaurantPayment> {
     return request(`/restaurant-payments/${paymentId}/recover?location_id=${locationId}`, { method: 'POST' });
+  },
+  fiscalContext(locationId: number, checkId: number): Promise<BillingFiscalContext> {
+    return request(`/restaurant-checks/${checkId}/fiscal-context?location_id=${locationId}`);
+  },
+  saveIssuerFiscalProfile(locationId: number, checkId: number, payload: FiscalProfileBase): Promise<IssuerFiscalProfile> {
+    return request(`/restaurant-checks/${checkId}/issuer-fiscal-profile?location_id=${locationId}`, {
+      method: 'PUT', body: JSON.stringify(payload),
+    });
+  },
+  saveRecipientFiscalProfile(locationId: number, checkId: number, payload: FiscalProfileBase & { invoice_usage: string }): Promise<RecipientFiscalProfile> {
+    return request(`/restaurant-checks/${checkId}/recipient-fiscal-profile?location_id=${locationId}`, {
+      method: 'PUT', body: JSON.stringify(payload),
+    });
+  },
+  billingDocuments(locationId: number, checkId: number): Promise<BillingDocument[]> {
+    return request(`/restaurant-checks/${checkId}/billing-documents?location_id=${locationId}`);
+  },
+  createBillingDocument(locationId: number, checkId: number, organizationId: number, issuerId: number, recipientId: number, key: string): Promise<BillingDocument> {
+    return request(`/restaurant-checks/${checkId}/billing-documents`, {
+      method: 'POST', headers: { 'Idempotency-Key': key },
+      body: JSON.stringify({
+        organization_id: organizationId, location_id: locationId,
+        issuer_fiscal_profile_id: issuerId, recipient_fiscal_profile_id: recipientId,
+      }),
+    });
+  },
+  fiscalIssuances(locationId: number, organizationId: number, documentId: number): Promise<FiscalIssuance[]> {
+    return request(`/billing-documents/${documentId}/issuances?organization_id=${organizationId}&location_id=${locationId}`);
+  },
+  initiateFiscalIssuance(locationId: number, organizationId: number, documentId: number, providerKey: string, key: string): Promise<FiscalIssuance> {
+    return request(`/billing-documents/${documentId}/issuances?organization_id=${organizationId}&location_id=${locationId}`, {
+      method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ provider_key: providerKey }),
+    });
+  },
+  recoverFiscalIssuance(locationId: number, organizationId: number, issuanceId: number): Promise<FiscalIssuance> {
+    return request(`/billing-issuances/${issuanceId}/recover?organization_id=${organizationId}&location_id=${locationId}`, { method: 'POST' });
+  },
+  retryFiscalIssuance(locationId: number, organizationId: number, issuanceId: number): Promise<FiscalIssuance> {
+    return request(`/billing-issuances/${issuanceId}/retry?organization_id=${organizationId}&location_id=${locationId}`, { method: 'POST' });
+  },
+  preparationConnectors(locationId: number): Promise<PreparationConnector[]> {
+    return request(`/preparation-delivery-connectors?location_id=${locationId}`);
+  },
+  paidCheckDispatches(locationId: number, checkId: number): Promise<PaidCheckDispatch[]> {
+    return request(`/restaurant-checks/${checkId}/paid-print-dispatches?location_id=${locationId}`);
+  },
+  createPaidCheckDispatch(locationId: number, checkId: number, cashierResourceId: number, connectorId: number, localTargetKey: string, key: string): Promise<PaidCheckDispatch> {
+    return request(`/restaurant-checks/${checkId}/paid-print?location_id=${locationId}`, {
+      method: 'POST', headers: { 'Idempotency-Key': key },
+      body: JSON.stringify({ cashier_resource_id: cashierResourceId, connector_id: connectorId, local_target_key: localTargetKey }),
+    });
   },
   async currentServiceSession(resourceId: number): Promise<CurrentServiceSession | null> {
     try {

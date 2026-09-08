@@ -24,6 +24,19 @@ class EmptySession:
             'fiscal_credential_resolver': object(),
         }
 
+    async def scalar(self, _query):
+        return 1
+
+
+class ResourceWithoutLocationGrantSession(EmptySession):
+    def __init__(self):
+        super().__init__()
+        self.calls = 0
+
+    async def scalar(self, _query):
+        self.calls += 1
+        return 1 if self.calls == 1 else None
+
 
 def _auth(
     *,
@@ -53,9 +66,10 @@ def _client(
     database,
     *,
     auth: AuthenticatedContext | None = _auth(),
+    session: EmptySession | None = None,
 ):
     app = create_app(settings=settings, database=database)
-    session = EmptySession()
+    session = session or EmptySession()
 
     async def database_session():
         yield session
@@ -143,6 +157,30 @@ def test_create_and_identical_replay_delegate_with_idempotency(
     assert calls[0]['command'].provider_key == 'FAKE'
     assert calls[0]['command'].credential_binding == 'non-secret-binding'
     assert calls[0]['provider_registry'] is session.info['fiscal_provider_registry']
+
+
+def test_create_authorizes_location_before_idempotent_service_replay(
+    settings, database, monkeypatch,
+) -> None:
+    called = False
+
+    async def initiate(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return _projection(), True
+
+    monkeypatch.setattr(service, 'initiate_fiscal_issuance', initiate)
+    denied_session = ResourceWithoutLocationGrantSession()
+    with _client(settings, database, session=denied_session) as (client, _):
+        response = client.post(
+            '/billing-documents/401/issuances',
+            params=_scope(),
+            headers={'Idempotency-Key': 'known-replay'},
+            json={'provider_key': 'FAKE'},
+        )
+
+    assert response.status_code == 404
+    assert called is False
 
 
 def test_conflict_unknown_provider_and_invalid_shape_are_controlled(

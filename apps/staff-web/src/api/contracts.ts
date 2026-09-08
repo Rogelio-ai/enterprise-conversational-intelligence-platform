@@ -287,6 +287,127 @@ export interface CheckSettlement {
   payments: RestaurantPayment[];
 }
 
+export interface FiscalProfileBase {
+  legal_name: string;
+  tax_identifier: string;
+  tax_regime: string;
+  fiscal_postal_code: string;
+}
+
+export interface IssuerFiscalProfile extends FiscalProfileBase {
+  id: number;
+  organization_id: number;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface RecipientFiscalProfile extends FiscalProfileBase {
+  id: number;
+  customer_id: number;
+  invoice_usage: string;
+  status: string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface BillingFiscalContext {
+  check_id: number;
+  organization_id: number;
+  location_id: number;
+  check_status: string;
+  customer_id: number;
+  customer_display_name: string | null;
+  customer_email: string | null;
+  issuer_profiles: IssuerFiscalProfile[];
+  recipient_profile: RecipientFiscalProfile | null;
+}
+
+export interface BillingDocument {
+  id: number;
+  tenant_id: number;
+  organization_id: number;
+  location_id: number;
+  restaurant_check_id: number;
+  source_check_version: number;
+  source_check_fingerprint: string;
+  document_type: string;
+  status: string;
+  currency: string;
+  subtotal: string;
+  discount_total: string;
+  tax_total: string;
+  total: string;
+  issuer_snapshot: Record<string, string>;
+  recipient_snapshot: Record<string, string>;
+  issuer_fiscal_postal_code: string | null;
+  readiness_evidence_fingerprint: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface FiscalIssuance {
+  id: number;
+  tenant_id: number;
+  organization_id: number;
+  location_id: number;
+  billing_document_id: number;
+  provider_key: string;
+  state: 'PENDING' | 'IN_PROGRESS' | 'SUCCEEDED' | 'FAILED' | 'REJECTED' | 'UNCERTAIN';
+  external_reference: string | null;
+  external_status: string | null;
+  attempt_count: number;
+  requested_at: string;
+  completed_at: string | null;
+}
+
+export interface PreparationConnector {
+  id: number;
+  tenant_id: number;
+  organization_id: number;
+  location_id: number;
+  code: string;
+  name: string;
+  status: string;
+}
+
+export interface PaidCheckAttempt {
+  id: number;
+  attempt_sequence: number;
+  attempt_type: string;
+  connector_id: number;
+  started_at: string;
+  ended_at: string | null;
+  result: string;
+  local_job_reference: string | null;
+  error_kind: string | null;
+  error_message: string | null;
+}
+
+export interface PaidCheckDispatch {
+  id: number;
+  restaurant_check_id: number;
+  check_version: number;
+  check_fingerprint: string;
+  cashier_resource_id: number;
+  cashier_resource_code: string;
+  cashier_resource_name: string;
+  connector_id: number;
+  connector_code: string;
+  connector_name: string;
+  local_target_key: string;
+  operation_id: string;
+  state: 'PENDING' | 'IN_PROGRESS' | 'DESTINATION_SUBMISSION_ACCEPTED' | 'RETRYABLE_FAILURE' | 'UNCERTAIN' | 'ACTION_REQUIRED';
+  attempt_count: number;
+  available_at: string;
+  last_error_kind: string | null;
+  last_error_message: string | null;
+  terminal_at: string | null;
+  created_at: string;
+  updated_at: string;
+  attempts: PaidCheckAttempt[];
+}
+
 export interface CurrentServiceSession {
   id: number;
   resource_id: number;

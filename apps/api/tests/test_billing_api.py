@@ -9,13 +9,29 @@ from fastapi.testclient import TestClient
 
 from app.api.deps import AuthenticatedContext, get_authenticated_context, get_db
 from app.main import create_app
-from app.models import BillingDocument, BillingDocumentLine, BillingDocumentLineTax
+from app.models import (
+    BillingDocument,
+    BillingDocumentLine,
+    BillingDocumentLineTax,
+    MembershipLocationGrant,
+    RestaurantCheck,
+)
 from app.restaurant.billing import errors, service
 from app.restaurant.billing.contracts import BillingDocumentProjection
 
 
 class EmptySession:
-    pass
+    async def scalar(self, _query):
+        return 1
+
+
+class ResourceWithoutLocationGrantSession:
+    def __init__(self):
+        self.calls = 0
+
+    async def scalar(self, _query):
+        self.calls += 1
+        return 1 if self.calls == 1 else None
 
 
 class Rows:
@@ -41,6 +57,9 @@ class PersistedBillingSession:
         self.taxes = taxes
 
     async def scalar(self, query):
+        entity = query.column_descriptions[0]['entity']
+        if entity in (MembershipLocationGrant, RestaurantCheck):
+            return 1
         criteria = {
             clause.left.name: clause.right.value
             for clause in query._where_criteria
@@ -163,6 +182,29 @@ def test_authenticated_create_reaches_billing_service(
     assert captured['context'].principal_id == 22
     assert captured['command'].restaurant_check_id == 101
     assert captured['command'].idempotency_key == 'billing-api-1'
+
+
+def test_create_authorizes_location_before_idempotent_service_replay(
+    settings, database, monkeypatch,
+) -> None:
+    called = False
+
+    async def create(*_args, **_kwargs):
+        nonlocal called
+        called = True
+        return _projection(), True
+
+    monkeypatch.setattr(service, 'create_billing_document', create)
+    session = ResourceWithoutLocationGrantSession()
+    with _client(settings, database, session=session) as client:
+        response = client.post(
+            '/restaurant-checks/101/billing-documents',
+            headers={'Idempotency-Key': 'known-replay'},
+            json=_payload(),
+        )
+
+    assert response.status_code == 404
+    assert called is False
 
 
 def test_non_settled_source_has_controlled_public_error(

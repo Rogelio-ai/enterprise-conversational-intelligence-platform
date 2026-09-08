@@ -17,6 +17,7 @@ from test_canonical_order_commercial_acceptance import _scope, _staff_headers
 from test_preparation_dispatch_operational_delivery import _connector
 from test_restaurant_local_connector_machine_delivery import _provision
 from test_restaurant_payment_settlement_foundation import _grant
+from test_staff_check_query import _login, _membership
 
 
 @pytest.fixture
@@ -63,6 +64,7 @@ def _settle(
     response = client.post(
         f"/restaurant-checks/{check['id']}/payments",
         headers={**headers, 'Idempotency-Key': f"settle-{check['id']}"},
+        params={'location_id': scope.location_id},
         json=_payment_payload(
             check,
             amount=str(check['liability_total']),
@@ -127,6 +129,29 @@ def test_explicit_settled_print_is_durable_idempotent_and_intentionally_repeatab
     )
     assert replay.status_code == 200, replay.text
     assert replay.json()['id'] == dispatch['id']
+    listed = client.get(
+        f"/restaurant-checks/{check['id']}/paid-print-dispatches",
+        headers=headers,
+        params={'location_id': scope.location_id},
+    )
+    assert listed.status_code == 200, listed.text
+    assert [item['id'] for item in listed.json()] == [dispatch['id']]
+
+    ungranted_email, _ = _membership(
+        connection,
+        tenant_id=scope.tenant_id,
+        slug=f'print-ungranted-{check["id"]}',
+        permissions=('restaurant_check.read', 'restaurant_check.manage'),
+    )
+    undisclosed = _request(
+        client,
+        _login(client, ungranted_email),
+        check['id'],
+        cashier['id'],
+        connector['id'],
+        key='print-1',
+    )
+    assert undisclosed.status_code == 404
     conflict = _request(
         client, headers, check['id'], cashier['id'], connector['id'],
         key='print-1', target='different_printer',
@@ -184,6 +209,7 @@ def test_unsettled_and_cross_scope_targets_are_rejected_without_dispatch(
     cash_session = client.post(
         f"/resources/{cashier['id']}/cash-sessions",
         headers={**headers, 'Idempotency-Key': 'open-print-register'},
+        params={'location_id': scope.location_id},
         json={'currency': 'MXN'},
     )
     assert cash_session.status_code == 201, cash_session.text
