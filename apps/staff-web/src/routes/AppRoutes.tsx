@@ -6,6 +6,7 @@ import { StaffContextProvider, useStaffContext } from '../context/StaffContext';
 import { canUseWorkspace, workspaces, type Workspace } from '../navigation/workspaces';
 import { LoginPage } from '../pages/LoginPage';
 import { StaffHomePage } from '../pages/StaffHomePage';
+import { HostPage } from '../pages/HostPage';
 import { WorkspacePlaceholder } from '../pages/WorkspacePlaceholder';
 import { useAuth } from '../session/AuthContext';
 
@@ -27,12 +28,12 @@ function LocationBoundary({ children }: { children: ReactNode }) {
   return <StaffShell>{children}</StaffShell>;
 }
 
-function WorkspaceBoundary({ workspace }: { workspace: Workspace }) {
+function WorkspaceBoundary({ workspace, children }: { workspace: Workspace; children?: ReactNode }) {
   const { identity } = useAuth();
   if (!canUseWorkspace(identity?.permissions ?? [], workspace)) {
     return <StatePanel eyebrow="Acceso restringido" title="Este espacio no está disponible" icon="×"><p>Tu identidad no reúne las capacidades requeridas. La autorización permanece en el backend.</p><a className="secondary-button button-link" href="/">Volver al inicio</a></StatePanel>;
   }
-  return <WorkspacePlaceholder workspace={workspace} />;
+  return children ?? <WorkspacePlaceholder workspace={workspace} />;
 }
 
 function ProtectedApp({ children }: { children: ReactNode }) {
@@ -45,7 +46,13 @@ export function AppRoutes() {
       <Route path="/login" element={<LoginPage />} />
       <Route path="/" element={<ProtectedApp><StaffHomePage /></ProtectedApp>} />
       {workspaces.map((workspace) => (
-        <Route key={workspace.key} path={workspace.path} element={<ProtectedApp><WorkspaceBoundary workspace={workspace} /></ProtectedApp>} />
+        <Route key={workspace.key} path={workspace.path} element={
+          <ProtectedApp>
+            <WorkspaceBoundary workspace={workspace}>
+              {workspace.key === 'host' ? <HostPage /> : undefined}
+            </WorkspaceBoundary>
+          </ProtectedApp>
+        } />
       ))}
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>

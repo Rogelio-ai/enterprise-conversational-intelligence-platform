@@ -4,6 +4,11 @@ import type {
   LoginRequest,
   LoginResponse,
   Organization,
+  OpenServiceSessionResponse,
+  RegeneratedAccessCodeResponse,
+  ResourceListResponse,
+  ClosedServiceSessionResponse,
+  CurrentServiceSession,
   StaffIdentity,
   Tenant,
 } from './contracts';
@@ -82,5 +87,35 @@ export const staffApi = {
   },
   organization(organizationId: number): Promise<Organization> {
     return request(`/organizations/${organizationId}`);
+  },
+  tables(locationId: number): Promise<ResourceListResponse> {
+    const query = new URLSearchParams({
+      location_id: String(locationId),
+      resource_type: 'TABLE',
+      status: 'ACTIVE',
+      limit: '100',
+      offset: '0',
+    });
+    return request(`/resources?${query.toString()}`);
+  },
+  async currentServiceSession(resourceId: number): Promise<CurrentServiceSession | null> {
+    try {
+      return await request(`/resources/${resourceId}/service-sessions/current`);
+    } catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    }
+  },
+  openServiceSession(resourceId: number, partySize: number): Promise<OpenServiceSessionResponse> {
+    return request(`/resources/${resourceId}/service-sessions`, {
+      method: 'POST',
+      body: JSON.stringify({ party_size: partySize }),
+    });
+  },
+  regenerateAccessCode(sessionId: number): Promise<RegeneratedAccessCodeResponse> {
+    return request(`/restaurant-service-sessions/${sessionId}/access-code/regenerate`, { method: 'POST' });
+  },
+  closeServiceSession(sessionId: number): Promise<ClosedServiceSessionResponse> {
+    return request(`/restaurant-service-sessions/${sessionId}/close`, { method: 'POST' });
   },
 };

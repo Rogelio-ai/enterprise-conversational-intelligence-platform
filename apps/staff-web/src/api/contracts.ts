@@ -53,6 +53,59 @@ export interface LocationListResponse {
   offset: number;
 }
 
+export interface Resource {
+  id: number;
+  tenant_id: number;
+  location_id: number;
+  code: string;
+  name: string;
+  resource_type: string;
+  status: 'ACTIVE' | 'INACTIVE' | string;
+  created_at: string;
+  updated_at: string;
+}
+
+export interface ResourceListResponse {
+  items: Resource[];
+  limit: number;
+  offset: number;
+}
+
+export interface CurrentServiceSession {
+  id: number;
+  resource_id: number;
+  party_size: number;
+  active_diner_count: number;
+  status: string;
+  join_context_key: string;
+  access_code_version: number;
+  opened_at: string;
+}
+
+export interface OpenServiceSessionResponse {
+  id: number;
+  resource_id: number;
+  party_size: number;
+  status: string;
+  join_context_key: string;
+  access_code: string;
+  access_code_version: number;
+  opened_at: string;
+}
+
+export interface RegeneratedAccessCodeResponse {
+  id: number;
+  access_code: string;
+  access_code_version: number;
+}
+
+export interface ClosedServiceSessionResponse {
+  id: number;
+  resource_id: number;
+  status: string;
+  closed_at: string;
+}
+
 export interface ApiErrorBody {
   detail?: string | { code?: string; message?: string };
   error?: { code?: string; message?: string; state?: string };
