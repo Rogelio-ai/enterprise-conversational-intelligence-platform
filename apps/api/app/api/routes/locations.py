@@ -12,9 +12,14 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedContext, get_db, require_permission
+from app.api.deps import (
+    AuthenticatedContext,
+    get_db,
+    require_location_permission,
+    require_permission,
+)
 from app.core.middleware import get_correlation_id
-from app.models import Location, Organization
+from app.models import Location, MembershipLocationGrant, Organization
 
 
 router = APIRouter(prefix='/locations', tags=['locations'])
@@ -239,7 +244,10 @@ async def list_locations(
             organization_id=organization_id,
             tenant_id=context.tenant_id,
         )
-    statement = select(Location).where(Location.tenant_id == context.tenant_id)
+    statement = select(Location).where(
+        Location.tenant_id == context.tenant_id,
+        Location.id.in_(context.authorized_location_ids),
+    )
     if organization_id is not None:
         statement = statement.where(Location.organization_id == organization_id)
     result = await db.execute(statement.order_by(Location.id).limit(limit).offset(offset))
@@ -266,6 +274,12 @@ async def create_location(
     location = Location(**values, status='ACTIVE')
     db.add(location)
     try:
+        await db.flush()
+        db.add(MembershipLocationGrant(
+            tenant_id=context.tenant_id,
+            membership_id=context.membership_id,
+            location_id=location.id,
+        ))
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -291,7 +305,9 @@ async def create_location(
 @router.get('/{location_id}', response_model=LocationResponse)
 async def get_location(
     location_id: Annotated[int, Path(gt=0)],
-    context: Annotated[AuthenticatedContext, Depends(require_permission('location.read'))],
+    context: Annotated[
+        AuthenticatedContext, Depends(require_location_permission('location.read'))
+    ],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Location:
     location = await db.scalar(
@@ -309,7 +325,9 @@ async def get_location(
 async def update_location(
     location_id: Annotated[int, Path(gt=0)],
     payload: LocationUpdateRequest,
-    context: Annotated[AuthenticatedContext, Depends(require_permission('location.manage'))],
+    context: Annotated[
+        AuthenticatedContext, Depends(require_location_permission('location.manage'))
+    ],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Location:
     location = await db.scalar(

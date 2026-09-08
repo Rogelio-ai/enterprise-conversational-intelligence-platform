@@ -38,6 +38,7 @@ def _auth(
         tenant_name='Fiscal Tenant',
         tenant_slug='fiscal-tenant',
         membership_id=22,
+        authorized_location_ids=(),
         roles=('TENANT_ADMIN',),
         permissions=permissions if permissions is not None else frozenset({
             'restaurant_check.read',

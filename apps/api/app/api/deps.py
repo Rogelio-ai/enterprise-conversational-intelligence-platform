@@ -9,7 +9,16 @@ from sqlalchemy import distinct, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import TokenValidationError, decode_access_token
-from app.models import MembershipRole, Permission, Role, RolePermission, Tenant, TenantMembership, User
+from app.models import (
+    MembershipLocationGrant,
+    MembershipRole,
+    Permission,
+    Role,
+    RolePermission,
+    Tenant,
+    TenantMembership,
+    User,
+)
 
 
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl='/auth/login')
@@ -24,6 +33,7 @@ class AuthenticatedContext:
     tenant_name: str
     tenant_slug: str
     membership_id: int
+    authorized_location_ids: tuple[int, ...]
     roles: tuple[str, ...]
     permissions: frozenset[str]
 
@@ -127,6 +137,15 @@ async def get_authenticated_context(
         .order_by(Permission.code)
     )
     permissions = frozenset(permission_result.scalars().all())
+    location_result = await db.execute(
+        select(MembershipLocationGrant.location_id)
+        .where(
+            MembershipLocationGrant.membership_id == membership.id,
+            MembershipLocationGrant.tenant_id == tenant.id,
+        )
+        .order_by(MembershipLocationGrant.location_id)
+    )
+    authorized_location_ids = tuple(location_result.scalars().all())
     request.state.user_id = user.id
     request.state.tenant_id = tenant.id
     return AuthenticatedContext(
@@ -137,6 +156,7 @@ async def get_authenticated_context(
         tenant_name=tenant.name,
         tenant_slug=tenant.slug,
         membership_id=membership.id,
+        authorized_location_ids=authorized_location_ids,
         roles=roles,
         permissions=permissions,
     )
@@ -151,3 +171,31 @@ def require_permission(permission_code: str) -> Callable[..., AuthenticatedConte
         return context
 
     return permission_checker
+
+
+async def require_staff_location_access(
+    location_id: int,
+    context: AuthenticatedContext = Depends(get_authenticated_context),
+    db: AsyncSession = Depends(get_db),
+) -> AuthenticatedContext:
+    grant_id = await db.scalar(
+        select(MembershipLocationGrant.id).where(
+            MembershipLocationGrant.membership_id == context.membership_id,
+            MembershipLocationGrant.tenant_id == context.tenant_id,
+            MembershipLocationGrant.location_id == location_id,
+        )
+    )
+    if grant_id is None:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Location not found')
+    return context
+
+
+def require_location_permission(permission_code: str) -> Callable[..., AuthenticatedContext]:
+    async def location_permission_checker(
+        context: AuthenticatedContext = Depends(require_staff_location_access),
+    ) -> AuthenticatedContext:
+        if permission_code not in context.permissions:
+            raise _forbidden('Insufficient permission')
+        return context
+
+    return location_permission_checker

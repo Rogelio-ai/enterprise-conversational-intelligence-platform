@@ -63,6 +63,7 @@ class CurrentUserResponse(BaseModel):
     display_name: str
     tenant_id: int
     membership_id: int
+    authorized_location_ids: list[int]
     roles: list[str]
     permissions: list[str]
 
@@ -146,6 +147,7 @@ async def me(
         display_name=context.display_name,
         tenant_id=context.tenant_id,
         membership_id=context.membership_id,
+        authorized_location_ids=list(context.authorized_location_ids),
         roles=list(context.roles),
         permissions=sorted(context.permissions),
     )

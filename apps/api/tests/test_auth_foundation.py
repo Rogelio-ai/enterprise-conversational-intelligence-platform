@@ -155,6 +155,7 @@ def test_successful_login_and_authenticated_me(client, sql_connection) -> None:
         'display_name': 'Test User',
         'tenant_id': authority.tenant_id,
         'membership_id': authority.membership_id,
+        'authorized_location_ids': [],
         'roles': ['TEST_ROLE'],
         'permissions': ['tenant.read'],
     }
@@ -349,3 +350,9 @@ def test_bootstrap_is_idempotent(integration_settings, sql_connection) -> None:
             'resource.manage',
             'resource.read',
         ]
+        cursor.execute(
+            'SELECT COUNT(*) AS grant_count FROM membership_location_grants '
+            'WHERE membership_id = %s',
+            (first.membership_id,),
+        )
+        assert cursor.fetchone()['grant_count'] == 0

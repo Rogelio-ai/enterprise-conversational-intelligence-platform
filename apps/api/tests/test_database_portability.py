@@ -3435,3 +3435,111 @@ def test_0027_upgrade_downgrade_reupgrade_is_portable(
         _assert_database_contract(connection)
     finally:
         connection.close()
+
+
+def test_0040_location_grants_are_portable_reversible_and_never_backfilled(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0039_payment_executor_client_configuration')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name, slug, status) VALUES ('Tenant A','grant-a','ACTIVE')"
+            )
+            tenant_a = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO tenants (name, slug, status) VALUES ('Tenant B','grant-b','ACTIVE')"
+            )
+            tenant_b = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO users (email,password_hash,display_name,status) "
+                "VALUES ('grant@example.test','hash','Grant User','ACTIVE')"
+            )
+            user_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO tenant_memberships (tenant_id,user_id,status) VALUES (%s,%s,'ACTIVE')",
+                (tenant_a, user_id),
+            )
+            membership_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) VALUES (%s,'A','A','ACTIVE')",
+                (tenant_a,),
+            )
+            organization_a = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) VALUES (%s,'B','B','ACTIVE')",
+                (tenant_b,),
+            )
+            organization_b = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO locations (tenant_id,organization_id,code,name,timezone,status) "
+                "VALUES (%s,%s,'A','A','America/Mexico_City','ACTIVE')",
+                (tenant_a, organization_a),
+            )
+            location_a = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO locations (tenant_id,organization_id,code,name,timezone,status) "
+                "VALUES (%s,%s,'B','B','America/Mexico_City','ACTIVE')",
+                (tenant_b, organization_b),
+            )
+            location_b = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, '0040_staff_location_authorization_scope')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT ENGINE, TABLE_COLLATION FROM information_schema.TABLES '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='membership_location_grants'"
+            )
+            assert cursor.fetchone() == {
+                'ENGINE': 'InnoDB',
+                'TABLE_COLLATION': 'utf8mb4_unicode_ci',
+            }
+            cursor.execute('SELECT COUNT(*) AS grant_count FROM membership_location_grants')
+            assert cursor.fetchone()['grant_count'] == 0
+            cursor.execute(
+                'INSERT INTO membership_location_grants (tenant_id,membership_id,location_id) '
+                'VALUES (%s,%s,%s)',
+                (tenant_a, membership_id, location_a),
+            )
+            with pytest.raises(pymysql.err.IntegrityError):
+                cursor.execute(
+                    'INSERT INTO membership_location_grants '
+                    '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
+                    (tenant_a, membership_id, location_a),
+                )
+            with pytest.raises(pymysql.err.IntegrityError):
+                cursor.execute(
+                    'INSERT INTO membership_location_grants '
+                    '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
+                    (tenant_a, membership_id, location_b),
+                )
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0039_payment_executor_client_configuration')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME FROM information_schema.TABLES '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='membership_location_grants'"
+            )
+            assert cursor.fetchall() == ()
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, '0040_staff_location_authorization_scope')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT COUNT(*) AS grant_count FROM membership_location_grants')
+            assert cursor.fetchone()['grant_count'] == 0
+    finally:
+        connection.close()

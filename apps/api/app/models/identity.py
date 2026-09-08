@@ -138,3 +138,30 @@ class MembershipRole(Base):
     tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     membership_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     role_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class MembershipLocationGrant(TimestampMixin, Base):
+    __tablename__ = 'membership_location_grants'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['membership_id', 'tenant_id'],
+            ['tenant_memberships.id', 'tenant_memberships.tenant_id'],
+            name='fk_membership_location_grants_membership_tenant',
+            ondelete='CASCADE',
+        ),
+        ForeignKeyConstraint(
+            ['location_id', 'tenant_id'],
+            ['locations.id', 'locations.tenant_id'],
+            name='fk_membership_location_grants_location_tenant',
+            ondelete='CASCADE',
+        ),
+        UniqueConstraint(
+            'membership_id', 'location_id',
+            name='uq_membership_location_grants_membership_location',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    membership_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)

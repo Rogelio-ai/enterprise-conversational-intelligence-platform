@@ -26,6 +26,7 @@ WS_02_PERMISSIONS = (
 @dataclass(frozen=True)
 class Authority:
     tenant_id: int
+    membership_id: int
     role_id: int
     email: str
 
@@ -81,7 +82,12 @@ def _seed_authority(connection, slug: str, permissions=WS_02_PERMISSIONS) -> Aut
     )
     for permission in permissions:
         _assign_permission(connection, role_id, permission)
-    return Authority(tenant_id=tenant_id, role_id=role_id, email=email)
+    return Authority(
+        tenant_id=tenant_id,
+        membership_id=membership_id,
+        role_id=role_id,
+        email=email,
+    )
 
 
 def _login(client: TestClient, authority: Authority) -> dict[str, str]:
@@ -319,6 +325,12 @@ def test_inactive_and_cross_tenant_parent_rules_are_enforced(client, sql_connect
 
     active_organization_id = _organization(connection, authority.tenant_id, 'ACTIVE')
     location_id = _location(connection, authority.tenant_id, active_organization_id, 'OWN')
+    _execute(
+        connection,
+        'INSERT INTO membership_location_grants (tenant_id, membership_id, location_id) '
+        'VALUES (%s, %s, %s)',
+        (authority.tenant_id, authority.membership_id, location_id),
+    )
     _execute(
         connection,
         'UPDATE organizations SET status = %s WHERE id = %s',

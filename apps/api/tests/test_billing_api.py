@@ -72,6 +72,7 @@ def _auth(tenant_id: int = 11) -> AuthenticatedContext:
         tenant_name='Billing Tenant',
         tenant_slug='billing-tenant',
         membership_id=22,
+        authorized_location_ids=(),
         roles=('TENANT_ADMIN',),
         permissions=frozenset({'restaurant_check.read', 'restaurant_check.manage'}),
     )

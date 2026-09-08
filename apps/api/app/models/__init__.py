@@ -18,6 +18,7 @@ from app.models.fiscal_product import (
 )
 from app.models.conversation import Conversation, ConversationMessage, ConversationParticipant
 from app.models.identity import (
+    MembershipLocationGrant,
     MembershipRole,
     Permission,
     Role,
@@ -121,6 +122,7 @@ __all__ = [
     'ConversationMessage',
     'ConversationParticipant',
     'MembershipRole',
+    'MembershipLocationGrant',
     'Menu',
     'MenuItem',
     'MenuLocation',
