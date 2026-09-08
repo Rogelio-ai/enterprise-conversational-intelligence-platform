@@ -11,7 +11,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedContext, get_db, require_permission
+from app.api.deps import (
+    AuthenticatedContext,
+    get_db,
+    require_permission,
+    require_staff_location_access,
+)
 from app.core.middleware import get_correlation_id
 from app.models import Location, Resource
 
@@ -157,6 +162,7 @@ async def list_resources(
     offset: int = Query(default=0, ge=0),
 ) -> ResourceListResponse:
     if location_id is not None:
+        await require_staff_location_access(location_id, context, db)
         await _get_location(
             db,
             location_id=location_id,

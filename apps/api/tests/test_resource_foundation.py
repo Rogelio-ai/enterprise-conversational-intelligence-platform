@@ -112,6 +112,22 @@ def _location(
     )
 
 
+def _grant_location(connection, authority: Authority, location_id: int) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT tm.id FROM tenant_memberships tm '
+            'JOIN users u ON u.id=tm.user_id '
+            'WHERE tm.tenant_id=%s AND u.email=%s',
+            (authority.tenant_id, authority.email),
+        )
+        membership_id = int(cursor.fetchone()['id'])
+        cursor.execute(
+            'INSERT INTO membership_location_grants '
+            '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
+            (authority.tenant_id, membership_id, location_id),
+        )
+
+
 def _resource(
     connection,
     tenant_id: int,
@@ -189,6 +205,8 @@ def test_resource_list_filters_pagination_detail_patch_and_no_delete(
     organization_id = _organization(connection, authority.tenant_id, 'ORG')
     first_location = _location(connection, authority.tenant_id, organization_id, 'ONE')
     second_location = _location(connection, authority.tenant_id, organization_id, 'TWO')
+    _grant_location(connection, authority, first_location)
+    _grant_location(connection, authority, second_location)
     headers = _login(client, authority)
 
     first = client.post(
