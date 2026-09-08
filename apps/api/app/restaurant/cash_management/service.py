@@ -296,16 +296,46 @@ async def open_cash_session(
     raise AssertionError('CashSession opening did not return a result')
 
 
+async def require_cash_session_location(
+    db: AsyncSession, *, tenant_id: int, location_id: int | None,
+    cash_session_id: int,
+) -> int:
+    value = await db.scalar(select(CashSession.location_id).where(
+        CashSession.id == cash_session_id,
+        CashSession.tenant_id == tenant_id,
+        *((CashSession.location_id == location_id,) if location_id is not None else ()),
+    ))
+    if value is None:
+        raise errors.CashSessionNotFoundError()
+    return int(value)
+
+
 async def get_cash_session(
-    db: AsyncSession, *, tenant_id: int, cash_session_id: int
+    db: AsyncSession, *, tenant_id: int, location_id: int, cash_session_id: int
 ) -> CashSessionProjection:
     value = await db.scalar(select(CashSession).where(
         CashSession.id == cash_session_id,
         CashSession.tenant_id == tenant_id,
+        CashSession.location_id == location_id,
     ))
     if value is None:
         raise errors.CashSessionNotFoundError()
     return await _session_projection(db, value)
+
+
+async def list_cash_movements(
+    db: AsyncSession, *, tenant_id: int, location_id: int, cash_session_id: int,
+) -> list[CashMovementProjection]:
+    await require_cash_session_location(
+        db, tenant_id=tenant_id, location_id=location_id,
+        cash_session_id=cash_session_id,
+    )
+    values = await db.scalars(select(CashMovement).where(
+        CashMovement.tenant_id == tenant_id,
+        CashMovement.location_id == location_id,
+        CashMovement.cash_session_id == cash_session_id,
+    ).order_by(CashMovement.id))
+    return [_movement_projection(value) for value in values.all()]
 
 
 async def get_active_cash_session(
@@ -382,9 +412,14 @@ def _assert_movement_replay(
 
 async def create_manual_movement(
     db: AsyncSession, *, context: ExecutionContext, cash_session_id: int,
+    location_id: int,
     movement_type: str, amount: Decimal, currency: str,
     reason: str | None, reference: str | None, idempotency_key: str,
 ) -> tuple[CashMovementProjection, bool]:
+    await require_cash_session_location(
+        db, tenant_id=context.tenant_id, location_id=location_id,
+        cash_session_id=cash_session_id,
+    )
     movement_type, amount, currency, reason, reference = _validate_manual_movement(
         movement_type=movement_type, amount=amount, currency=currency,
         reason=reason, reference=reference,
@@ -407,6 +442,7 @@ async def create_manual_movement(
         session = await db.scalar(select(CashSession).where(
             CashSession.id == cash_session_id,
             CashSession.tenant_id == context.tenant_id,
+            CashSession.location_id == location_id,
         ).with_for_update())
         if session is None:
             raise errors.CashSessionNotFoundError()
@@ -500,8 +536,13 @@ def _assert_count_replay(value: CashCount, fingerprint: str) -> CashCountProject
 
 async def create_cash_count(
     db: AsyncSession, *, context: ExecutionContext, cash_session_id: int,
+    location_id: int,
     counted_amount: Decimal, currency: str, idempotency_key: str,
 ) -> tuple[CashCountProjection, bool]:
+    await require_cash_session_location(
+        db, tenant_id=context.tenant_id, location_id=location_id,
+        cash_session_id=cash_session_id,
+    )
     counted_amount = _exact_money(counted_amount, allow_zero=True, count=True)
     currency = _canonical_currency(currency)
     fingerprint = _sha({
@@ -519,6 +560,7 @@ async def create_cash_count(
         session = await db.scalar(select(CashSession).where(
             CashSession.id == cash_session_id,
             CashSession.tenant_id == context.tenant_id,
+            CashSession.location_id == location_id,
         ).with_for_update())
         if session is None:
             raise errors.CashSessionNotFoundError()
@@ -596,13 +638,19 @@ async def _close_by_key(
 
 async def close_cash_session(
     db: AsyncSession, *, context: ExecutionContext, cash_session_id: int,
+    location_id: int,
     cash_count_id: int, variance_reason: str | None, idempotency_key: str,
 ) -> tuple[CashSessionProjection, bool]:
+    await require_cash_session_location(
+        db, tenant_id=context.tenant_id, location_id=location_id,
+        cash_session_id=cash_session_id,
+    )
     reason = _text(variance_reason, maximum=500, field='Variance reason')
     try:
         session = await db.scalar(select(CashSession).where(
             CashSession.id == cash_session_id,
             CashSession.tenant_id == context.tenant_id,
+            CashSession.location_id == location_id,
         ).with_for_update())
         if session is None:
             raise errors.CashSessionNotFoundError()

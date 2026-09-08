@@ -12,6 +12,7 @@ from app.api.deps import (
     get_db,
     require_location_permission,
     require_permission,
+    require_staff_location_access,
 )
 from app.api.diner_deps import DinerAuthenticatedContext, get_diner_authenticated_context
 from app.core.execution import ActorType, ExecutionContext
@@ -561,12 +562,24 @@ async def staff_retry_payment(
 @router.post('/restaurant-payments/{payment_id}/recover', response_model=PaymentResponse)
 async def staff_recover_payment(
     payment_id: int,
-    context: Annotated[AuthenticatedContext, Depends(require_permission('restaurant_payment.recover'))],
+    context: Annotated[
+        AuthenticatedContext,
+        Depends(require_permission('restaurant_payment.recover')),
+    ],
     db: Annotated[AsyncSession, Depends(get_db)],
+    location_id: Annotated[int | None, Query(gt=0)] = None,
 ) -> object:
     try:
+        authorized_location_id = await service.require_payment_location(
+            db,
+            tenant_id=context.tenant_id,
+            payment_id=payment_id,
+            location_id=location_id,
+        )
+        await require_staff_location_access(authorized_location_id, context, db)
         return await service.recover_payment(
             db, context=_staff_execution(context), payment_id=payment_id,
+            location_id=authorized_location_id,
             executor_registry=db.info['payment_executor_registry'],
             credential_resolver=db.info.get('merchant_credential_resolver'),
         )

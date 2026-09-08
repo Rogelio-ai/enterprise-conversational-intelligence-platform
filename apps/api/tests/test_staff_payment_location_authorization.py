@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+from app.restaurant.integrations.payments.contracts import (
+    PaymentExecutionOutcome,
+    PaymentRecoveryOutcome,
+)
 from app.restaurant.integrations.payments.mock import DeterministicPaymentExecutor
 from test_canonical_order_commercial_acceptance import _scope, _staff_headers
 from test_cash_payment_integration import (
@@ -299,3 +303,82 @@ def test_cash_payment_requires_check_cash_session_and_grant_location_consistency
             assert denied.status_code == 404, denied.text
             assert denied.json()['error']['code'] == 'CASH_SESSION_NOT_FOUND'
         assert _financial_counts(connection, denied_check['id']) == (0, 0, 0)
+
+
+def test_staff_recovery_authorizes_payment_location_before_provider_and_state_replay(
+    integration_settings, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    _grant(connection, scope.tenant_id)
+    owner_membership_id = _membership_id(connection, scope.email)
+    _grant_location(connection, scope.tenant_id, owner_membership_id, scope.location_id)
+    other_location = _other_location(connection, scope, 'RECOVERY-MISMATCH')
+    _grant_location(
+        connection, scope.tenant_id, owner_membership_id, other_location.location_id
+    )
+    recover_no_grant_email, _ = _membership(
+        connection,
+        tenant_id=scope.tenant_id,
+        slug=f'{prefix}-recover-permission-no-grant',
+        permissions=('restaurant_payment.recover',),
+    )
+    no_permission_email, no_permission_membership_id = _membership(
+        connection,
+        tenant_id=scope.tenant_id,
+        slug=f'{prefix}-recover-grant-no-permission',
+        permissions=(),
+    )
+    _grant_location(
+        connection, scope.tenant_id, no_permission_membership_id, scope.location_id
+    )
+    executor = DeterministicPaymentExecutor(
+        execution_outcomes=(PaymentExecutionOutcome.UNCERTAIN,),
+        recovery_outcomes=(PaymentRecoveryOutcome.CONFIRMED_SUCCESS,),
+    )
+
+    with _client(integration_settings, executor) as client:
+        check, diner_headers = _new_check(client, connection, scope, 'staff-recovery')
+        diner_id = client.get('/diner-session', headers=diner_headers).json()['id']
+        created = client.post(
+            f"/diner/restaurant-checks/{check['id']}/payments",
+            headers={**diner_headers, 'Idempotency-Key': 'uncertain-for-recovery'},
+            json=_electronic_payload(check, '40', diner_id),
+        )
+        assert created.status_code == 201, created.text
+        assert created.json()['state'] == 'UNCERTAIN'
+        payment_id = created.json()['id']
+        recovery_url = f'/restaurant-payments/{payment_id}/recover'
+
+        denied_cases = (
+            (_staff_headers(client, scope), other_location.location_id, 404),
+            (_login(client, recover_no_grant_email), scope.location_id, 404),
+            (_login(client, no_permission_email), scope.location_id, 403),
+        )
+        for headers, location_id, expected_status in denied_cases:
+            denied = client.post(
+                recovery_url, headers=headers, params={'location_id': location_id}
+            )
+            assert denied.status_code == expected_status, denied.text
+        assert executor.recovery_calls == 0
+
+        owner_headers = _staff_headers(client, scope)
+        recovered = client.post(
+            recovery_url,
+            headers=owner_headers,
+            params={'location_id': scope.location_id},
+        )
+        assert recovered.status_code == 200, recovered.text
+        assert recovered.json()['state'] == 'SUCCEEDED'
+        assert executor.recovery_calls == 1
+
+        wrong_location_replay = client.post(
+            recovery_url,
+            headers=owner_headers,
+            params={'location_id': other_location.location_id},
+        )
+        assert wrong_location_replay.status_code == 404, wrong_location_replay.text
+        compatible_authorized_replay = client.post(recovery_url, headers=owner_headers)
+        assert compatible_authorized_replay.status_code == 409
+        assert compatible_authorized_replay.json()['error']['code'] == 'PAYMENT_STATE_CONFLICT'
+        assert executor.recovery_calls == 1

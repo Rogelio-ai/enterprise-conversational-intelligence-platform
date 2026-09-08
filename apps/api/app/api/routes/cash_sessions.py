@@ -169,6 +169,20 @@ def _error(exc: Exception) -> HTTPException:
     raise exc
 
 
+async def _authorize_cash_session(
+    db: AsyncSession, context: AuthenticatedContext,
+    cash_session_id: int, location_id: int | None,
+) -> int:
+    authorized_location_id = await service.require_cash_session_location(
+        db,
+        tenant_id=context.tenant_id,
+        location_id=location_id,
+        cash_session_id=cash_session_id,
+    )
+    await require_staff_location_access(authorized_location_id, context, db)
+    return authorized_location_id
+
+
 @router.post(
     '/resources/{resource_id}/cash-sessions',
     response_model=CashSessionResponse,
@@ -222,12 +236,17 @@ async def create_cash_movement(
     ],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: IdempotencyKey,
+    location_id: Annotated[int | None, Query(gt=0)] = None,
 ) -> Any:
     try:
+        authorized_location_id = await _authorize_cash_session(
+            db, context, cash_session_id, location_id
+        )
         value, replayed = await service.create_manual_movement(
             db,
             context=_execution(context),
             cash_session_id=cash_session_id,
+            location_id=authorized_location_id,
             movement_type=payload.movement_type,
             amount=payload.amount,
             currency=payload.currency,
@@ -256,12 +275,17 @@ async def create_cash_count(
     ],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: IdempotencyKey,
+    location_id: Annotated[int | None, Query(gt=0)] = None,
 ) -> Any:
     try:
+        authorized_location_id = await _authorize_cash_session(
+            db, context, cash_session_id, location_id
+        )
         value, replayed = await service.create_cash_count(
             db,
             context=_execution(context),
             cash_session_id=cash_session_id,
+            location_id=authorized_location_id,
             counted_amount=payload.counted_amount,
             currency=payload.currency,
             idempotency_key=idempotency_key,
@@ -286,12 +310,17 @@ async def close_cash_session(
     ],
     db: Annotated[AsyncSession, Depends(get_db)],
     idempotency_key: IdempotencyKey,
+    location_id: Annotated[int | None, Query(gt=0)] = None,
 ) -> Any:
     try:
+        authorized_location_id = await _authorize_cash_session(
+            db, context, cash_session_id, location_id
+        )
         value, replayed = await service.close_cash_session(
             db,
             context=_execution(context),
             cash_session_id=cash_session_id,
+            location_id=authorized_location_id,
             cash_count_id=payload.cash_count_id,
             variance_reason=payload.variance_reason,
             idempotency_key=idempotency_key,
@@ -335,10 +364,39 @@ async def get_cash_session(
         AuthenticatedContext, Depends(require_permission('cash_management.read'))
     ],
     db: Annotated[AsyncSession, Depends(get_db)],
+    location_id: Annotated[int | None, Query(gt=0)] = None,
 ) -> Any:
     try:
+        authorized_location_id = await _authorize_cash_session(
+            db, context, cash_session_id, location_id
+        )
         return await service.get_cash_session(
-            db, tenant_id=context.tenant_id, cash_session_id=cash_session_id
+            db, tenant_id=context.tenant_id, location_id=authorized_location_id,
+            cash_session_id=cash_session_id,
+        )
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@router.get(
+    '/cash-sessions/{cash_session_id}/movements',
+    response_model=list[CashMovementResponse],
+)
+async def list_cash_movements(
+    cash_session_id: Annotated[int, Path(gt=0)],
+    context: Annotated[
+        AuthenticatedContext, Depends(require_permission('cash_management.read'))
+    ],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    location_id: Annotated[int | None, Query(gt=0)] = None,
+) -> Any:
+    try:
+        authorized_location_id = await _authorize_cash_session(
+            db, context, cash_session_id, location_id
+        )
+        return await service.list_cash_movements(
+            db, tenant_id=context.tenant_id, location_id=authorized_location_id,
+            cash_session_id=cash_session_id,
         )
     except Exception as exc:
         raise _error(exc) from exc

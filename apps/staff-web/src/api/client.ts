@@ -1,5 +1,9 @@
 import type {
   ApiErrorBody,
+  CashCount,
+  CashMovement,
+  CashSession,
+  CheckSettlement,
   LocationListResponse,
   LoginRequest,
   LoginResponse,
@@ -7,6 +11,9 @@ import type {
   OpenServiceSessionResponse,
   RegeneratedAccessCodeResponse,
   ResourceListResponse,
+  RestaurantCheckDetail,
+  RestaurantCheckListResponse,
+  RestaurantPayment,
   ClosedServiceSessionResponse,
   CurrentServiceSession,
   StaffIdentity,
@@ -106,6 +113,73 @@ export const staffApi = {
       offset: '0',
     });
     return request(`/resources?${query.toString()}`);
+  },
+  cashRegisters(locationId: number): Promise<ResourceListResponse> {
+    const query = new URLSearchParams({
+      location_id: String(locationId), resource_type: 'CASH_REGISTER',
+      status: 'ACTIVE', limit: '100', offset: '0',
+    });
+    return request(`/resources?${query.toString()}`);
+  },
+  async activeCashSession(locationId: number, resourceId: number): Promise<CashSession | null> {
+    const query = new URLSearchParams({ location_id: String(locationId), resource_id: String(resourceId) });
+    try { return await request(`/cash-sessions/active?${query.toString()}`); }
+    catch (error) {
+      if (error instanceof ApiError && error.status === 404) return null;
+      throw error;
+    }
+  },
+  openCashSession(locationId: number, resourceId: number, currency: string, key: string): Promise<CashSession> {
+    return request(`/resources/${resourceId}/cash-sessions?location_id=${locationId}`, {
+      method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ currency }),
+    });
+  },
+  cashSession(locationId: number, sessionId: number): Promise<CashSession> {
+    return request(`/cash-sessions/${sessionId}?location_id=${locationId}`);
+  },
+  cashMovements(locationId: number, sessionId: number): Promise<CashMovement[]> {
+    return request(`/cash-sessions/${sessionId}/movements?location_id=${locationId}`);
+  },
+  createCashMovement(locationId: number, sessionId: number, payload: {
+    movement_type: string; amount: string; currency: string; reason?: string; reference?: string;
+  }, key: string): Promise<CashMovement> {
+    return request(`/cash-sessions/${sessionId}/movements?location_id=${locationId}`, {
+      method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify(payload),
+    });
+  },
+  createCashCount(locationId: number, sessionId: number, amount: string, currency: string, key: string): Promise<CashCount> {
+    return request(`/cash-sessions/${sessionId}/counts?location_id=${locationId}`, {
+      method: 'POST', headers: { 'Idempotency-Key': key },
+      body: JSON.stringify({ counted_amount: amount, currency }),
+    });
+  },
+  closeCashSession(locationId: number, sessionId: number, countId: number, reason: string | undefined, key: string): Promise<CashSession> {
+    return request(`/cash-sessions/${sessionId}/close?location_id=${locationId}`, {
+      method: 'POST', headers: { 'Idempotency-Key': key },
+      body: JSON.stringify({ cash_count_id: countId, variance_reason: reason || null }),
+    });
+  },
+  restaurantChecks(locationId: number): Promise<RestaurantCheckListResponse> {
+    return request(`/restaurant-checks?location_id=${locationId}&limit=100&offset=0`);
+  },
+  restaurantCheck(locationId: number, checkId: number): Promise<RestaurantCheckDetail> {
+    return request(`/restaurant-checks/${checkId}?location_id=${locationId}`);
+  },
+  settlement(locationId: number, checkId: number): Promise<CheckSettlement> {
+    return request(`/restaurant-checks/${checkId}/settlement?location_id=${locationId}`);
+  },
+  createCashPayment(locationId: number, checkId: number, payload: {
+    expected_check_version: number; expected_check_fingerprint: string; amount: string;
+    currency: string; cash_session_id: number; cash_tendered_amount: string;
+  }, key: string): Promise<RestaurantPayment> {
+    return request(`/restaurant-checks/${checkId}/payments?location_id=${locationId}`, {
+      method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({
+        ...payload, method_category: 'CASH', payer_type: 'OTHER', payer_reference: 'cashier',
+      }),
+    });
+  },
+  recoverPayment(locationId: number, paymentId: number): Promise<RestaurantPayment> {
+    return request(`/restaurant-payments/${paymentId}/recover?location_id=${locationId}`, { method: 'POST' });
   },
   async currentServiceSession(resourceId: number): Promise<CurrentServiceSession | null> {
     try {

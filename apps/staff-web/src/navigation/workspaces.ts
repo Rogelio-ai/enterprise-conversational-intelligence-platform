@@ -33,7 +33,7 @@ export const workspaces: Workspace[] = [
     label: 'Caja',
     description: 'Cobro y cierre',
     path: '/cashier',
-    permissions: ['cash_management.read', 'restaurant_check.read', 'restaurant_payment.read'],
+    permissions: ['resource.read', 'cash_management.read', 'restaurant_check.read', 'restaurant_payment.read'],
   },
   {
     key: 'manager',

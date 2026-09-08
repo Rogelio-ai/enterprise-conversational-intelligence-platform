@@ -9,6 +9,7 @@ import { StaffHomePage } from '../pages/StaffHomePage';
 import { HostPage } from '../pages/HostPage';
 import { KitchenPage } from '../pages/KitchenPage';
 import { WaiterPage } from '../pages/WaiterPage';
+import { CashierPage } from '../pages/CashierPage';
 import { WorkspacePlaceholder } from '../pages/WorkspacePlaceholder';
 import { useAuth } from '../session/AuthContext';
 
@@ -53,7 +54,8 @@ export function AppRoutes() {
             <WorkspaceBoundary workspace={workspace}>
               {workspace.key === 'host' ? <HostPage />
                 : workspace.key === 'waiter' ? <WaiterPage />
-                  : workspace.key === 'kitchen' ? <KitchenPage /> : undefined}
+                  : workspace.key === 'kitchen' ? <KitchenPage />
+                    : workspace.key === 'cashier' ? <CashierPage /> : undefined}
             </WorkspaceBoundary>
           </ProtectedApp>
         } />

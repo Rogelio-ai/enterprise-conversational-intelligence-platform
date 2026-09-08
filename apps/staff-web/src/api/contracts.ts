@@ -175,6 +175,118 @@ export interface ResourceListResponse {
   offset: number;
 }
 
+export interface CashSession {
+  id: number;
+  tenant_id: number;
+  organization_id: number;
+  location_id: number;
+  resource_id: number;
+  cashier_membership_id: number;
+  currency: string;
+  status: 'OPEN' | 'CLOSED';
+  movement_version: number;
+  expected_cash: string;
+  opened_at: string;
+  selected_cash_count_id: number | null;
+  final_movement_version: number | null;
+  frozen_expected_cash: string | null;
+  frozen_variance: string | null;
+  variance_reason: string | null;
+  closed_at: string | null;
+}
+
+export interface CashMovement {
+  id: number;
+  cash_session_id: number;
+  movement_type: string;
+  amount: string;
+  currency: string;
+  reason: string | null;
+  reference: string | null;
+  recorded_at: string;
+}
+
+export interface CashCount {
+  id: number;
+  cash_session_id: number;
+  counted_amount: string;
+  currency: string;
+  captured_movement_version: number;
+  counted_at: string;
+}
+
+export interface RestaurantCheckSummary {
+  id: number;
+  organization_id: number;
+  location_id: number;
+  resource_ids: number[];
+  table_scope_session_ids: number[];
+  status: string;
+  version: number;
+  fingerprint: string;
+  currency: string;
+  liability_total: string;
+  confirmed_settlement: string;
+  reserved_financial_exposure: string;
+  uncertain_exposure: string;
+  outstanding: string;
+  available_to_initiate: string;
+  created_at: string;
+}
+
+export interface RestaurantCheckListResponse {
+  items: RestaurantCheckSummary[];
+  limit: number;
+  offset: number;
+}
+
+export interface RestaurantCheckDetail extends RestaurantCheckSummary {
+  tenant_id: number;
+  controller_diner_session_id: number | null;
+  member_ids: number[];
+  diner_scope_ids: number[];
+  consumption_total: string;
+  gratuity_total: string;
+  continuation_decision: string;
+  details: unknown;
+  signal: string | null;
+}
+
+export interface RestaurantPayment {
+  id: number;
+  check_id: number;
+  check_version: number;
+  check_fingerprint: string;
+  amount: string;
+  currency: string;
+  method_category: 'CASH' | 'CARD' | 'TRANSFER';
+  payer_type: string;
+  payer_diner_session_id: number | null;
+  payer_reference: string | null;
+  state: string;
+  executor_key: string | null;
+  external_reference: string | null;
+  external_status: string | null;
+  instrument_display: string | null;
+  cash_tendered_amount: string | null;
+  cash_change_due: string | null;
+  terminal_at: string | null;
+}
+
+export interface CheckSettlement {
+  check_id: number;
+  check_status: string;
+  check_version: number;
+  check_fingerprint: string;
+  liability_total: string;
+  currency: string;
+  confirmed_settlement: string;
+  reserved_financial_exposure: string;
+  uncertain_exposure: string;
+  available_to_initiate: string;
+  payments: RestaurantPayment[];
+}
+
 export interface CurrentServiceSession {
   id: number;
   resource_id: number;

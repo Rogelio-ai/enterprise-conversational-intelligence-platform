@@ -1204,14 +1204,33 @@ async def retry_payment(
     )
 
 
+async def require_payment_location(
+    db: AsyncSession, *, tenant_id: int, payment_id: int,
+    location_id: int | None,
+) -> int:
+    value = await db.scalar(select(RestaurantPayment.location_id).where(
+        RestaurantPayment.id == payment_id,
+        RestaurantPayment.tenant_id == tenant_id,
+        *((RestaurantPayment.location_id == location_id,) if location_id is not None else ()),
+    ))
+    if value is None:
+        raise errors.PaymentNotFoundError()
+    return int(value)
+
+
 async def recover_payment(
     db: AsyncSession, *, context: ExecutionContext, payment_id: int,
+    location_id: int | None = None,
     executor_registry: PaymentExecutorRegistry,
     credential_resolver: MerchantCredentialResolver | None,
 ) -> PaymentProjection:
     payment = await db.scalar(select(RestaurantPayment).where(
         RestaurantPayment.id == payment_id,
         RestaurantPayment.tenant_id == context.tenant_id,
+        *(
+            (RestaurantPayment.location_id == location_id,)
+            if location_id is not None else ()
+        ),
     ).with_for_update())
     if payment is None:
         raise errors.PaymentNotFoundError()
