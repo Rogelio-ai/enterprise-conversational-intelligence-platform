@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from datetime import datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
@@ -7,12 +8,18 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Resp
 from pydantic import BeforeValidator, BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedContext, get_db, require_permission
+from app.api.deps import (
+    AuthenticatedContext,
+    get_db,
+    require_location_permission,
+    require_permission,
+)
 from app.api.diner_deps import DinerAuthenticatedContext, get_diner_authenticated_context
 from app.core.execution import ActorType, ExecutionContext
 from app.core.middleware import get_correlation_id
 from app.restaurant.checks import errors, service
 from app.restaurant.orders import service as draft_service
+from app.restaurant.payments import service as payment_service
 
 
 router = APIRouter(tags=['restaurant-checks'])
@@ -106,6 +113,7 @@ class CheckResponse(BaseModel):
     fingerprint: str
     currency: str
     controller_diner_session_id: int | None
+    resource_ids: tuple[int, ...]
     member_ids: tuple[int, ...]
     diner_scope_ids: tuple[int, ...]
     table_scope_session_ids: tuple[int, ...]
@@ -115,12 +123,38 @@ class CheckResponse(BaseModel):
     confirmed_settlement: Decimal
     outstanding: Decimal
     uncertain_exposure: Decimal
+    created_at: datetime
     frozen_at: Any
     settled_at: Any
     continuation_decision: str
     cancelled_at: Any
     details: Any
     signal: str | None = None
+
+
+class StaffCheckListItemResponse(BaseModel):
+    id: int
+    organization_id: int
+    location_id: int
+    resource_ids: tuple[int, ...]
+    table_scope_session_ids: tuple[int, ...]
+    status: str
+    version: int
+    fingerprint: str
+    currency: str
+    liability_total: Decimal
+    confirmed_settlement: Decimal
+    reserved_financial_exposure: Decimal
+    uncertain_exposure: Decimal
+    outstanding: Decimal
+    available_to_initiate: Decimal
+    created_at: datetime
+
+
+class StaffCheckListResponse(BaseModel):
+    items: list[StaffCheckListItemResponse]
+    limit: int
+    offset: int
 
 
 class EligibleResponse(BaseModel):
@@ -323,14 +357,73 @@ async def staff_create_check(payload: StaffCheckCreateRequest, response: Respons
     return value
 
 
+@router.get('/restaurant-checks', response_model=StaffCheckListResponse)
+async def staff_list_checks(
+    location_id: Annotated[int, Query(gt=0)],
+    context: Annotated[
+        AuthenticatedContext,
+        Depends(require_location_permission('restaurant_check.read')),
+    ],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    check_status: Annotated[
+        Literal['OPEN', 'FROZEN', 'SETTLED', 'CANCELLED'] | None,
+        Query(alias='status'),
+    ] = None,
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> StaffCheckListResponse:
+    checks = await service.list_checks(
+        db,
+        tenant_id=context.tenant_id,
+        location_id=location_id,
+        check_status=check_status,
+        limit=limit,
+        offset=offset,
+    )
+    items = []
+    for check in checks:
+        settlement = await payment_service.get_check_settlement(
+            db, tenant_id=context.tenant_id, check_id=check.id
+        )
+        items.append(StaffCheckListItemResponse(
+            id=check.id,
+            organization_id=check.organization_id,
+            location_id=check.location_id,
+            resource_ids=check.resource_ids,
+            table_scope_session_ids=check.table_scope_session_ids,
+            status=check.status,
+            version=check.version,
+            fingerprint=check.fingerprint,
+            currency=check.currency,
+            liability_total=check.liability_total,
+            confirmed_settlement=settlement.confirmed_settlement,
+            reserved_financial_exposure=settlement.reserved_financial_exposure,
+            uncertain_exposure=settlement.uncertain_exposure,
+            outstanding=check.outstanding,
+            available_to_initiate=settlement.available_to_initiate,
+            created_at=check.created_at,
+        ))
+    return StaffCheckListResponse(items=items, limit=limit, offset=offset)
+
+
 @router.get('/restaurant-checks/{check_id}', response_model=CheckResponse)
 async def staff_get_check(
     check_id: int,
-    context: Annotated[AuthenticatedContext, Depends(require_permission('restaurant_check.read'))],
+    location_id: Annotated[int, Query(gt=0)],
+    context: Annotated[
+        AuthenticatedContext,
+        Depends(require_location_permission('restaurant_check.read')),
+    ],
     db: Annotated[AsyncSession, Depends(get_db)],
     view: Literal['totalized', 'detailed'] = Query('totalized'),
 ) -> object:
-    try: return await service.get_check(db, tenant_id=context.tenant_id, check_id=check_id, detailed=view == 'detailed')
+    try: return await service.get_check(
+        db,
+        tenant_id=context.tenant_id,
+        location_id=location_id,
+        check_id=check_id,
+        detailed=view == 'detailed',
+    )
     except Exception as exc: raise _error(exc) from exc
 
 

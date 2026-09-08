@@ -42,6 +42,7 @@ class CheckProjection:
     fingerprint: str
     currency: str
     controller_diner_session_id: int | None
+    resource_ids: tuple[int, ...]
     member_ids: tuple[int, ...]
     diner_scope_ids: tuple[int, ...]
     table_scope_session_ids: tuple[int, ...]
@@ -51,6 +52,7 @@ class CheckProjection:
     confirmed_settlement: Decimal
     outstanding: Decimal
     uncertain_exposure: Decimal
+    created_at: datetime
     frozen_at: datetime | None
     settled_at: datetime | None
     continuation_decision: str

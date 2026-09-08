@@ -960,9 +960,15 @@ async def decide_continuation(
 
 async def get_check(
     db: AsyncSession, *, tenant_id: int, check_id: int, detailed: bool = False,
-    owner_diner_session_id: int | None = None,
+    owner_diner_session_id: int | None = None, location_id: int | None = None,
 ) -> CheckProjection:
-    check = await db.scalar(select(RestaurantCheck).where(RestaurantCheck.id == check_id, RestaurantCheck.tenant_id == tenant_id))
+    check_query = select(RestaurantCheck).where(
+        RestaurantCheck.id == check_id,
+        RestaurantCheck.tenant_id == tenant_id,
+    )
+    if location_id is not None:
+        check_query = check_query.where(RestaurantCheck.location_id == location_id)
+    check = await db.scalar(check_query)
     if check is None:
         raise errors.CheckNotFoundError()
     all_members = tuple((await db.execute(select(RestaurantCheckMember).where(
@@ -1021,17 +1027,48 @@ async def get_check(
         location_id=check.location_id, status=check.status, version=check.version,
         fingerprint=check.current_fingerprint, currency=check.currency,
         controller_diner_session_id=check.controller_diner_session_id,
+        resource_ids=tuple(sorted({
+            *(value.resource_id for value in all_members),
+            *(value.resource_id for value in table_scopes),
+        })),
         member_ids=tuple(value.diner_session_id for value in members),
         diner_scope_ids=tuple(value.diner_session_id for value in all_members if value.service_session_id not in table_session_ids),
         table_scope_session_ids=tuple(value.service_session_id for value in table_scopes),
         consumption_total=check.consumption_total, gratuity_total=check.gratuity_total,
         liability_total=check.liability_total, confirmed_settlement=settled,
         outstanding=max(ZERO, check.liability_total - settled), uncertain_exposure=uncertain,
+        created_at=check.created_at,
         frozen_at=check.frozen_at, settled_at=check.settled_at,
         continuation_decision=check.continuation_decision,
         cancelled_at=check.cancelled_at, details=details,
         signal=('SERVICE_CONTINUATION_DECISION_REQUIRED' if check.continuation_decision == 'PENDING' else None),
     )
+
+
+async def list_checks(
+    db: AsyncSession, *, tenant_id: int, location_id: int,
+    check_status: str | None, limit: int, offset: int,
+) -> tuple[CheckProjection, ...]:
+    query = select(RestaurantCheck.id).where(
+        RestaurantCheck.tenant_id == tenant_id,
+        RestaurantCheck.location_id == location_id,
+    )
+    if check_status is not None:
+        query = query.where(RestaurantCheck.status == check_status)
+    check_ids = tuple((await db.execute(
+        query.order_by(RestaurantCheck.created_at, RestaurantCheck.id)
+        .limit(limit)
+        .offset(offset)
+    )).scalars().all())
+    return tuple([
+        await get_check(
+            db,
+            tenant_id=tenant_id,
+            location_id=location_id,
+            check_id=check_id,
+        )
+        for check_id in check_ids
+    ])
 
 
 async def eligible_consumption(
