@@ -7,7 +7,12 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Resp
 from pydantic import BeforeValidator, BaseModel, ConfigDict, Field, SecretStr, model_validator
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedContext, get_db, require_permission
+from app.api.deps import (
+    AuthenticatedContext,
+    get_db,
+    require_location_permission,
+    require_permission,
+)
 from app.api.diner_deps import DinerAuthenticatedContext, get_diner_authenticated_context
 from app.core.execution import ActorType, ExecutionContext
 from app.core.middleware import get_correlation_id
@@ -509,11 +514,20 @@ async def staff_initiate_payment(
 @router.get('/restaurant-checks/{check_id}/settlement', response_model=SettlementResponse)
 async def staff_get_settlement(
     check_id: int,
-    context: Annotated[AuthenticatedContext, Depends(require_permission('restaurant_payment.read'))],
+    location_id: Annotated[int, Query(gt=0)],
+    context: Annotated[
+        AuthenticatedContext,
+        Depends(require_location_permission('restaurant_payment.read')),
+    ],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> object:
     try:
-        return await service.get_check_settlement(db, tenant_id=context.tenant_id, check_id=check_id)
+        return await service.get_check_settlement(
+            db,
+            tenant_id=context.tenant_id,
+            location_id=location_id,
+            check_id=check_id,
+        )
     except Exception as exc:
         raise _error(exc) from exc
 

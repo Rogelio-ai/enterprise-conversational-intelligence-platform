@@ -76,6 +76,22 @@ def _grant(connection, tenant_id: int, *, configure_executor: bool = True) -> No
             )
 
 
+def _grant_staff_location(connection, scope) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT tm.id FROM tenant_memberships tm '
+            'JOIN users u ON u.id=tm.user_id '
+            'WHERE tm.tenant_id=%s AND u.email=%s',
+            (scope.tenant_id, scope.email),
+        )
+        membership_id = int(cursor.fetchone()['id'])
+        cursor.execute(
+            'INSERT INTO membership_location_grants '
+            '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
+            (scope.tenant_id, membership_id, scope.location_id),
+        )
+
+
 def _order(client, connection, scope, diner_headers, amount='100'):
     product_id = _product(connection, scope, amount=amount)
     preview = _preview(client, diner_headers, product_id)
@@ -207,6 +223,7 @@ def test_uncertain_reserves_capacity_multiple_payers_and_recovery_finalizes(
     connection, prefix = sql_connection
     scope = _scope(connection, prefix)
     _grant(connection, scope.tenant_id)
+    _grant_staff_location(connection, scope)
     executor = DeterministicPaymentExecutor(
         execution_outcomes=(PaymentExecutionOutcome.UNCERTAIN, PaymentExecutionOutcome.SUCCEEDED),
         recovery_outcomes=(PaymentRecoveryOutcome.CONFIRMED_SUCCESS,),
@@ -266,6 +283,7 @@ def test_uncertain_reserves_capacity_multiple_payers_and_recovery_finalizes(
         projection = client.get(
             f"/restaurant-checks/{check['id']}/settlement",
             headers=_staff_headers(client, scope),
+            params={'location_id': scope.location_id},
         ).json()
         assert projection['check_status'] == 'FROZEN'
         assert Decimal(projection['confirmed_settlement']) == Decimal('60')
@@ -286,6 +304,7 @@ def test_uncertain_reserves_capacity_multiple_payers_and_recovery_finalizes(
         final = client.get(
             f"/restaurant-checks/{check['id']}/settlement",
             headers=_staff_headers(client, scope),
+            params={'location_id': scope.location_id},
         ).json()
         assert final['check_status'] == 'SETTLED'
         assert Decimal(final['confirmed_settlement']) == Decimal('100')
@@ -412,6 +431,7 @@ def test_recovery_absence_releases_capacity_retry_reacquires_and_uncertainty_rem
     connection, prefix = sql_connection
     scope = _scope(connection, prefix)
     _grant(connection, scope.tenant_id)
+    _grant_staff_location(connection, scope)
     executor = DeterministicPaymentExecutor(
         execution_outcomes=(
             PaymentExecutionOutcome.UNCERTAIN,
@@ -465,6 +485,7 @@ def test_recovery_absence_releases_capacity_retry_reacquires_and_uncertainty_rem
         projection = client.get(
             f"/restaurant-checks/{check['id']}/settlement",
             headers=_staff_headers(client, scope),
+            params={'location_id': scope.location_id},
         ).json()
         assert Decimal(projection['confirmed_settlement']) == Decimal('40')
         assert Decimal(projection['uncertain_exposure']) == Decimal('20')

@@ -228,12 +228,17 @@ async def _totals(
 
 async def get_check_settlement(
     db: AsyncSession, *, tenant_id: int, check_id: int,
-    owner_diner_session_id: int | None = None,
+    owner_diner_session_id: int | None = None, location_id: int | None = None,
 ) -> CheckSettlementProjection:
-    check = await db.scalar(select(RestaurantCheck).where(
+    check_query = select(RestaurantCheck).where(
         RestaurantCheck.id == check_id, RestaurantCheck.tenant_id == tenant_id,
-    ))
+    )
+    if location_id is not None:
+        check_query = check_query.where(RestaurantCheck.location_id == location_id)
+    check = await db.scalar(check_query)
     if check is None:
+        if location_id is not None:
+            raise errors.PaymentNotFoundError()
         raise errors.CheckNotPayableError('Restaurant Check was not found')
     if owner_diner_session_id is not None:
         member = await db.scalar(select(RestaurantCheckMember.id).where(
