@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
+from pydantic import SecretStr
+
 from app.restaurant.integrations.payments.contracts import EphemeralMerchantCredential
 from app.restaurant.payments import errors
 
@@ -42,3 +44,38 @@ class DeterministicMerchantCredentialResolver:
                 'Merchant credential is unavailable for the selected executor configuration'
             )
         return EphemeralMerchantCredential(value=value)
+
+
+class BoundMerchantCredentialResolver:
+    """Resolve one runtime-injected secret through an exact non-secret binding."""
+
+    __slots__ = ('_adapter_kind', '_credential_binding', '_credential')
+
+    def __init__(
+        self,
+        *,
+        adapter_kind: str,
+        credential_binding: str,
+        credential: SecretStr,
+    ) -> None:
+        self._adapter_kind = adapter_kind.strip().upper()
+        self._credential_binding = credential_binding.strip()
+        self._credential = credential
+
+    async def resolve(
+        self, *, context: MerchantCredentialContext
+    ) -> EphemeralMerchantCredential:
+        if (
+            context.adapter_kind.strip().upper() != self._adapter_kind
+            or context.credential_binding != self._credential_binding
+        ):
+            raise errors.MerchantCredentialResolutionError(
+                'Merchant credential is unavailable for the selected executor configuration'
+            )
+        return EphemeralMerchantCredential(value=self._credential)
+
+    def __repr__(self) -> str:
+        return (
+            f'{type(self).__name__}(adapter_kind={self._adapter_kind!r}, '
+            'credential_binding=<redacted>, credential=<redacted>)'
+        )

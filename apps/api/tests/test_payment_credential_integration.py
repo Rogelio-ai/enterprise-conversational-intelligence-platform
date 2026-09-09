@@ -334,6 +334,7 @@ def test_auto_selects_once_and_inactive_original_controls_recovery(
         before_recovery = client.get(
             f"/restaurant-checks/{check['id']}/settlement",
             headers=_staff_headers(client, scope),
+            params={'location_id': scope.location_id},
         ).json()
         assert Decimal(before_recovery['uncertain_exposure']) == Decimal('40')
         assert Decimal(before_recovery['confirmed_settlement']) == Decimal('10')
@@ -557,6 +558,7 @@ def test_cash_needs_no_configuration_registry_credential_or_customer_source(
         paid = client.post(
             f"/restaurant-checks/{check['id']}/payments",
             headers={**_staff_headers(client, scope), 'Idempotency-Key': 'b3-cash'},
+            params={'location_id': scope.location_id},
             json={
                 'expected_check_version': check['version'],
                 'expected_check_fingerprint': check['fingerprint'],

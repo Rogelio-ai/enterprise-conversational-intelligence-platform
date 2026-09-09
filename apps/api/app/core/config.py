@@ -39,6 +39,15 @@ class Settings(BaseSettings):
     electronic_payments_enabled: bool = Field(
         default=True, alias='ELECTRONIC_PAYMENTS_ENABLED'
     )
+    conekta_environment: Literal['disabled', 'test'] = Field(
+        default='disabled', alias='CONEKTA_ENVIRONMENT'
+    )
+    conekta_credential_binding: str | None = Field(
+        default=None, alias='CONEKTA_CREDENTIAL_BINDING', min_length=1, max_length=200
+    )
+    conekta_private_key: SecretStr | None = Field(
+        default=None, alias='CONEKTA_PRIVATE_KEY', min_length=1
+    )
     cfdi_issuance_enabled: bool = Field(default=True, alias='CFDI_ISSUANCE_ENABLED')
     connector_delivery_enabled: bool = Field(
         default=True, alias='CONNECTOR_DELIVERY_ENABLED'
@@ -107,6 +116,11 @@ class Settings(BaseSettings):
     def normalize_finkok_environment(cls, value: object) -> object:
         return value.lower() if isinstance(value, str) else value
 
+    @field_validator('conekta_environment', mode='before')
+    @classmethod
+    def normalize_conekta_environment(cls, value: object) -> object:
+        return value.lower() if isinstance(value, str) else value
+
     @field_validator('public_origin')
     @classmethod
     def require_safe_public_origin(cls, value: str) -> str:
@@ -148,6 +162,28 @@ class Settings(BaseSettings):
             raise ValueError(
                 'Production requires every excluded pilot capability to be explicitly disabled'
             )
+        conekta_inputs_present = (
+            self.conekta_credential_binding is not None
+            or self.conekta_private_key is not None
+        )
+        if self.conekta_environment == 'disabled' and conekta_inputs_present:
+            raise ValueError(
+                'Conekta credentials require CONEKTA_ENVIRONMENT=test'
+            )
+        if self.conekta_environment == 'test':
+            if self.app_env == 'production':
+                raise ValueError('Conekta TEST execution is forbidden in production mode')
+            if not self.electronic_payments_enabled:
+                raise ValueError(
+                    'Conekta TEST execution requires electronic payments to be enabled'
+                )
+            if (
+                self.conekta_credential_binding is None
+                or self.conekta_private_key is None
+            ):
+                raise ValueError(
+                    'Conekta TEST execution requires a credential binding and private key'
+                )
         return self
 
     @property

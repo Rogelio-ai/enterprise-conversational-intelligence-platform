@@ -53,7 +53,10 @@ from app.core.middleware import (
     SecurityHeadersMiddleware,
 )
 from app.db.session import DatabaseManager
-from app.restaurant.integrations.payments.credentials import MerchantCredentialResolver
+from app.restaurant.integrations.payments.credentials import (
+    BoundMerchantCredentialResolver,
+    MerchantCredentialResolver,
+)
 from app.restaurant.integrations.payments.conekta import ConektaPaymentExecutor
 from app.restaurant.integrations.payments.registry import PaymentExecutorRegistry
 from app.restaurant.integrations.fiscal.credentials import (
@@ -119,7 +122,20 @@ def create_app(
         app.state.payment_executor_registry = PaymentExecutorRegistry(
             configured_payment_executors
         )
-    app.state.merchant_credential_resolver = merchant_credential_resolver
+    if merchant_credential_resolver is not None:
+        app.state.merchant_credential_resolver = merchant_credential_resolver
+    elif runtime_settings.conekta_environment == 'test':
+        credential_binding = runtime_settings.conekta_credential_binding
+        private_key = runtime_settings.conekta_private_key
+        if credential_binding is None or private_key is None:
+            raise RuntimeError('Validated Conekta TEST credentials are unavailable')
+        app.state.merchant_credential_resolver = BoundMerchantCredentialResolver(
+            adapter_kind='CONEKTA',
+            credential_binding=credential_binding,
+            credential=private_key,
+        )
+    else:
+        app.state.merchant_credential_resolver = None
     if fiscal_provider_registry is not None:
         app.state.fiscal_provider_registry = fiscal_provider_registry
     else:

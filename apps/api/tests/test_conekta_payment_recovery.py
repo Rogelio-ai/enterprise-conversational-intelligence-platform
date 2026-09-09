@@ -122,6 +122,7 @@ def test_real_conekta_recovery_uses_order_lookup_and_generic_settlement_once(
         settlement = client.get(
             f"/restaurant-checks/{check['id']}/settlement",
             headers=staff_headers,
+            params={'location_id': scope.location_id},
         )
 
     assert recovered.status_code == 200, recovered.text

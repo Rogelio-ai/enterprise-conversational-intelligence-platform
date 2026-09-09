@@ -1,0 +1,13 @@
+services:
+  api:
+    environment:
+      APP_ENV: test
+      ELECTRONIC_PAYMENTS_ENABLED: "true"
+      CONEKTA_ENVIRONMENT: test
+      CONEKTA_CREDENTIAL_BINDING: ${CONEKTA_CREDENTIAL_BINDING:?CONEKTA_CREDENTIAL_BINDING is required}
+      CONEKTA_PRIVATE_KEY_FILE: /run/secrets/conekta_test_private_key
+    secrets: [conekta_test_private_key]
+
+secrets:
+  conekta_test_private_key:
+    file: ${CONEKTA_TEST_PRIVATE_KEY_FILE:?CONEKTA_TEST_PRIVATE_KEY_FILE is required}

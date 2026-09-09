@@ -17,5 +17,6 @@ load_secret() {
 load_secret MYSQL_PASSWORD
 load_secret AUTH_JWT_SECRET
 load_secret RESTAURANT_ACCESS_CODE_SECRET
+load_secret CONEKTA_PRIVATE_KEY
 
 exec "$@"
