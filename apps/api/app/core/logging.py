@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from app.core.middleware import get_correlation_id
+from app.core.observability import OperationalEventMetricHandler
 
 
 _STANDARD_RECORD_FIELDS = set(logging.makeLogRecord({}).__dict__)
@@ -47,6 +48,8 @@ def configure_logging(*, service: str, level: str) -> None:
         root.handlers.clear()
         root.addHandler(handler)
     handler.setFormatter(JsonFormatter(service))
+    if not any(isinstance(value, OperationalEventMetricHandler) for value in root.handlers):
+        root.addHandler(OperationalEventMetricHandler())
 
     for logger_name in ('uvicorn', 'uvicorn.error', 'uvicorn.access'):
         runtime_logger = logging.getLogger(logger_name)

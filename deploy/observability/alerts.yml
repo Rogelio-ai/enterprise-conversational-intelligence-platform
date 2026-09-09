@@ -1,0 +1,45 @@
+groups:
+  - name: ecip-pilot-core
+    rules:
+      - alert: ApiUnavailable
+        expr: up{job="ecip-api"} == 0
+        for: 2m
+        labels: {severity: critical}
+        annotations: {summary: "ECIP API is unavailable"}
+      - alert: ApiErrorRateHigh
+        expr: sum(rate(ecip_http_requests_total{status_code=~"5.."}[5m])) / clamp_min(sum(rate(ecip_http_requests_total[5m])), 0.001) > 0.05
+        for: 5m
+        labels: {severity: warning}
+        annotations: {summary: "ECIP API 5xx rate exceeds 5%"}
+      - alert: DatabaseNotReady
+        expr: max_over_time(ecip_http_requests_total{route="/ready",status_code="503"}[2m]) > 0
+        for: 1m
+        labels: {severity: critical}
+        annotations: {summary: "ECIP database readiness is failing"}
+      - alert: OrderPreparationFailure
+        expr: increase(ecip_operational_events_total{domain="preparation",event="order_preparation_routing_failed"}[5m]) > 0
+        labels: {severity: critical}
+        annotations: {summary: "Order to Preparation routing requires action"}
+      - alert: BackupFailed
+        expr: ecip_backup_success == 0 or (time() - ecip_backup_timestamp_seconds) > 90000
+        for: 5m
+        labels: {severity: critical}
+        annotations: {summary: "Pilot backup failed or is stale"}
+      - alert: PaymentUncertain
+        expr: increase(restaurant_payment_execution_total{outcome="uncertain"}[5m]) > 0
+        labels: {severity: critical, capability: electronic-payments}
+        annotations: {summary: "Payment result is uncertain"}
+      - alert: FiscalFailureOrUncertainty
+        expr: increase(ecip_operational_events_total{domain="fiscal",event="fiscal_artifact_persistence_failed"}[5m]) > 0
+        labels: {severity: critical, capability: cfdi}
+        annotations: {summary: "Fiscal issuance failed or is uncertain"}
+      - alert: ConnectorOffline
+        expr: (time() - ecip_connector_last_heartbeat_timestamp_seconds) > 120
+        for: 2m
+        labels: {severity: warning, capability: physical-printing}
+        annotations: {summary: "Restaurant Local Connector is offline"}
+      - alert: PrintActionRequiredBacklog
+        expr: increase(ecip_operational_events_total{domain="printing",outcome=~"failed|action_required"}[5m]) > 0
+        for: 2m
+        labels: {severity: warning, capability: physical-printing}
+        annotations: {summary: "Print/action-required backlog exists"}

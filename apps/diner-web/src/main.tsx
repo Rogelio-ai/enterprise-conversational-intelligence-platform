@@ -18,7 +18,7 @@ createRoot(document.getElementById('root')!).render(
   <StrictMode>
     <QueryClientProvider client={queryClient}>
       <ThemeProvider>
-        <BrowserRouter>
+        <BrowserRouter basename={import.meta.env.VITE_ROUTER_BASENAME || undefined}>
           <AuthProvider>
             <AppRoutes />
           </AuthProvider>

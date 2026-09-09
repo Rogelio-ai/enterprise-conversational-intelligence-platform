@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+from collections import deque
 from contextvars import ContextVar
 from time import perf_counter
 from uuid import uuid4
@@ -30,6 +31,80 @@ HTTP_REQUEST_DURATION_SECONDS = Histogram(
 )
 
 logger = logging.getLogger('ecip.request')
+
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    async def dispatch(self, request: Request, call_next):
+        response = await call_next(request)
+        response.headers.setdefault('X-Content-Type-Options', 'nosniff')
+        response.headers.setdefault('X-Frame-Options', 'DENY')
+        response.headers.setdefault('Referrer-Policy', 'same-origin')
+        response.headers.setdefault('Permissions-Policy', 'camera=(), microphone=(), geolocation=()')
+        response.headers.setdefault('Cache-Control', 'no-store')
+        return response
+
+
+class EntryPointRateLimitMiddleware(BaseHTTPMiddleware):
+    """Bounded, per-process protection for public credential entry points."""
+
+    def __init__(self, app, *, staff_limit: int, diner_limit: int) -> None:
+        super().__init__(app)
+        self.limits = {'/auth/login': staff_limit, '/diner-sessions/join': diner_limit}
+        self.requests: dict[tuple[str, str], deque[float]] = {}
+
+    async def dispatch(self, request: Request, call_next):
+        limit = self.limits.get(request.url.path) if request.method == 'POST' else None
+        if limit is None:
+            return await call_next(request)
+        now = perf_counter()
+        client = request.client.host if request.client else 'unknown'
+        key = (request.url.path, client)
+        bucket = self.requests.get(key)
+        if bucket is None:
+            if len(self.requests) >= 10_000:
+                self.requests.pop(next(iter(self.requests)))
+            bucket = self.requests[key] = deque()
+        while bucket and bucket[0] <= now - 60:
+            bucket.popleft()
+        if len(bucket) >= limit:
+            logger.warning(
+                'Credential entry point rate limited',
+                extra={'event': 'credential_entry_rate_limited', 'path': request.url.path},
+            )
+            return JSONResponse(
+                status_code=429,
+                content={'error': {'code': 'rate_limited', 'message': 'Too many requests'}},
+                headers={'Retry-After': '60'},
+            )
+        bucket.append(now)
+        return await call_next(request)
+
+
+class PilotCapabilityBoundaryMiddleware(BaseHTTPMiddleware):
+    """Fail closed for externally acting capabilities excluded from the initial pilot."""
+
+    def __init__(self, app, *, connector_enabled: bool, external_pos_enabled: bool) -> None:
+        super().__init__(app)
+        self.connector_enabled = connector_enabled
+        self.external_pos_enabled = external_pos_enabled
+
+    async def dispatch(self, request: Request, call_next):
+        capability = None
+        if request.url.path.startswith('/connector/v1/') and not self.connector_enabled:
+            capability = 'physical_printing'
+        elif '/pos-submission' in request.url.path and not self.external_pos_enabled:
+            capability = 'external_pos'
+        if capability is not None:
+            return JSONResponse(
+                status_code=503,
+                content={
+                    'error': {
+                        'code': 'capability_disabled',
+                        'message': f'{capability} is disabled by deployment policy',
+                    }
+                },
+            )
+        return await call_next(request)
 
 
 def get_correlation_id() -> str | None:

@@ -1,0 +1,38 @@
+services:
+  mysql-cert:
+    image: mysql:8.4
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE}
+      MYSQL_USER: ${MYSQL_USER}
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+    secrets: [mysql_password, mysql_root_password]
+    healthcheck:
+      test: [CMD-SHELL, 'mysqladmin ping --silent -h 127.0.0.1 -uroot -p"$$(cat /run/secrets/mysql_root_password)"']
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks:
+      database:
+        aliases: [mysql-cert]
+      monitoring: {}
+    volumes:
+      - mysql-cert-data:/var/lib/mysql
+      - ./scripts:/opt/ws33b:ro
+      - /tmp/pryecip-ws33b:/cert
+
+  api:
+    depends_on:
+      mysql-cert: {condition: service_healthy}
+
+  migrate:
+    depends_on:
+      mysql-cert: {condition: service_healthy}
+
+secrets:
+  mysql_root_password: {file: "${MYSQL_ROOT_PASSWORD_FILE:?MYSQL_ROOT_PASSWORD_FILE is required for certification}"}
+
+volumes:
+  mysql-cert-data: {}

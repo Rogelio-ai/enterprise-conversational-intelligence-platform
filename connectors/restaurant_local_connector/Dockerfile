@@ -19,5 +19,6 @@ RUN groupadd --system connector && useradd --system --gid connector connector \
 COPY --from=build /wheels /wheels
 RUN pip install --no-cache-dir /wheels/*.whl && rm -rf /wheels
 USER connector
+VOLUME ["/etc/pryecip-local-connector", "/var/lib/pryecip-local-connector"]
 ENTRYPOINT ["pryecip-local-connector"]
 CMD ["--config", "/etc/pryecip-local-connector/config.toml", "run"]

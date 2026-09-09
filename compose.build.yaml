@@ -1,0 +1,16 @@
+services:
+  restaurant-api:
+    image: ${REGISTRY:-local}/${REGISTRY_NAMESPACE:-pryecip}/restaurant-api:${RELEASE_ID:?RELEASE_ID is required}
+    build: {context: apps/api, target: runtime}
+  restaurant-diner-web:
+    image: ${REGISTRY:-local}/${REGISTRY_NAMESPACE:-pryecip}/restaurant-diner-web:${RELEASE_ID:?RELEASE_ID is required}
+    build: {context: apps/diner-web}
+  restaurant-staff-web:
+    image: ${REGISTRY:-local}/${REGISTRY_NAMESPACE:-pryecip}/restaurant-staff-web:${RELEASE_ID:?RELEASE_ID is required}
+    build: {context: apps/staff-web}
+  restaurant-local-connector:
+    image: ${REGISTRY:-local}/${REGISTRY_NAMESPACE:-pryecip}/restaurant-local-connector:${RELEASE_ID:?RELEASE_ID is required}
+    build: {context: connectors/restaurant_local_connector}
+  restaurant-ingress:
+    image: ${REGISTRY:-local}/${REGISTRY_NAMESPACE:-pryecip}/restaurant-ingress:${RELEASE_ID:?RELEASE_ID is required}
+    build: {context: deploy/ingress}

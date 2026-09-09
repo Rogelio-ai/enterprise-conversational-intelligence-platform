@@ -51,6 +51,14 @@ data/minio/
 # Temporary / backup
 *.bak
 *.backup
+*.sql
+*.dump
+*.age
+*.enc
+backups/
+restore-work/
+secrets/
+tls/
 *.swp
 *.swo
 *~

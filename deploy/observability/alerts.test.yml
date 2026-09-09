@@ -1,0 +1,13 @@
+rule_files: [alerts.yml]
+evaluation_interval: 1m
+tests:
+  - interval: 1m
+    input_series:
+      - series: 'up{job="ecip-api",instance="api:8000"}'
+        values: '0x5'
+    alert_rule_test:
+      - eval_time: 3m
+        alertname: ApiUnavailable
+        exp_alerts:
+          - exp_labels: {severity: critical, job: ecip-api, instance: "api:8000"}
+            exp_annotations: {summary: "ECIP API is unavailable"}

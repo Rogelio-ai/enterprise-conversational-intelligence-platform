@@ -1,0 +1,15 @@
+name: pryecip-restaurant-connector
+services:
+  connector:
+    image: ${CONNECTOR_IMAGE:?immutable CONNECTOR_IMAGE is required}
+    restart: unless-stopped
+    user: "${CONNECTOR_RUNTIME_UID:?CONNECTOR_RUNTIME_UID is required}"
+    read_only: true
+    volumes:
+      - ${CONNECTOR_CONFIG_PATH:?CONNECTOR_CONFIG_PATH is required}:/etc/pryecip-local-connector/config.toml:ro
+      - ${CONNECTOR_CREDENTIAL_PATH:?CONNECTOR_CREDENTIAL_PATH is required}:/etc/pryecip-local-connector/credentials.json:ro
+      - connector-ledger:/var/lib/pryecip-local-connector
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+volumes:
+  connector-ledger: {}

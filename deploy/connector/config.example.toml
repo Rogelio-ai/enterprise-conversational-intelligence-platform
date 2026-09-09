@@ -1,0 +1,23 @@
+[cloud]
+base_url = "https://pilot.example.invalid/api"
+tls_verify = true
+allow_insecure_http = false
+
+[runtime]
+ledger_path = "/var/lib/pryecip-local-connector/ledger.sqlite3"
+credentials_path = "/etc/pryecip-local-connector/credentials.json"
+poll_seconds = 5
+poll_jitter = 0.2
+connect_timeout_seconds = 5
+read_timeout_seconds = 15
+max_backoff_seconds = 60
+auth_failure_retry_seconds = 300
+log_level = "INFO"
+
+# Add one protected, restaurant-specific target only during WS-33-C/D certification.
+# [targets.kitchen]
+# adapter = "escpos_network"
+# host = "192.0.2.10"
+# port = 9100
+# columns = 42
+# encoding = "cp850"

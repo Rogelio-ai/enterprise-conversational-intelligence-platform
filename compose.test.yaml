@@ -1,0 +1,18 @@
+services:
+  api-tests:
+    build: {context: apps/api, target: development}
+    environment:
+      APP_ENV: test
+      MYSQL_HOST: mysql.test
+      MYSQL_PORT: 3306
+      MYSQL_DATABASE: ecip_test
+      MYSQL_USER: ecip_test
+      MYSQL_PASSWORD: test-only-password
+      AUTH_JWT_SECRET: test-only-secret-that-is-at-least-32-characters
+      RESTAURANT_ACCESS_CODE_SECRET: test-only-independent-access-code-secret-32-chars
+    entrypoint: [python, -m, pytest]
+    command: [-q, tests/test_config.py, tests/test_health.py, tests/test_production_safety.py]
+  connector-tests:
+    build: {context: connectors/restaurant_local_connector, target: test}
+    entrypoint: [pytest]
+    command: [-q]

@@ -1,0 +1,167 @@
+name: pryecip-pilot
+
+services:
+  ingress:
+    image: ${INGRESS_IMAGE:?immutable INGRESS_IMAGE is required}
+    restart: unless-stopped
+    user: "${RUNTIME_UID:?RUNTIME_UID is required}"
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=32m,mode=0750,uid=${RUNTIME_UID},gid=${RUNTIME_GID:?RUNTIME_GID is required}
+      - /var/run:size=1m,mode=0750,uid=${RUNTIME_UID},gid=${RUNTIME_GID:?RUNTIME_GID is required}
+    volumes:
+      - ${TLS_CERT_PATH:?TLS_CERT_PATH is required}:/run/tls/tls.crt:ro
+      - ${TLS_KEY_PATH:?TLS_KEY_PATH is required}:/run/tls/tls.key:ro
+    ports:
+      - "${HTTP_BIND_ADDRESS:-0.0.0.0}:${HTTP_PORT:-80}:8080"
+      - "${HTTPS_BIND_ADDRESS:-0.0.0.0}:${HTTPS_PORT:-443}:8443"
+    depends_on:
+      api:
+        condition: service_healthy
+      diner-web:
+        condition: service_healthy
+      staff-web:
+        condition: service_healthy
+    networks: [edge, app]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  api:
+    image: ${API_IMAGE:?immutable API_IMAGE is required}
+    restart: unless-stopped
+    user: "${RUNTIME_UID:?RUNTIME_UID is required}"
+    read_only: true
+    tmpfs: ["/tmp:size=32m,mode=1777"]
+    environment:
+      APP_NAME: ${APP_NAME:-ECIP API}
+      APP_ENV: production
+      API_HOST: 0.0.0.0
+      API_PORT: 8000
+      LOG_LEVEL: ${LOG_LEVEL:-INFO}
+      PUBLIC_ORIGIN: ${PUBLIC_ORIGIN:?PUBLIC_ORIGIN is required}
+      TRUSTED_HOSTS: ${TRUSTED_HOSTS:?TRUSTED_HOSTS is required},api
+      DOCS_ENABLED: "false"
+      STAFF_LOGIN_RATE_LIMIT_PER_MINUTE: ${STAFF_LOGIN_RATE_LIMIT_PER_MINUTE:-10}
+      DINER_JOIN_RATE_LIMIT_PER_MINUTE: ${DINER_JOIN_RATE_LIMIT_PER_MINUTE:-20}
+      MYSQL_HOST: ${MYSQL_HOST:?external MYSQL_HOST is required}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE is required}
+      MYSQL_USER: ${MYSQL_USER:?MYSQL_USER is required}
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+      MYSQL_POOL_SIZE: ${MYSQL_POOL_SIZE:-5}
+      MYSQL_MAX_OVERFLOW: ${MYSQL_MAX_OVERFLOW:-10}
+      AUTH_JWT_SECRET_FILE: /run/secrets/auth_jwt_secret
+      AUTH_JWT_ALGORITHM: ${AUTH_JWT_ALGORITHM:-HS256}
+      AUTH_ACCESS_TOKEN_TTL_MINUTES: ${AUTH_ACCESS_TOKEN_TTL_MINUTES:-60}
+      RESTAURANT_ACCESS_CODE_SECRET_FILE: /run/secrets/diner_access_secret
+      DINER_ACCESS_TOKEN_TTL_MINUTES: ${DINER_ACCESS_TOKEN_TTL_MINUTES:-720}
+      CONNECTOR_ACCESS_TOKEN_TTL_MINUTES: ${CONNECTOR_ACCESS_TOKEN_TTL_MINUTES:-5}
+      CONNECTOR_ENROLLMENT_TTL_MINUTES: ${CONNECTOR_ENROLLMENT_TTL_MINUTES:-15}
+      CONNECTOR_CREDENTIAL_TTL_DAYS: ${CONNECTOR_CREDENTIAL_TTL_DAYS:-365}
+      PREPARATION_DISPATCH_CLAIM_LEASE_SECONDS: ${PREPARATION_DISPATCH_CLAIM_LEASE_SECONDS:-120}
+      PASSWORD_MIN_LENGTH: ${PASSWORD_MIN_LENGTH:-12}
+      ELECTRONIC_PAYMENTS_ENABLED: "false"
+      CFDI_ISSUANCE_ENABLED: "false"
+      CONNECTOR_DELIVERY_ENABLED: "false"
+      EXTERNAL_POS_ENABLED: "false"
+      FINKOK_ENVIRONMENT: demo
+      FINKOK_CONNECT_TIMEOUT_SECONDS: ${FINKOK_CONNECT_TIMEOUT_SECONDS:-5}
+      FINKOK_READ_TIMEOUT_SECONDS: ${FINKOK_READ_TIMEOUT_SECONDS:-20}
+    secrets: [mysql_password, auth_jwt_secret, diner_access_secret]
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+    networks: [app, database]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  diner-web:
+    image: ${DINER_WEB_IMAGE:?immutable DINER_WEB_IMAGE is required}
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=16m,mode=0750,uid=101,gid=101
+      - /var/run:size=1m,mode=0750,uid=101,gid=101
+    networks: [app]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  staff-web:
+    image: ${STAFF_WEB_IMAGE:?immutable STAFF_WEB_IMAGE is required}
+    restart: unless-stopped
+    read_only: true
+    tmpfs:
+      - /var/cache/nginx:size=16m,mode=0750,uid=101,gid=101
+      - /var/run:size=1m,mode=0750,uid=101,gid=101
+    networks: [app]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  migrate:
+    image: ${API_IMAGE:?immutable API_IMAGE is required}
+    profiles: [migration]
+    restart: "no"
+    user: "${RUNTIME_UID:?RUNTIME_UID is required}"
+    read_only: true
+    tmpfs: ["/tmp:size=16m,mode=1777"]
+    command: [alembic, upgrade, head]
+    environment:
+      APP_ENV: production
+      MYSQL_HOST: ${MYSQL_HOST:?external MYSQL_HOST is required}
+      MYSQL_PORT: ${MYSQL_PORT:-3306}
+      MYSQL_DATABASE: ${MYSQL_DATABASE:?MYSQL_DATABASE is required}
+      MYSQL_USER: ${MYSQL_MIGRATION_USER:?MYSQL_MIGRATION_USER is required}
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_migration_password
+      AUTH_JWT_SECRET_FILE: /run/secrets/auth_jwt_secret
+      RESTAURANT_ACCESS_CODE_SECRET_FILE: /run/secrets/diner_access_secret
+    secrets: [mysql_migration_password, auth_jwt_secret, diner_access_secret]
+    networks: [database]
+    security_opt: [no-new-privileges:true]
+    cap_drop: [ALL]
+
+  prometheus:
+    image: prom/prometheus:v3.5.0
+    restart: unless-stopped
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - "--storage.tsdb.retention.time=${METRICS_RETENTION:-15d}"
+    volumes:
+      - ./deploy/observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ./deploy/observability/alerts.yml:/etc/prometheus/alerts.yml:ro
+      - prometheus-data:/prometheus
+    ports: ["127.0.0.1:${PROMETHEUS_PORT:-9090}:9090"]
+    networks: [app, monitoring]
+    security_opt: [no-new-privileges:true]
+
+  alertmanager:
+    image: prom/alertmanager:v0.28.1
+    restart: unless-stopped
+    command: [--config.file=/etc/alertmanager/alertmanager.yml]
+    volumes:
+      - ./deploy/observability/alertmanager.yml:/etc/alertmanager/alertmanager.yml:ro
+    networks: [monitoring, database]
+    security_opt: [no-new-privileges:true]
+
+  pushgateway:
+    image: prom/pushgateway:v1.11.1
+    restart: unless-stopped
+    networks: [monitoring]
+    security_opt: [no-new-privileges:true]
+
+secrets:
+  mysql_password: {file: "${MYSQL_PASSWORD_FILE:?MYSQL_PASSWORD_FILE is required}"}
+  mysql_migration_password: {file: "${MYSQL_MIGRATION_PASSWORD_FILE:?MYSQL_MIGRATION_PASSWORD_FILE is required}"}
+  auth_jwt_secret: {file: "${AUTH_JWT_SECRET_FILE:?AUTH_JWT_SECRET_FILE is required}"}
+  diner_access_secret: {file: "${DINER_ACCESS_SECRET_FILE:?DINER_ACCESS_SECRET_FILE is required}"}
+
+networks:
+  edge: {}
+  app: {internal: true}
+  database: {}
+  monitoring: {internal: true}
+
+volumes:
+  prometheus-data: {}

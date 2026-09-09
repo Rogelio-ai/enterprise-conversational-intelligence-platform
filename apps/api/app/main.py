@@ -7,6 +7,7 @@ from contextlib import asynccontextmanager
 from typing import Protocol
 
 from fastapi import FastAPI
+from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from app.api.routes.auth import router as auth_router
 from app.api.routes.billing import router as billing_router
@@ -45,7 +46,12 @@ from app.api.routes.tenants import router as tenants_router
 from app.core.config import Settings, get_settings
 from app.core.errors import register_error_handlers
 from app.core.logging import configure_logging
-from app.core.middleware import RuntimeMiddleware
+from app.core.middleware import (
+    EntryPointRateLimitMiddleware,
+    PilotCapabilityBoundaryMiddleware,
+    RuntimeMiddleware,
+    SecurityHeadersMiddleware,
+)
 from app.db.session import DatabaseManager
 from app.restaurant.integrations.payments.credentials import MerchantCredentialResolver
 from app.restaurant.integrations.payments.conekta import ConektaPaymentExecutor
@@ -97,6 +103,9 @@ def create_app(
         title=runtime_settings.app_name,
         version='0.1.0',
         lifespan=lifespan,
+        docs_url='/docs' if runtime_settings.docs_enabled else None,
+        redoc_url='/redoc' if runtime_settings.docs_enabled else None,
+        openapi_url='/openapi.json' if runtime_settings.docs_enabled else None,
     )
     app.state.settings = runtime_settings
     app.state.database = runtime_database
@@ -105,7 +114,8 @@ def create_app(
         app.state.payment_executor_registry = payment_executor_registry
     else:
         configured_payment_executors = dict(payment_executors or {})
-        configured_payment_executors.setdefault('CONEKTA', ConektaPaymentExecutor())
+        if runtime_settings.electronic_payments_enabled:
+            configured_payment_executors.setdefault('CONEKTA', ConektaPaymentExecutor())
         app.state.payment_executor_registry = PaymentExecutorRegistry(
             configured_payment_executors
         )
@@ -114,26 +124,43 @@ def create_app(
         app.state.fiscal_provider_registry = fiscal_provider_registry
     else:
         configured_fiscal_providers = dict(fiscal_providers or {})
-        configured_fiscal_providers.setdefault(
-            'FINKOK',
-            FinkokFiscalIssuanceAdapter(
-                transport=HttpxFinkokSoapTransport(
-                    endpoint=runtime_settings.finkok_service_endpoint,
-                    connect_timeout_seconds=(
-                        runtime_settings.finkok_connect_timeout_seconds
-                    ),
-                    read_timeout_seconds=(
-                        runtime_settings.finkok_read_timeout_seconds
-                    ),
-                )
-            ),
-        )
+        if runtime_settings.cfdi_issuance_enabled:
+            configured_fiscal_providers.setdefault(
+                'FINKOK',
+                FinkokFiscalIssuanceAdapter(
+                    transport=HttpxFinkokSoapTransport(
+                        endpoint=runtime_settings.finkok_service_endpoint,
+                        connect_timeout_seconds=(
+                            runtime_settings.finkok_connect_timeout_seconds
+                        ),
+                        read_timeout_seconds=(
+                            runtime_settings.finkok_read_timeout_seconds
+                        ),
+                    )
+                ),
+            )
         app.state.fiscal_provider_registry = FiscalProviderRegistry(
             configured_fiscal_providers
         )
     app.state.fiscal_credential_resolver = fiscal_credential_resolver
     app.state.fiscal_artifact_storage = fiscal_artifact_storage
     app.add_middleware(RuntimeMiddleware)
+    app.add_middleware(SecurityHeadersMiddleware)
+    app.add_middleware(
+        EntryPointRateLimitMiddleware,
+        staff_limit=runtime_settings.staff_login_rate_limit_per_minute,
+        diner_limit=runtime_settings.diner_join_rate_limit_per_minute,
+    )
+    if runtime_settings.app_env in {'staging', 'production'}:
+        app.add_middleware(
+            PilotCapabilityBoundaryMiddleware,
+            connector_enabled=runtime_settings.connector_delivery_enabled,
+            external_pos_enabled=runtime_settings.external_pos_enabled,
+        )
+        app.add_middleware(
+            TrustedHostMiddleware,
+            allowed_hosts=runtime_settings.trusted_host_list,
+        )
     register_error_handlers(app)
     app.include_router(health_router)
     app.include_router(auth_router)

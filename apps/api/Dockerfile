@@ -12,14 +12,17 @@ RUN pip install --no-cache-dir -r requirements.txt
 COPY alembic.ini .
 COPY alembic ./alembic
 COPY app ./app
+COPY docker-entrypoint.sh /usr/local/bin/docker-entrypoint
 
 RUN addgroup --system ecip && adduser --system --ingroup ecip ecip \
-    && chown -R ecip:ecip /app
+    && chown -R ecip:ecip /app \
+    && chmod 0555 /usr/local/bin/docker-entrypoint
 
 FROM base AS runtime
 USER ecip
 EXPOSE 8000
-CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
+ENTRYPOINT ["docker-entrypoint"]
+CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000", "--proxy-headers", "--forwarded-allow-ips", "*"]
 
 FROM base AS development
 USER root
@@ -30,4 +33,5 @@ COPY tests ./tests
 RUN chown -R ecip:ecip /app
 USER ecip
 EXPOSE 8000
+ENTRYPOINT ["docker-entrypoint"]
 CMD ["uvicorn", "app.main:create_app", "--factory", "--host", "0.0.0.0", "--port", "8000"]
