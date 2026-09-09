@@ -136,6 +136,7 @@ def _source(
     paid = client.post(
         f"/restaurant-checks/{check['id']}/payments",
         headers={**_staff_headers(client, scope), 'Idempotency-Key': 'billing-source-cash'},
+        params={'location_id': scope.location_id},
         json={
             'expected_check_version': check['version'],
             'expected_check_fingerprint': check['fingerprint'],
