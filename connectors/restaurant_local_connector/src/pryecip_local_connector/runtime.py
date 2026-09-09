@@ -14,11 +14,14 @@ from uuid import uuid4
 
 import httpx
 
-from .adapters import CupsAdapter, OutcomeKind, PrinterAdapter, SubmissionOutcome
+from .adapters import (
+    CupsAdapter, EscPosNetworkAdapter, EscPosUsbAdapter, OutcomeKind,
+    PrinterAdapter, SubmissionOutcome,
+)
 from .cloud import AuthenticationFailure, Backoff, CloudClient, jittered_poll
 from .config import ConnectorConfig, TargetConfig
 from .ledger import IntegrityConflict, Ledger, LedgerEntry
-from .renderer import RENDERER_VERSION, render_preparation_ticket
+from .renderer import RENDERER_VERSION, render_document
 
 
 logger = logging.getLogger('pryecip.local_connector')
@@ -69,7 +72,14 @@ class ConnectorRuntime:
         self.config = config
         self.ledger = ledger
         self.cloud = cloud
-        self.adapters = adapters if adapters is not None else {'cups': CupsAdapter()}
+        if adapters is None:
+            adapters = {
+                'escpos_network': EscPosNetworkAdapter(),
+                'escpos_usb': EscPosUsbAdapter(),
+            }
+            if any(target.adapter == 'cups' for target in config.targets.values()):
+                adapters['cups'] = CupsAdapter()
+        self.adapters = adapters
         self.queue_locks: dict[str, asyncio.Lock] = {}
         self.last_successful_sync: str | None = None
 
@@ -82,13 +92,40 @@ class ConnectorRuntime:
             return None
         return target, adapter
 
+    @staticmethod
+    def _target_snapshot(target: TargetConfig) -> str:
+        return canonical_json({
+            'adapter': target.adapter,
+            'queue': target.queue,
+            'columns': target.columns,
+            'host': target.host,
+            'port': target.port,
+            'device_path': str(target.device_path) if target.device_path else None,
+            'encoding': target.encoding,
+        })
+
+    def _snapshot_target(self, value: str) -> tuple[TargetConfig, PrinterAdapter] | None:
+        raw = json.loads(value)
+        adapter = self.adapters.get(str(raw['adapter']))
+        if adapter is None:
+            return None
+        device_path = Path(raw['device_path']) if raw.get('device_path') else None
+        return TargetConfig(
+            adapter=str(raw['adapter']), queue=str(raw.get('queue') or ''),
+            columns=int(raw['columns']), host=raw.get('host'),
+            port=int(raw.get('port', 9100)), device_path=device_path,
+            encoding=str(raw.get('encoding', 'cp850')),
+        ), adapter
+
     def _persist_claim(self, claim: dict[str, object]) -> tuple[object, bool]:
         payload_text = str(claim['payload_text'])
         actual = hashlib.sha256(payload_text.encode('utf-8')).hexdigest()
         if actual != claim['payload_fingerprint']:
             raise IntegrityConflict('frozen payload fingerprint verification failed')
         entry = LedgerEntry(
-            operation_id=str(claim['operation_id']), dispatch_id=int(claim['dispatch_id']),
+            operation_id=str(claim['operation_id']),
+            dispatch_kind=str(claim.get('dispatch_kind', 'PREPARATION')),
+            dispatch_id=int(claim['dispatch_id']),
             generation=int(claim['generation']), operation_kind=str(claim['operation_kind']),
             payload_schema=str(claim['payload_schema']), payload_text=payload_text,
             payload_fingerprint=str(claim['payload_fingerprint']),
@@ -111,6 +148,16 @@ class ConnectorRuntime:
         if existing:
             await self.reconcile_row(row)
             return
+        logger.info('cloud operation received', extra={
+            'event': 'cloud_operation_received',
+            'dispatch_kind': row['dispatch_kind'],
+            'dispatch_id': row['dispatch_id'],
+            'operation_id': row['operation_id'],
+            'logical_destination': row['local_target_key'],
+        })
+        await self._deliver(row, claim)
+
+    async def _deliver(self, row: object, claim: dict[str, object]) -> None:
         resolved = self._target(str(claim['local_target_key']))
         if resolved is None:
             await self._finalize(
@@ -118,9 +165,11 @@ class ConnectorRuntime:
             )
             return
         target, adapter = resolved
-        snapshot = canonical_json({'adapter': target.adapter, 'queue': target.queue, 'columns': target.columns})
+        snapshot = self._target_snapshot(target)
         try:
-            document = render_preparation_ticket(str(claim['payload_text']), columns=target.columns)
+            document = render_document(
+                str(claim['payload_schema']), str(claim['payload_text']), columns=target.columns
+            )
         except Exception:
             await self._finalize(
                 row, SubmissionOutcome(OutcomeKind.ACTION_REQUIRED, category='PAYLOAD_RENDERING_FAILED'),
@@ -153,6 +202,15 @@ class ConnectorRuntime:
             result_payload=exact, result_fingerprint=str(payload['result_fingerprint']),
             error_category=outcome.category,
         )
+        logger.info('destination submission finalized', extra={
+            'event': 'destination_submission_finalized',
+            'dispatch_kind': row['dispatch_kind'],
+            'dispatch_id': row['dispatch_id'],
+            'operation_id': row['operation_id'],
+            'logical_destination': row['local_target_key'],
+            'result': outcome.kind.value,
+            'error_category': outcome.category,
+        })
         await self._report(updated)
 
     async def _report(self, row: object) -> None:
@@ -160,7 +218,10 @@ class ConnectorRuntime:
             return
         payload = json.loads(row['result_payload'])
         try:
-            await asyncio.to_thread(self.cloud.report_result, int(row['dispatch_id']), payload)
+            await asyncio.to_thread(
+                self.cloud.report_result, int(row['dispatch_id']), payload,
+                dispatch_kind=row['dispatch_kind'],
+            )
         except (httpx.HTTPError, AuthenticationFailure):
             logger.warning('cloud result report deferred', extra={
                 'event': 'cloud_result_deferred', 'operation_id': row['operation_id'],
@@ -177,7 +238,10 @@ class ConnectorRuntime:
             await self._report(row)
             return
         if state == 'SUBMISSION_STARTED':
-            resolved = self._target(row['local_target_key'])
+            resolved = (
+                self._snapshot_target(row['resolved_target_snapshot'])
+                if row['resolved_target_snapshot'] else None
+            )
             if resolved is None:
                 await self._finalize(
                     row, SubmissionOutcome(OutcomeKind.UNCERTAIN, category='TARGET_MISSING_DURING_RECOVERY'),
@@ -187,9 +251,27 @@ class ConnectorRuntime:
             outcome = await asyncio.to_thread(adapter.reconcile, target, row['operation_id'])
             await self._finalize(row, outcome)
             return
-        # A persisted RECEIVED row has not crossed the printer boundary, but the
-        # server lease cannot be proven from the local clock after restart. Leave
-        # it untouched for explicit cloud recovery instead of printing blindly.
+        expiry = datetime.fromisoformat(str(row['claim_lease_expiry']).replace('Z', '+00:00'))
+        if expiry.tzinfo is None:
+            expiry = expiry.replace(tzinfo=timezone.utc)
+        if expiry <= datetime.now(timezone.utc):
+            request_id = str(uuid4())
+            claim = await asyncio.to_thread(
+                self.cloud.claim, int(row['dispatch_id']), request_id,
+                dispatch_kind=row['dispatch_kind'], recovery=True,
+            )
+            if (
+                str(claim['operation_id']) != row['operation_id']
+                or str(claim['payload_fingerprint']) != row['payload_fingerprint']
+            ):
+                raise IntegrityConflict('recovery claim changed frozen operation identity')
+            renewed = self.ledger.renew_claim(
+                row['operation_id'], claim_request_id=request_id,
+                claim_token=str(claim['claim_token']),
+                claim_lease_expiry=str(claim['claim_expires_at']),
+            )
+            await self._deliver(renewed, claim)
+            return
         logger.warning('received operation requires claim recovery', extra={
             'event': 'received_claim_recovery_required', 'operation_id': row['operation_id'],
             'dispatch_id': row['dispatch_id'],
@@ -200,17 +282,27 @@ class ConnectorRuntime:
             await self.reconcile_row(row)
 
     async def synchronize_once(self) -> int:
-        response = await asyncio.to_thread(self.cloud.eligible, limit=50)
-        items = response.get('items', [])
+        await self.reconcile_startup()
         claims: list[dict[str, object]] = []
-        for item in items:
-            request_id = str(uuid4())
-            claim = await asyncio.to_thread(
-                self.cloud.claim, int(item['dispatch_id']), request_id,
+        for dispatch_kind in ('PREPARATION', 'PAID_CHECK'):
+            response = await asyncio.to_thread(
+                self.cloud.eligible, dispatch_kind=dispatch_kind, limit=50
             )
-            claims.append(claim)
+            for item in response.get('items', []):
+                request_id = str(uuid4())
+                claim = await asyncio.to_thread(
+                    self.cloud.claim, int(item['dispatch_id']), request_id,
+                    dispatch_kind=dispatch_kind,
+                    recovery=item.get('state') == 'IN_PROGRESS',
+                )
+                claims.append(claim)
         await asyncio.gather(*(self.process_claim(claim) for claim in claims))
         self.last_successful_sync = datetime.now(timezone.utc).isoformat()
+        logger.info('cloud synchronization completed', extra={
+            'event': 'cloud_synchronization_completed',
+            'claimed_count': len(claims),
+            'last_successful_sync': self.last_successful_sync,
+        })
         return len(claims)
 
     async def run_forever(self) -> None:

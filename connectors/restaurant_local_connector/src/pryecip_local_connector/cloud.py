@@ -69,28 +69,47 @@ class CloudClient:
         response.raise_for_status()
         return response
 
-    def eligible(self, *, cursor: int | None = None, limit: int = 50) -> dict[str, Any]:
+    def eligible(
+        self, *, dispatch_kind: str = 'PREPARATION', cursor: int | None = None,
+        limit: int = 50,
+    ) -> dict[str, Any]:
         params: dict[str, Any] = {'limit': limit}
         if cursor is not None:
             params['cursor'] = cursor
-        return self.request('GET', '/connector/v1/dispatches/eligible', params=params).json()
-
-    def claim(self, dispatch_id: int, claim_request_id: str) -> dict[str, Any]:
-        # A single transport replay is safe because claim_request_id is durable on the server.
-        try:
-            response = self.request('POST', f'/connector/v1/dispatches/{dispatch_id}/claims', json={
-                'claim_request_id': claim_request_id,
-            })
-        except httpx.TransportError:
-            response = self.request('POST', f'/connector/v1/dispatches/{dispatch_id}/claims', json={
-                'claim_request_id': claim_request_id,
-            })
-        return response.json()
-
-    def report_result(self, dispatch_id: int, payload: dict[str, Any]) -> dict[str, Any]:
-        # Exact result reports are idempotent at the cloud attempt boundary.
+        prefix = '' if dispatch_kind == 'PREPARATION' else '/paid-check'
         return self.request(
-            'POST', f'/connector/v1/dispatches/{dispatch_id}/results', json=payload,
+            'GET', f'/connector/v1{prefix}-dispatches/eligible', params=params
+        ).json()
+
+    def claim(
+        self, dispatch_id: int, claim_request_id: str,
+        *, dispatch_kind: str = 'PREPARATION', recovery: bool = False,
+    ) -> dict[str, Any]:
+        # A single transport replay is safe because claim_request_id is durable on the server.
+        prefix = '' if dispatch_kind == 'PREPARATION' else '/paid-check'
+        action = 'recovery-claims' if recovery else 'claims'
+        payload = {'claim_request_id': claim_request_id}
+        if recovery:
+            payload['resolution'] = 'NO_SUBMISSION_CONFIRMED'
+        path = f'/connector/v1{prefix}-dispatches/{dispatch_id}/{action}'
+        try:
+            response = self.request('POST', path, json=payload)
+        except httpx.TransportError:
+            response = self.request('POST', path, json=payload)
+        body = response.json()
+        body['dispatch_kind'] = dispatch_kind
+        body.setdefault('generation', 1)
+        body.setdefault('operation_kind', dispatch_kind)
+        return body
+
+    def report_result(
+        self, dispatch_id: int, payload: dict[str, Any],
+        *, dispatch_kind: str = 'PREPARATION',
+    ) -> dict[str, Any]:
+        # Exact result reports are idempotent at the cloud attempt boundary.
+        prefix = '' if dispatch_kind == 'PREPARATION' else '/paid-check'
+        return self.request(
+            'POST', f'/connector/v1{prefix}-dispatches/{dispatch_id}/results', json=payload,
         ).json()
 
     def heartbeat(self, runtime_status: str = 'RUNNING') -> dict[str, Any]:
@@ -98,7 +117,10 @@ class CloudClient:
             'connector_version': __version__,
             'protocol_version': PROTOCOL_VERSION,
             'runtime_status': runtime_status,
-            'capabilities': ['preparation-ticket-v1', 'cups'],
+            'capabilities': [
+                'preparation-ticket-v1', 'paid-check-v1', 'cups',
+                'escpos-network-v1', 'escpos-usb-device-v1',
+            ],
         }).json()
 
 

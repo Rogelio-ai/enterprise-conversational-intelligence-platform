@@ -6,7 +6,7 @@ import textwrap
 import unicodedata
 
 
-RENDERER_VERSION = 'preparation-ticket-v1'
+RENDERER_VERSION = 'restaurant-tickets-v2'
 
 
 def sanitize(value: object) -> str:
@@ -71,3 +71,64 @@ def render_preparation_ticket(payload_text: str, *, columns: int = 42) -> str:
                 output.extend(_lines(detail, columns, prefix='  + '))
     output.extend(['=' * columns, ''])
     return '\n'.join(line[:columns] for line in output)
+
+
+def _amount(label: str, value: object, currency: object, columns: int) -> list[str]:
+    return _lines(f'{label}: {sanitize(value)} {sanitize(currency)}', columns)
+
+
+def render_paid_check(payload_text: str, *, columns: int = 42) -> str:
+    if columns not in {32, 42, 48}:
+        raise ValueError('ticket columns must be 32, 42, or 48')
+    payload = json.loads(payload_text)
+    if payload.get('schema') != 'paid-check-v1':
+        raise ValueError('unsupported frozen payload schema')
+    restaurant = payload.get('restaurant', {})
+    check = payload.get('check', {})
+    if check.get('status') != 'SETTLED':
+        raise ValueError('paid check payload must be settled')
+    currency = check.get('currency')
+    output = [
+        sanitize(restaurant.get('organization_name')).center(columns),
+        sanitize(restaurant.get('location_name')).center(columns),
+        'CUENTA PAGADA'.center(columns),
+        '=' * columns,
+    ]
+    output.extend(_lines(f'Check: {check.get("id")}', columns))
+    if check.get('settled_at'):
+        output.extend(_lines(f'Liquidado: {check["settled_at"]}', columns))
+    output.append('-' * columns)
+    for order in check.get('orders', []):
+        resource = order.get('resource_name') or order.get('resource_code')
+        if resource:
+            output.extend(_lines(str(resource), columns))
+        for item in order.get('items', []):
+            output.extend(_lines(
+                sanitize(item.get('product_name')),
+                columns,
+                prefix=f'{sanitize(item.get("quantity"))} x ',
+            ))
+            output.extend(_lines(
+                f'{sanitize(item.get("commercial_amount"))} {sanitize(currency)}',
+                columns,
+                prefix='  ',
+            ))
+            for component in item.get('components', []):
+                output.extend(_lines(
+                    sanitize(component.get('product_name')), columns, prefix='  + '
+                ))
+    output.append('-' * columns)
+    output.extend(_amount('Consumo', check.get('consumption_total'), currency, columns))
+    output.extend(_amount('Propina', check.get('gratuity_total'), currency, columns))
+    output.extend(_amount('Total pagado', check.get('confirmed_paid_total'), currency, columns))
+    output.extend(_amount('Saldo', check.get('outstanding_total'), currency, columns))
+    output.extend(['=' * columns, 'GRACIAS'.center(columns), ''])
+    return '\n'.join(line[:columns] for line in output)
+
+
+def render_document(payload_schema: str, payload_text: str, *, columns: int = 42) -> str:
+    if payload_schema == 'preparation-delivery-v1':
+        return render_preparation_ticket(payload_text, columns=columns)
+    if payload_schema == 'paid-check-v1':
+        return render_paid_check(payload_text, columns=columns)
+    raise ValueError('unsupported frozen payload schema')

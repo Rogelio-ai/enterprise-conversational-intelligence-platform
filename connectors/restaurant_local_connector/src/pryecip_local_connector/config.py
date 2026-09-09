@@ -12,8 +12,12 @@ from typing import Any
 @dataclass(frozen=True, slots=True)
 class TargetConfig:
     adapter: str
-    queue: str
+    queue: str = ''
     columns: int = 42
+    host: str | None = None
+    port: int = 9100
+    device_path: Path | None = None
+    encoding: str = 'cp850'
 
 
 @dataclass(frozen=True, slots=True)
@@ -61,15 +65,29 @@ def load_config(path: str | Path) -> ConnectorConfig:
         adapter = str(value.get('adapter', ''))
         queue = str(value.get('queue', ''))
         columns = int(value.get('columns', 42))
-        if adapter not in {'cups', 'fake'}:
+        if adapter not in {'cups', 'escpos_network', 'escpos_usb', 'fake'}:
             raise ValueError(f'targets.{key}.adapter is unsupported')
         if adapter == 'fake' and os.getenv('PRYECIP_CONNECTOR_ALLOW_FAKE') != '1':
             raise ValueError('fake adapter is test-only')
-        if not queue:
+        host = str(value.get('host', '')).strip() or None
+        port = int(value.get('port', 9100))
+        device_path_value = str(value.get('device_path', '')).strip()
+        device_path = Path(device_path_value) if device_path_value else None
+        encoding = str(value.get('encoding', 'cp850')).strip()
+        if adapter in {'cups', 'fake'} and not queue:
             raise ValueError(f'targets.{key}.queue is required')
+        if adapter == 'escpos_network' and (host is None or not 1 <= port <= 65535):
+            raise ValueError(f'targets.{key} requires a host and valid port')
+        if adapter == 'escpos_usb' and device_path is None:
+            raise ValueError(f'targets.{key}.device_path is required')
+        if adapter.startswith('escpos_') and encoding not in {'cp437', 'cp850', 'latin-1'}:
+            raise ValueError(f'targets.{key}.encoding is unsupported')
         if columns not in {32, 42, 48}:
             raise ValueError(f'targets.{key}.columns must be 32, 42, or 48')
-        targets[key] = TargetConfig(adapter=adapter, queue=queue, columns=columns)
+        targets[key] = TargetConfig(
+            adapter=adapter, queue=queue, columns=columns, host=host, port=port,
+            device_path=device_path, encoding=encoding,
+        )
     return ConnectorConfig(
         cloud_base_url=base_url,
         ledger_path=Path(runtime.get('ledger_path', '/var/lib/pryecip-local-connector/ledger.sqlite3')),

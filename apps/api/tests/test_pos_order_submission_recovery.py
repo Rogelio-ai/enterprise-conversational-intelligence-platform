@@ -5,6 +5,7 @@ from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from decimal import Decimal
 from uuid import uuid4
+from collections.abc import Callable
 from threading import Event
 
 from fastapi.testclient import TestClient
@@ -94,7 +95,11 @@ def _headers(client: TestClient, scope: Scope) -> dict[str, str]:
     return {'Authorization': f"Bearer {response.json()['access_token']}"}
 
 
-def _accepted_order(client: TestClient, connection, scope: Scope, *, name='Burger', amount='99.90') -> tuple[int, int, int]:
+def _accepted_order(
+    client: TestClient, connection, scope: Scope, *, name='Burger', amount='99.90',
+    before_confirm: Callable[[int], None] | None = None,
+    confirmation_replays: int = 0,
+) -> tuple[int, int, int]:
     staff = _headers(client, scope)
     opened = client.post(f'/resources/{scope.resource_id}/service-sessions', headers=staff, json={'party_size': 2})
     assert opened.status_code == 201, opened.text
@@ -120,15 +125,31 @@ def _accepted_order(client: TestClient, connection, scope: Scope, *, name='Burge
     section_id = _execute(connection, "INSERT INTO menu_sections (tenant_id,organization_id,menu_id,name,status) VALUES (%s,%s,%s,'Food','ACTIVE')", (scope.tenant_id, scope.organization_id, menu_id))
     _execute(connection, "INSERT INTO menu_items (tenant_id,organization_id,menu_id,section_id,product_id,status) VALUES (%s,%s,%s,%s,%s,'ACTIVE')", (scope.tenant_id, scope.organization_id, menu_id, section_id, product_id))
     _execute(connection, "INSERT INTO product_prices (tenant_id,organization_id,product_id,location_id,amount,currency,status,source) VALUES (%s,%s,%s,%s,%s,'MXN','ACTIVE','PLATFORM')", (scope.tenant_id, scope.organization_id, product_id, scope.location_id, amount))
+    if before_confirm is not None:
+        before_confirm(product_id)
     draft = client.post('/diner/order-draft', headers=diner).json()
     added = client.post('/diner/order-draft/items', headers=diner, json={'product_id': product_id, 'quantity': '1', 'expected_version': draft['version']})
     assert added.status_code == 201, added.text
     preview = client.get('/diner/checkout-preview', headers=diner).json()
-    accepted = client.post('/diner/order/confirm', headers={**diner, 'Idempotency-Key': uuid4().hex}, json={
+    confirmation_key = uuid4().hex
+    confirmation_payload = {
         'expected_draft_version': preview['draft_version'],
         'expected_commercial_fingerprint': preview['commercial_fingerprint'],
-    })
+    }
+    accepted = client.post(
+        '/diner/order/confirm',
+        headers={**diner, 'Idempotency-Key': confirmation_key},
+        json=confirmation_payload,
+    )
     assert accepted.status_code == 201, accepted.text
+    for _ in range(confirmation_replays):
+        replay = client.post(
+            '/diner/order/confirm',
+            headers={**diner, 'Idempotency-Key': confirmation_key},
+            json=confirmation_payload,
+        )
+        assert replay.status_code == 200, replay.text
+        assert replay.json()['id'] == accepted.json()['id']
     return accepted.json()['id'], product_id, opened.json()['id']
 
 
@@ -152,6 +173,19 @@ def _accepted_complex_order(
     parent = _execute(connection, "INSERT INTO products (tenant_id,organization_id,name,tax_classification_code,status,source) VALUES (%s,%s,'Combo',%s,'ACTIVE','PLATFORM')", (scope.tenant_id, scope.organization_id, TAX_CLASSIFICATION))
     fixed = _execute(connection, "INSERT INTO products (tenant_id,organization_id,name,tax_classification_code,status,source) VALUES (%s,%s,'Fries',%s,'ACTIVE','PLATFORM')", (scope.tenant_id, scope.organization_id, TAX_CLASSIFICATION))
     option_product = _execute(connection, "INSERT INTO products (tenant_id,organization_id,name,tax_classification_code,status,source) VALUES (%s,%s,'Cola',%s,'ACTIVE','PLATFORM')", (scope.tenant_id, scope.organization_id, TAX_CLASSIFICATION))
+    for product_id in (parent, fixed, option_product):
+        _execute(
+            connection,
+            "INSERT INTO product_fiscal_classifications (tenant_id,organization_id,product_id,"
+            "fiscal_jurisdiction_code,product_classification_scheme,"
+            "product_classification_code,unit_classification_scheme,unit_classification_code,"
+            "effective_from,effective_to,status) VALUES (%s,%s,%s,'MX','TEST-PRODUCT-SCHEME',"
+            "%s,'TEST-UNIT-SCHEME','EACH',CURRENT_TIMESTAMP - INTERVAL 1 DAY,NULL,'ACTIVE')",
+            (
+                scope.tenant_id, scope.organization_id, product_id,
+                f'FISCAL-{product_id}',
+            ),
+        )
     menu = _execute(connection, "INSERT INTO menus (tenant_id,organization_id,name,status) VALUES (%s,%s,'Menu','ACTIVE')", (scope.tenant_id, scope.organization_id))
     _execute(connection, "INSERT INTO menu_locations (tenant_id,organization_id,menu_id,location_id,status) VALUES (%s,%s,%s,%s,'ACTIVE')", (scope.tenant_id, scope.organization_id, menu, scope.location_id))
     section = _execute(connection, "INSERT INTO menu_sections (tenant_id,organization_id,menu_id,name,status) VALUES (%s,%s,%s,'Food','ACTIVE')", (scope.tenant_id, scope.organization_id, menu))

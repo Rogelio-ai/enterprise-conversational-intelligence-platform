@@ -171,3 +171,43 @@ def test_rotation_is_separate_and_enrollment_revocation(client, sql_connection):
         'enrollment_id': second_enrollment.json()['enrollment_id'],
         'enrollment_secret': second_enrollment.json()['enrollment_secret'],
     }).status_code == 401
+
+
+def test_expired_unreported_claim_is_discoverable_for_safe_recovery(
+    client, sql_connection,
+):
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    staff, _, _, _, connector, _, dispatch = _native_dispatch(
+        client, connection, scope,
+    )
+    _, _, machine_headers = _provision(client, staff, connector['id'])
+    claimed = client.post(
+        f"/connector/v1/dispatches/{dispatch['id']}/claims",
+        headers=machine_headers,
+        json={'claim_request_id': 'claim-before-restart'},
+    )
+    assert claimed.status_code == 200, claimed.text
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'UPDATE preparation_dispatches '
+            'SET claim_expires_at=CURRENT_TIMESTAMP - INTERVAL 1 SECOND '
+            'WHERE id=%s',
+            (dispatch['id'],),
+        )
+
+    eligible = client.get('/connector/v1/dispatches/eligible', headers=machine_headers)
+    assert eligible.status_code == 200, eligible.text
+    assert [
+        (item['dispatch_id'], item['state']) for item in eligible.json()['items']
+    ] == [(dispatch['id'], 'IN_PROGRESS')]
+    recovered = client.post(
+        f"/connector/v1/dispatches/{dispatch['id']}/recovery-claims",
+        headers=machine_headers,
+        json={
+            'claim_request_id': 'claim-after-restart',
+            'resolution': 'NO_SUBMISSION_CONFIRMED',
+        },
+    )
+    assert recovered.status_code == 200, recovered.text
+    assert recovered.json()['claim_token'] != claimed.json()['claim_token']

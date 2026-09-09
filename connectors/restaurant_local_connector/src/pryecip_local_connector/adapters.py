@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from enum import Enum
 from pathlib import Path
+import os
+import socket
 import tempfile
 from typing import Protocol
 
@@ -127,3 +129,85 @@ class CupsAdapter:
             )
         # CUPS history may be pruned, so absence is not definitive after a crash.
         return SubmissionOutcome(OutcomeKind.UNCERTAIN, category='CUPS_JOB_EVIDENCE_INCONCLUSIVE')
+
+
+def encode_escpos(document: str, *, encoding: str) -> bytes:
+    """Encode the bounded ticket profile used by the platform's thermal documents."""
+    body = document.replace('\r\n', '\n').replace('\r', '\n').encode(
+        encoding, errors='replace'
+    )
+    return b'\x1b@' + body + b'\n\n\n' + b'\x1dV\x00'
+
+
+class EscPosNetworkAdapter:
+    version = 'escpos-network-v1'
+
+    def queues(self) -> tuple[str, ...]:
+        return ()
+
+    def submit(self, document: str, target: TargetConfig, operation_id: str) -> SubmissionOutcome:
+        if target.host is None:
+            return SubmissionOutcome(OutcomeKind.ACTION_REQUIRED, category='ESCPOS_HOST_NOT_CONFIGURED')
+        transmitted = False
+        try:
+            with socket.create_connection((target.host, target.port), timeout=5.0) as connection:
+                data = encode_escpos(document, encoding=target.encoding)
+                transmitted = True
+                connection.sendall(data)
+            return SubmissionOutcome(
+                OutcomeKind.ACCEPTED,
+                local_job_reference=f'escpos-network:{operation_id}',
+            )
+        except (TimeoutError, OSError):
+            return SubmissionOutcome(
+                OutcomeKind.UNCERTAIN if transmitted else OutcomeKind.DEFINITE_RETRYABLE_FAILURE,
+                category=(
+                    'ESCPOS_NETWORK_OUTCOME_UNCERTAIN'
+                    if transmitted else 'ESCPOS_NETWORK_UNAVAILABLE_BEFORE_SUBMISSION'
+                ),
+            )
+
+    def reconcile(self, target: TargetConfig, operation_id: str) -> SubmissionOutcome:
+        return SubmissionOutcome(
+            OutcomeKind.UNCERTAIN, category='ESCPOS_NETWORK_HAS_NO_DURABLE_JOB_EVIDENCE'
+        )
+
+
+class EscPosUsbAdapter:
+    version = 'escpos-usb-device-v1'
+
+    def queues(self) -> tuple[str, ...]:
+        return ()
+
+    def submit(self, document: str, target: TargetConfig, operation_id: str) -> SubmissionOutcome:
+        if target.device_path is None:
+            return SubmissionOutcome(OutcomeKind.ACTION_REQUIRED, category='ESCPOS_DEVICE_NOT_CONFIGURED')
+        descriptor: int | None = None
+        transmitted = False
+        try:
+            descriptor = os.open(target.device_path, os.O_WRONLY)
+            data = encode_escpos(document, encoding=target.encoding)
+            transmitted = True
+            written = os.write(descriptor, data)
+            if written != len(data):
+                return SubmissionOutcome(OutcomeKind.UNCERTAIN, category='ESCPOS_USB_PARTIAL_WRITE')
+            return SubmissionOutcome(
+                OutcomeKind.ACCEPTED,
+                local_job_reference=f'escpos-usb:{operation_id}',
+            )
+        except OSError:
+            return SubmissionOutcome(
+                OutcomeKind.UNCERTAIN if transmitted else OutcomeKind.DEFINITE_RETRYABLE_FAILURE,
+                category=(
+                    'ESCPOS_USB_OUTCOME_UNCERTAIN'
+                    if transmitted else 'ESCPOS_USB_UNAVAILABLE_BEFORE_SUBMISSION'
+                ),
+            )
+        finally:
+            if descriptor is not None:
+                os.close(descriptor)
+
+    def reconcile(self, target: TargetConfig, operation_id: str) -> SubmissionOutcome:
+        return SubmissionOutcome(
+            OutcomeKind.UNCERTAIN, category='ESCPOS_USB_HAS_NO_DURABLE_JOB_EVIDENCE'
+        )

@@ -8,11 +8,15 @@ from pathlib import Path
 
 import pytest
 
-from pryecip_local_connector.adapters import CupsAdapter, FakeAdapter, OutcomeKind
+from pryecip_local_connector.adapters import (
+    CupsAdapter, EscPosNetworkAdapter, FakeAdapter, OutcomeKind, encode_escpos,
+)
 from pryecip_local_connector.cloud import Backoff, jittered_poll
 from pryecip_local_connector.config import ConnectorConfig, Credentials, TargetConfig, load_config, load_credentials
 from pryecip_local_connector.ledger import IntegrityConflict, Ledger, LedgerEntry
-from pryecip_local_connector.renderer import render_preparation_ticket, sanitize
+from pryecip_local_connector.renderer import (
+    render_document, render_paid_check, render_preparation_ticket, sanitize,
+)
 from pryecip_local_connector.runtime import ConnectorRuntime, result_payload
 
 
@@ -38,11 +42,14 @@ def payload(name='Taco de camarón muy largo'):
     }, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
 
 
-def entry(text=None, operation='op-1', dispatch=1, kind='INITIAL'):
+def entry(
+    text=None, operation='op-1', dispatch=1, kind='INITIAL',
+    dispatch_kind='PREPARATION', schema='preparation-delivery-v1',
+):
     text = text or payload()
     return LedgerEntry(
-        operation_id=operation, dispatch_id=dispatch, generation=1,
-        operation_kind=kind, payload_schema='preparation-delivery-v1',
+        operation_id=operation, dispatch_kind=dispatch_kind, dispatch_id=dispatch,
+        generation=1, operation_kind=kind, payload_schema=schema,
         payload_text=text, payload_fingerprint=hashlib.sha256(text.encode()).hexdigest(),
         local_target_key='kitchen', resolved_target_snapshot=None,
         claim_request_id='request-1', claim_token='00000000-0000-0000-0000-000000000000',
@@ -69,6 +76,27 @@ columns=42
     path.write_text('[cloud]\nbase_url="http://cloud.example"\n')
     with pytest.raises(ValueError):
         load_config(path)
+
+
+def test_config_loads_bounded_escpos_network_and_usb_targets(tmp_path):
+    path = tmp_path / 'config.toml'
+    path.write_text('''
+[cloud]
+base_url="https://cloud.example"
+[targets.kitchen]
+adapter="escpos_network"
+host="192.168.20.40"
+port=9100
+encoding="cp850"
+[targets.cashier]
+adapter="escpos_usb"
+device_path="/dev/usb/lp0"
+columns=32
+''')
+    config = load_config(path)
+    assert config.targets['kitchen'].host == '192.168.20.40'
+    assert config.targets['kitchen'].port == 9100
+    assert config.targets['cashier'].device_path == Path('/dev/usb/lp0')
 
 
 def test_credentials_require_0600(tmp_path):
@@ -113,6 +141,16 @@ def test_reprint_is_distinct_operation_even_with_same_fingerprint(tmp_path):
     assert ledger.backlog_count() == 2
 
 
+def test_dispatch_ids_are_namespaced_by_cloud_job_family(tmp_path):
+    ledger = Ledger(tmp_path / 'ledger.sqlite3')
+    text = payload()
+    ledger.receive(entry(text, operation='preparation', dispatch=7))
+    ledger.receive(entry(
+        text, operation='paid', dispatch=7, dispatch_kind='PAID_CHECK'
+    ))
+    assert ledger.backlog_count() == 2
+
+
 def test_renderer_is_deterministic_bounded_unicode_and_sanitized():
     rendered = render_preparation_ticket(payload('Niño\x1b[31m con piña y jalapeño extra largo'), columns=32)
     assert rendered == render_preparation_ticket(payload('Niño\x1b[31m con piña y jalapeño extra largo'), columns=32)
@@ -120,6 +158,65 @@ def test_renderer_is_deterministic_bounded_unicode_and_sanitized():
     assert 'piña' in rendered
     assert all(len(line) <= 32 for line in rendered.splitlines())
     assert sanitize('safe\n\x00text') == 'safetext'
+
+
+def paid_payload():
+    return json.dumps({
+        'schema': 'paid-check-v1',
+        'restaurant': {'organization_name': 'Taquería', 'location_name': 'Centro'},
+        'check': {
+            'id': 9, 'status': 'SETTLED', 'currency': 'MXN',
+            'settled_at': '2026-09-08T18:00:00',
+            'consumption_total': '100.00', 'gratuity_total': '10.00',
+            'confirmed_paid_total': '110.00', 'outstanding_total': '0.00',
+            'orders': [{'resource_name': 'Mesa 1', 'items': [{
+                'product_name': 'Tacos', 'quantity': '2',
+                'commercial_amount': '100.00', 'components': [],
+            }]}],
+        },
+    }, ensure_ascii=False, sort_keys=True, separators=(',', ':'))
+
+
+def test_paid_check_renderer_uses_frozen_financial_payload():
+    rendered = render_paid_check(paid_payload(), columns=42)
+    assert 'CUENTA PAGADA' in rendered
+    assert 'Total pagado: 110.00 MXN' in rendered
+    assert 'Saldo: 0.00 MXN' in rendered
+    assert render_document('paid-check-v1', paid_payload()) == rendered
+
+
+def test_escpos_encoder_initializes_feeds_and_cuts():
+    encoded = encode_escpos('CUENTA PAGADA', encoding='cp850')
+    assert encoded.startswith(b'\x1b@CUENTA PAGADA')
+    assert encoded.endswith(b'\x1dV\x00')
+
+
+def test_escpos_network_reports_acceptance_only_after_full_send(monkeypatch):
+    class Connection:
+        def __init__(self):
+            self.sent = b''
+        def __enter__(self):
+            return self
+        def __exit__(self, *args):
+            return None
+        def sendall(self, value):
+            self.sent = value
+
+    connection = Connection()
+    monkeypatch.setattr(
+        'pryecip_local_connector.adapters.socket.create_connection',
+        lambda *args, **kwargs: connection,
+    )
+    outcome = EscPosNetworkAdapter().submit(
+        'ticket', TargetConfig('escpos_network', host='127.0.0.1'), 'op-1'
+    )
+    assert outcome.kind is OutcomeKind.ACCEPTED
+    assert outcome.local_job_reference == 'escpos-network:op-1'
+    assert '127.0.0.1' not in outcome.local_job_reference
+    assert connection.sent.startswith(b'\x1b@ticket')
+    assert EscPosNetworkAdapter().reconcile(
+        TargetConfig('escpos_network', host='127.0.0.1'), 'op-1'
+    ).kind is OutcomeKind.UNCERTAIN
 
 
 @pytest.mark.parametrize('mode,expected', [
@@ -192,9 +289,93 @@ def test_cups_crash_reconciliation_accepts_match_or_stays_uncertain():
 class CloudRecorder:
     def __init__(self):
         self.results = []
-    def report_result(self, dispatch, payload):
-        self.results.append((dispatch, payload))
+    def report_result(self, dispatch, payload, *, dispatch_kind='PREPARATION'):
+        self.results.append((dispatch, payload, dispatch_kind))
         return {'replayed': False}
+
+
+class MultiFamilyCloud(CloudRecorder):
+    def __init__(self):
+        super().__init__()
+        self.claimed = []
+    def eligible(self, *, dispatch_kind, limit):
+        return {'items': [{'dispatch_id': 8}]} if dispatch_kind == 'PAID_CHECK' else {'items': []}
+    def claim(self, dispatch, request_id, *, dispatch_kind, recovery=False):
+        self.claimed.append((dispatch, dispatch_kind, recovery))
+        text = paid_payload()
+        return {
+            'operation_id': 'paid-operation', 'dispatch_kind': dispatch_kind,
+            'dispatch_id': dispatch, 'generation': 1, 'operation_kind': 'PAID_CHECK',
+            'payload_schema': 'paid-check-v1', 'payload_text': text,
+            'payload_fingerprint': hashlib.sha256(text.encode()).hexdigest(),
+            'local_target_key': 'cashier', 'claim_request_id': request_id,
+            'claim_token': '00000000-0000-0000-0000-000000000000',
+            'claim_expires_at': '2099-08-31T10:02:00+00:00',
+        }
+
+
+def test_runtime_polls_and_delivers_paid_check_job_family(tmp_path):
+    config = ConnectorConfig(
+        cloud_base_url='https://example.test', ledger_path=tmp_path/'ledger.sqlite3',
+        credentials_path=tmp_path/'credentials.json',
+        targets={'cashier': TargetConfig('fake', 'queue', 42)},
+    )
+    ledger = Ledger(config.ledger_path)
+    cloud = MultiFamilyCloud()
+    adapter = FakeAdapter()
+    runtime = ConnectorRuntime(config, ledger, cloud, {'fake': adapter})
+    assert asyncio.run(runtime.synchronize_once()) == 1
+    assert cloud.claimed == [(8, 'PAID_CHECK', False)]
+    assert cloud.results[0][2] == 'PAID_CHECK'
+    assert 'CUENTA PAGADA' in adapter.submissions[0][0]
+    assert ledger.backlog_count() == 0
+
+
+class RecoveryCloud(CloudRecorder):
+    def __init__(self, text):
+        super().__init__()
+        self.text = text
+        self.recoveries = []
+    def eligible(self, *, dispatch_kind, limit):
+        return {'items': []}
+    def claim(self, dispatch, request_id, *, dispatch_kind, recovery=False):
+        self.recoveries.append((dispatch, dispatch_kind, recovery))
+        return {
+            'operation_id': 'restart-op', 'dispatch_kind': dispatch_kind,
+            'dispatch_id': dispatch, 'generation': 1, 'operation_kind': 'INITIAL',
+            'payload_schema': 'preparation-delivery-v1', 'payload_text': self.text,
+            'payload_fingerprint': hashlib.sha256(self.text.encode()).hexdigest(),
+            'local_target_key': 'kitchen', 'claim_request_id': request_id,
+            'claim_token': '11111111-1111-1111-1111-111111111111',
+            'claim_expires_at': '2099-08-31T10:02:00+00:00',
+        }
+
+
+def test_restart_recovers_expired_received_claim_before_printing(tmp_path):
+    text = payload()
+    ledger = Ledger(tmp_path / 'ledger.sqlite3')
+    ledger.receive(LedgerEntry(
+        operation_id='restart-op', dispatch_kind='PREPARATION', dispatch_id=22,
+        generation=1, operation_kind='INITIAL',
+        payload_schema='preparation-delivery-v1', payload_text=text,
+        payload_fingerprint=hashlib.sha256(text.encode()).hexdigest(),
+        local_target_key='kitchen', resolved_target_snapshot=None,
+        claim_request_id='old-request',
+        claim_token='00000000-0000-0000-0000-000000000000',
+        claim_lease_expiry='2000-01-01T00:00:00+00:00', local_state='RECEIVED',
+    ))
+    config = ConnectorConfig(
+        cloud_base_url='https://example.test', ledger_path=ledger.path,
+        credentials_path=tmp_path/'credentials.json',
+        targets={'kitchen': TargetConfig('fake', 'queue', 42)},
+    )
+    cloud = RecoveryCloud(text)
+    adapter = FakeAdapter()
+    runtime = ConnectorRuntime(config, ledger, cloud, {'fake': adapter})
+    assert asyncio.run(runtime.synchronize_once()) == 0
+    assert cloud.recoveries == [(22, 'PREPARATION', True)]
+    assert len(adapter.submissions) == 1
+    assert ledger.backlog_count() == 0
 
 
 def test_runtime_acceptance_then_cloud_replay_without_duplicate(tmp_path):

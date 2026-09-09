@@ -74,6 +74,53 @@ def _native_dispatch(client, connection, scope, *, name='Burger'):
     return headers, order_id, area, work_id, connector, destination, dispatches.json()[0]
 
 
+def test_acceptance_automatically_materializes_preparation_print_dispatch(
+    client, sql_connection,
+):
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    configured: dict[str, object] = {}
+
+    def configure_before_acceptance(product_id: int) -> None:
+        headers = _headers(client, scope)
+        _owner(client, headers, scope.location_id)
+        area = _area(client, headers, scope.location_id)
+        _route(client, headers, scope.location_id, product_id, 'AREA', area['id'])
+        connector = _connector(client, headers, scope.location_id)
+        destination = _destination(
+            client, headers, scope.location_id, area['id'], connector['id'],
+        )
+        configured.update(
+            headers=headers, connector=connector, destination=destination
+        )
+
+    order_id, _, _ = _accepted_order(
+        client, connection, scope, before_confirm=configure_before_acceptance,
+        confirmation_replays=1,
+    )
+    headers = configured['headers']
+    routing = client.get(
+        f'/restaurant-orders/{order_id}/preparation-routing', headers=headers,
+    )
+    assert routing.status_code == 200, routing.text
+    work_id = routing.json()['works'][0]['id']
+    dispatches = client.get(
+        f'/preparation-works/{work_id}/dispatches', headers=headers,
+    )
+    assert dispatches.status_code == 200, dispatches.text
+    assert len(dispatches.json()) == 1
+    assert dispatches.json()[0]['destination_id'] == configured['destination']['id']
+    assert dispatches.json()[0]['state'] == 'PENDING'
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM preparation_dispatches '
+            'WHERE tenant_id=%s AND restaurant_order_id=%s',
+            (scope.tenant_id, order_id),
+        )
+        assert cursor.fetchone()['count'] == 1
+
+
 def _machine(scope, connector, correlation='connector-test') -> ExecutionContext:
     return ExecutionContext(
         actor_type=ActorType.EXTERNAL_SYSTEM,

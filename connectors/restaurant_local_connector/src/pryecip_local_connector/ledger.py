@@ -16,6 +16,7 @@ STATES = {
 @dataclass(frozen=True, slots=True)
 class LedgerEntry:
     operation_id: str
+    dispatch_kind: str
     dispatch_id: int
     generation: int
     operation_kind: str
@@ -71,10 +72,11 @@ class Ledger:
             key TEXT PRIMARY KEY,
             value TEXT NOT NULL
         );
-        INSERT OR IGNORE INTO metadata(key, value) VALUES ('schema_version', '1');
+        INSERT OR IGNORE INTO metadata(key, value) VALUES ('schema_version', '2');
         CREATE TABLE IF NOT EXISTS operations (
             operation_id TEXT PRIMARY KEY COLLATE BINARY,
-            dispatch_id INTEGER NOT NULL UNIQUE,
+            dispatch_kind TEXT NOT NULL,
+            dispatch_id INTEGER NOT NULL,
             generation INTEGER NOT NULL,
             operation_kind TEXT NOT NULL,
             payload_schema TEXT NOT NULL,
@@ -97,11 +99,67 @@ class Ledger:
             error_category TEXT,
             created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
             updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
-            reconciled_at TEXT
+            reconciled_at TEXT,
+            UNIQUE(dispatch_kind, dispatch_id)
         );
         CREATE INDEX IF NOT EXISTS ix_operations_recovery
             ON operations(local_state, updated_at, operation_id);
         ''')
+        columns = {
+            row['name'] for row in self.connection.execute('PRAGMA table_info(operations)')
+        }
+        if 'dispatch_kind' not in columns:
+            self.connection.executescript('''
+            ALTER TABLE operations RENAME TO operations_v1;
+            CREATE TABLE operations (
+                operation_id TEXT PRIMARY KEY COLLATE BINARY,
+                dispatch_kind TEXT NOT NULL,
+                dispatch_id INTEGER NOT NULL,
+                generation INTEGER NOT NULL,
+                operation_kind TEXT NOT NULL,
+                payload_schema TEXT NOT NULL,
+                payload_text TEXT NOT NULL,
+                payload_fingerprint TEXT NOT NULL COLLATE BINARY,
+                local_target_key TEXT NOT NULL COLLATE BINARY,
+                resolved_target_snapshot TEXT,
+                claim_request_id TEXT NOT NULL COLLATE BINARY,
+                claim_token TEXT NOT NULL COLLATE BINARY,
+                claim_lease_expiry TEXT NOT NULL,
+                local_state TEXT NOT NULL CHECK(local_state IN (
+                    'RECEIVED','SUBMISSION_STARTED','SUBMISSION_ACCEPTED',
+                    'DEFINITE_FAILURE','OUTCOME_UNCERTAIN','CLOUD_RECONCILED'
+                )),
+                renderer_version TEXT,
+                adapter_version TEXT,
+                local_job_reference TEXT,
+                result_payload TEXT,
+                result_fingerprint TEXT COLLATE BINARY,
+                error_category TEXT,
+                created_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                updated_at TEXT NOT NULL DEFAULT CURRENT_TIMESTAMP,
+                reconciled_at TEXT,
+                UNIQUE(dispatch_kind, dispatch_id)
+            );
+            INSERT INTO operations(
+                operation_id,dispatch_kind,dispatch_id,generation,operation_kind,
+                payload_schema,payload_text,payload_fingerprint,local_target_key,
+                resolved_target_snapshot,claim_request_id,claim_token,claim_lease_expiry,
+                local_state,renderer_version,adapter_version,local_job_reference,
+                result_payload,result_fingerprint,error_category,created_at,updated_at,
+                reconciled_at
+            ) SELECT
+                operation_id,'PREPARATION',dispatch_id,generation,operation_kind,
+                payload_schema,payload_text,payload_fingerprint,local_target_key,
+                resolved_target_snapshot,claim_request_id,claim_token,claim_lease_expiry,
+                local_state,renderer_version,adapter_version,local_job_reference,
+                result_payload,result_fingerprint,error_category,created_at,updated_at,
+                reconciled_at
+            FROM operations_v1;
+            DROP TABLE operations_v1;
+            CREATE INDEX IF NOT EXISTS ix_operations_recovery
+                ON operations(local_state, updated_at, operation_id);
+            UPDATE metadata SET value = '2' WHERE key = 'schema_version';
+            ''')
 
     def integrity_check(self) -> bool:
         return self.connection.execute('PRAGMA integrity_check').fetchone()[0] == 'ok'
@@ -114,19 +172,23 @@ class Ledger:
             if existing is not None:
                 if existing['payload_fingerprint'] != entry.payload_fingerprint:
                     raise IntegrityConflict('same operation_id has a different payload fingerprint')
-                if existing['dispatch_id'] != entry.dispatch_id:
+                if (
+                    existing['dispatch_id'] != entry.dispatch_id
+                    or existing['dispatch_kind'] != entry.dispatch_kind
+                ):
                     raise IntegrityConflict('same operation_id has a different dispatch_id')
                 return existing, True
             connection.execute('''
                 INSERT INTO operations(
-                    operation_id,dispatch_id,generation,operation_kind,payload_schema,
+                    operation_id,dispatch_kind,dispatch_id,generation,operation_kind,payload_schema,
                     payload_text,payload_fingerprint,local_target_key,resolved_target_snapshot,
                     claim_request_id,claim_token,claim_lease_expiry,local_state,
                     renderer_version,adapter_version,local_job_reference,result_payload,
                     result_fingerprint,error_category
-                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ''', (
-                entry.operation_id, entry.dispatch_id, entry.generation, entry.operation_kind,
+                entry.operation_id, entry.dispatch_kind, entry.dispatch_id,
+                entry.generation, entry.operation_kind,
                 entry.payload_schema, entry.payload_text, entry.payload_fingerprint,
                 entry.local_target_key, entry.resolved_target_snapshot,
                 entry.claim_request_id, entry.claim_token, entry.claim_lease_expiry,
@@ -164,6 +226,24 @@ class Ledger:
             )
             if cursor.rowcount != 1:
                 raise KeyError(operation_id)
+            row = connection.execute(
+                'SELECT * FROM operations WHERE operation_id = ?', (operation_id,),
+            ).fetchone()
+            assert row is not None
+            return row
+
+    def renew_claim(
+        self, operation_id: str, *, claim_request_id: str, claim_token: str,
+        claim_lease_expiry: str,
+    ) -> sqlite3.Row:
+        with self.transaction() as connection:
+            cursor = connection.execute('''
+                UPDATE operations SET claim_request_id=?, claim_token=?,
+                    claim_lease_expiry=?, updated_at=CURRENT_TIMESTAMP
+                WHERE operation_id=? AND local_state='RECEIVED'
+            ''', (claim_request_id, claim_token, claim_lease_expiry, operation_id))
+            if cursor.rowcount != 1:
+                raise IntegrityConflict('claim can only be renewed before local submission')
             row = connection.execute(
                 'SELECT * FROM operations WHERE operation_id = ?', (operation_id,),
             ).fetchone()

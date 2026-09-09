@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.execution import ActorType, ExecutionContext
 from app.models import (
     Location,
     OrderDraft,
@@ -35,6 +36,7 @@ from app.restaurant.orders.acceptance_contracts import (
     RestaurantOrderProjection,
 )
 from app.restaurant.inventory import order_consumption
+from app.restaurant.preparation import service as preparation_service
 from app.restaurant.service_sessions import service as service_session_service
 from app.restaurant.tax import service as tax_service
 from app.restaurant.tax.contracts import RestaurantTaxLineCandidate
@@ -43,6 +45,59 @@ from app.restaurant.tax.errors import RestaurantTaxError
 
 logger = logging.getLogger('ecip.restaurant_orders')
 ACCEPTED_FINGERPRINT_SCHEMA_VERSION = 3
+
+
+def _preparation_execution(
+    *, tenant_id: int, order_id: int, correlation_id: str | None
+) -> ExecutionContext:
+    return ExecutionContext(
+        actor_type=ActorType.SYSTEM,
+        tenant_id=tenant_id,
+        principal_id=None,
+        principal_reference='restaurant-order-acceptance',
+        correlation_id=correlation_id,
+        causation_id=f'restaurant-order:{order_id}',
+    )
+
+
+async def _ensure_preparation_routing(
+    db: AsyncSession, *, order: RestaurantOrder, correlation_id: str | None
+) -> None:
+    """Materialize or recover the one authoritative routing for an accepted order."""
+    try:
+        routing = await preparation_service.route_order(
+            db,
+            order_id=order.id,
+            execution=_preparation_execution(
+                tenant_id=order.tenant_id,
+                order_id=order.id,
+                correlation_id=correlation_id,
+            ),
+        )
+    except Exception:
+        logger.exception(
+            'Automatic order preparation routing failed',
+            extra={
+                'event': 'order_preparation_routing_failed',
+                'correlation_id': correlation_id,
+                'tenant_id': order.tenant_id,
+                'organization_id': order.organization_id,
+                'location_id': order.location_id,
+                'restaurant_order_id': order.id,
+            },
+        )
+        raise
+    _event(
+        'order_preparation_routing_ensured',
+        correlation_id=correlation_id,
+        tenant_id=order.tenant_id,
+        organization_id=order.organization_id,
+        location_id=order.location_id,
+        restaurant_order_id=order.id,
+        preparation_routing_id=routing.id,
+        preparation_routing_state=routing.state,
+        outcome='routed' if routing.state == 'ROUTED' else routing.state.lower(),
+    )
 
 
 def _accepted_fingerprint(
@@ -240,6 +295,9 @@ async def confirm_current_order(
                     'Idempotency key was already used for a different Order Draft'
                 )
             await db.commit()
+            await _ensure_preparation_routing(
+                db, order=replay, correlation_id=correlation_id
+            )
             _event('order_confirmation_idempotent_replay', correlation_id=correlation_id, tenant_id=tenant_id, diner_session_id=diner_session_id, conversation_id=conversation_id, restaurant_order_id=replay.id, outcome='replayed')
             return ConfirmationResult(await _projection(db, replay), True)
         if draft is None:
@@ -515,6 +573,18 @@ async def confirm_current_order(
         draft.terminal_at = accepted_at
         await db.flush()
         await order_consumption.materialize_accepted_order(db, order=order)
+        # Persist the integration decision in the acceptance transaction. The
+        # heavier materialization below is recoverable from this unique routing.
+        await preparation_service.freeze_ownership(
+            db,
+            order=order,
+            execution=_preparation_execution(
+                tenant_id=order.tenant_id,
+                order_id=order.id,
+                correlation_id=correlation_id,
+            ),
+            reject_legacy_submission=True,
+        )
         await db.commit()
         await db.refresh(order)
     except Exception as exc:
@@ -524,6 +594,7 @@ async def confirm_current_order(
         else:
             _event('order_confirmation_rejected', correlation_id=correlation_id, tenant_id=tenant_id, diner_session_id=diner_session_id, conversation_id=conversation_id, outcome='rejected')
         raise
+    await _ensure_preparation_routing(db, order=order, correlation_id=correlation_id)
     _event('order_confirmed', correlation_id=correlation_id, tenant_id=tenant_id, organization_id=order.organization_id, location_id=order.location_id, resource_id=order.resource_id, service_session_id=order.service_session_id, diner_session_id=order.diner_session_id, conversation_id=order.conversation_id, order_draft_id=order.source_order_draft_id, restaurant_order_id=order.id, draft_version=order.accepted_draft_version, outcome='accepted')
     return ConfirmationResult(await _projection(db, order), False)
 

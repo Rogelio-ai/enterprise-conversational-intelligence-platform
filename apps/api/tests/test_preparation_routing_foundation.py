@@ -16,6 +16,7 @@ from test_pos_order_submission_recovery import (
     _headers,
     _scope,
 )
+from test_manager_operational_overview import _grant_manager_reads
 
 
 @pytest.fixture
@@ -53,6 +54,36 @@ def _route(client, headers, location_id: int, product_id: int, policy: str, area
     return response.json()
 
 
+def test_unaccepted_draft_never_materializes_preparation(client, sql_connection):
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    staff = _headers(client, scope)
+    opened = client.post(
+        f'/resources/{scope.resource_id}/service-sessions',
+        headers=staff,
+        json={'party_size': 1},
+    )
+    assert opened.status_code == 201, opened.text
+    joined = client.post('/diner-sessions/join', json={
+        'join_context_key': opened.json()['join_context_key'],
+        'access_code': opened.json()['access_code'],
+        'display_name': 'Draft only',
+    })
+    assert joined.status_code == 201, joined.text
+    draft = client.post(
+        '/diner/order-draft',
+        headers={'Authorization': f"Bearer {joined.json()['access_token']}"},
+    )
+    assert draft.status_code == 201, draft.text
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM preparation_routings '
+            'WHERE tenant_id=%s AND location_id=%s',
+            (scope.tenant_id, scope.location_id),
+        )
+        assert cursor.fetchone()['count'] == 0
+
+
 def test_native_platform_routing_needs_no_external_pos_and_is_idempotent(client, sql_connection):
     connection, prefix = sql_connection
     scope = _scope(connection, prefix)
@@ -79,6 +110,74 @@ def test_native_platform_routing_needs_no_external_pos_and_is_idempotent(client,
     assert result['works'][0]['items'][0]['source_restaurant_order_item_id'] is not None
     replay = client.post(f'/restaurant-orders/{order_id}/preparation-routing', headers=headers)
     assert replay.status_code == 200 and replay.json() == result
+
+
+def test_order_acceptance_automatically_routes_and_populates_kitchen(
+    client, sql_connection,
+):
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    configured: dict[str, int] = {}
+
+    def configure_before_acceptance(product_id: int) -> None:
+        headers = _headers(client, scope)
+        _owner(client, headers, scope.location_id)
+        area = _area(client, headers, scope.location_id)
+        _route(client, headers, scope.location_id, product_id, 'AREA', area['id'])
+        configured['area_id'] = area['id']
+
+    order_id, _, _ = _accepted_order(
+        client, connection, scope, before_confirm=configure_before_acceptance,
+        confirmation_replays=1,
+    )
+    headers = _headers(client, scope)
+    routing = client.get(
+        f'/restaurant-orders/{order_id}/preparation-routing', headers=headers,
+    )
+    assert routing.status_code == 200, routing.text
+    assert routing.json()['state'] == 'ROUTED'
+    assert len(routing.json()['works']) == 1
+    work_id = routing.json()['works'][0]['id']
+
+    kitchen = client.get(
+        '/preparation-works', headers=headers,
+        params={
+            'location_id': scope.location_id,
+            'restaurant_order_id': order_id,
+        },
+    )
+    assert kitchen.status_code == 200, kitchen.text
+    assert [work['id'] for work in kitchen.json()] == [work_id]
+    assert kitchen.json()[0]['preparation_area_id'] == configured['area_id']
+
+    replay = client.post(
+        f'/restaurant-orders/{order_id}/preparation-routing', headers=headers,
+    )
+    assert replay.status_code == 200
+    assert replay.json()['id'] == routing.json()['id']
+    assert replay.json()['works'][0]['id'] == work_id
+
+    _grant_manager_reads(connection, scope.tenant_id)
+    manager = client.get(
+        '/staff/manager/operational-overview', headers=headers,
+        params={'location_id': scope.location_id},
+    )
+    assert manager.status_code == 200, manager.text
+    assert manager.json()['preparation_item_counts']['NEW'] == 1
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM preparation_routings '
+            'WHERE tenant_id=%s AND restaurant_order_id=%s',
+            (scope.tenant_id, order_id),
+        )
+        assert cursor.fetchone()['count'] == 1
+        cursor.execute(
+            'SELECT COUNT(*) AS count FROM preparation_works '
+            'WHERE tenant_id=%s AND restaurant_order_id=%s',
+            (scope.tenant_id, order_id),
+        )
+        assert cursor.fetchone()['count'] == 1
 
 
 def test_missing_route_is_atomic_action_required_and_retry_uses_repaired_configuration(client, sql_connection):
@@ -204,6 +303,11 @@ def test_legacy_pos_submission_does_not_invent_preparation_ownership(client, sql
     scope = _scope(connection, prefix)
     order_id, product_id, _ = _accepted_order(client, connection, scope)
     headers = _headers(client, scope)
+    # Simulate a pre-automatic-routing historical order.
+    connection.cursor().execute(
+        'DELETE FROM preparation_routings WHERE tenant_id=%s AND restaurant_order_id=%s',
+        (scope.tenant_id, order_id),
+    )
     connection_id = _execute(connection, "INSERT INTO location_pos_connections (tenant_id,organization_id,location_id,connector_key,external_location_id,status,active_slot,stable_replay_supported,recovery_supported) VALUES (%s,%s,%s,%s,'location-001','ACTIVE',1,1,0)", (scope.tenant_id, scope.organization_id, scope.location_id, CONNECTOR))
     _execute(connection, "INSERT INTO pos_order_submissions (tenant_id,organization_id,location_id,restaurant_order_id,connection_id,connector_key,external_location_id,stable_replay_supported,recovery_supported,idempotency_key,request_schema_version,request_fingerprint,state,attempt_count,last_error_kind,last_error_message,initiated_actor_type,initiated_principal_reference) VALUES (%s,%s,%s,%s,%s,%s,'location-001',1,0,%s,1,%s,'ACTION_REQUIRED',1,'MAPPING','legacy','SYSTEM','legacy-import')", (scope.tenant_id, scope.organization_id, scope.location_id, order_id, connection_id, CONNECTOR, f'legacy:{order_id}', '0' * 64))
     _owner(client, headers, scope.location_id)

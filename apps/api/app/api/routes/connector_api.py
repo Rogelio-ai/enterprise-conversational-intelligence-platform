@@ -6,7 +6,7 @@ from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, Request, status
 from pydantic import BaseModel, ConfigDict, Field
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.connector_deps import ConnectorContext, get_connector_context
@@ -87,13 +87,23 @@ async def eligible_dispatches(
     limit: int = Query(default=50, ge=1, le=100),
 ) -> dict[str, object]:
     await _touch(db, context)
+    now = _now()
     statement = select(PreparationDispatch).where(
         PreparationDispatch.tenant_id == context.tenant_id,
         PreparationDispatch.organization_id == context.organization_id,
         PreparationDispatch.location_id == context.location_id,
         PreparationDispatch.connector_id_snapshot == context.connector_id,
-        PreparationDispatch.state.in_(('PENDING', 'RETRYABLE_FAILURE')),
-        PreparationDispatch.available_at <= _now(),
+        or_(
+            and_(
+                PreparationDispatch.state.in_(('PENDING', 'RETRYABLE_FAILURE')),
+                PreparationDispatch.available_at <= now,
+            ),
+            and_(
+                PreparationDispatch.state == 'IN_PROGRESS',
+                PreparationDispatch.claim_expires_at.is_not(None),
+                PreparationDispatch.claim_expires_at <= now,
+            ),
+        ),
     )
     if cursor is not None:
         statement = statement.where(PreparationDispatch.id > cursor)
@@ -275,13 +285,23 @@ async def eligible_paid_check_dispatches(
     limit: int = Query(default=50, ge=1, le=100),
 ) -> dict[str, object]:
     await _touch(db, context)
+    now = _now()
     statement = select(PaidCheckDispatch).where(
         PaidCheckDispatch.tenant_id == context.tenant_id,
         PaidCheckDispatch.organization_id == context.organization_id,
         PaidCheckDispatch.location_id == context.location_id,
         PaidCheckDispatch.connector_id == context.connector_id,
-        PaidCheckDispatch.state.in_(('PENDING', 'RETRYABLE_FAILURE')),
-        PaidCheckDispatch.available_at <= _now(),
+        or_(
+            and_(
+                PaidCheckDispatch.state.in_(('PENDING', 'RETRYABLE_FAILURE')),
+                PaidCheckDispatch.available_at <= now,
+            ),
+            and_(
+                PaidCheckDispatch.state == 'IN_PROGRESS',
+                PaidCheckDispatch.claim_expires_at.is_not(None),
+                PaidCheckDispatch.claim_expires_at <= now,
+            ),
+        ),
     )
     if cursor is not None:
         statement = statement.where(PaidCheckDispatch.id > cursor)
@@ -487,5 +507,8 @@ async def heartbeat(
     return {
         'observed_at': connector.last_seen_at,
         'connector_id': connector.id,
+        'tenant_id': connector.tenant_id,
+        'organization_id': connector.organization_id,
+        'location_id': connector.location_id,
         'protocol_version': PROTOCOL_VERSION,
     }

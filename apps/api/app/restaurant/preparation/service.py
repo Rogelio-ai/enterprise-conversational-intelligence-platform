@@ -87,6 +87,22 @@ async def freeze_ownership(
         ).with_for_update()
     )
     if routing is not None:
+        if (
+            routing.preparation_owner is None
+            and routing.error_code == 'PREPARATION_OWNERSHIP_UNRESOLVED'
+        ):
+            configuration = await db.scalar(
+                select(LocationPreparationConfiguration).where(
+                    LocationPreparationConfiguration.tenant_id == order.tenant_id,
+                    LocationPreparationConfiguration.organization_id == order.organization_id,
+                    LocationPreparationConfiguration.location_id == order.location_id,
+                )
+            )
+            if configuration is not None:
+                routing.preparation_owner = configuration.preparation_owner
+                routing.state = 'PENDING'
+                routing.error_code = None
+                routing.error_detail = None
         return routing
 
     if reject_legacy_submission:
@@ -238,8 +254,10 @@ async def get_routing(db: AsyncSession, *, tenant_id: int, order_id: int) -> Pre
 async def route_order(
     db: AsyncSession, *, order_id: int, execution: ExecutionContext
 ) -> PreparationRoutingProjection:
-    if execution.actor_type is not ActorType.EMPLOYEE:
-        raise errors.PreparationConflictError('This preparation endpoint requires an employee actor')
+    if execution.actor_type not in (ActorType.EMPLOYEE, ActorType.SYSTEM):
+        raise errors.PreparationConflictError(
+            'Preparation routing requires an employee or trusted system actor'
+        )
     try:
         order = await lock_order(db, tenant_id=execution.tenant_id, order_id=order_id)
         routing = await freeze_ownership(

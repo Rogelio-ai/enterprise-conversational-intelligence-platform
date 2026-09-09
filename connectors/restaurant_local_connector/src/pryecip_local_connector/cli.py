@@ -23,7 +23,11 @@ def _parser() -> argparse.ArgumentParser:
     parser.add_argument('--config', default=DEFAULT_CONFIG)
     commands = parser.add_subparsers(dest='command', required=True)
     commands.add_parser('run')
-    commands.add_parser('status')
+    status_parser = commands.add_parser('status')
+    status_parser.add_argument(
+        '--online', action='store_true',
+        help='authenticate and include cloud identity/location health',
+    )
     return parser
 
 
@@ -38,7 +42,7 @@ def main() -> None:
                 queue_info = CupsAdapter().queues()
             except Exception:
                 queue_info = 'unavailable'
-            print(json.dumps({
+            result = {
                 'connector_version': __version__,
                 'protocol_version': PROTOCOL_VERSION,
                 'credentials_present': config.credentials_path.is_file(),
@@ -46,7 +50,23 @@ def main() -> None:
                 'backlog_count': ledger.backlog_count(),
                 'configured_targets': sorted(config.targets),
                 'cups_queues': queue_info,
-            }, ensure_ascii=False, sort_keys=True))
+            }
+            if args.online:
+                cloud = CloudClient(config, load_credentials(config.credentials_path))
+                try:
+                    heartbeat = cloud.heartbeat(runtime_status='STATUS_CHECK')
+                    result['cloud'] = {
+                        'reachable': True,
+                        'identity_valid': True,
+                        'connector_id': heartbeat['connector_id'],
+                        'tenant_id': heartbeat['tenant_id'],
+                        'organization_id': heartbeat['organization_id'],
+                        'location_id': heartbeat['location_id'],
+                        'observed_at': heartbeat['observed_at'],
+                    }
+                finally:
+                    cloud.close()
+            print(json.dumps(result, ensure_ascii=False, sort_keys=True))
         finally:
             ledger.close()
         return
