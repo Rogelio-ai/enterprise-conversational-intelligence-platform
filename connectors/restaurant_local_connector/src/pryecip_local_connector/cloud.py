@@ -76,9 +76,9 @@ class CloudClient:
         params: dict[str, Any] = {'limit': limit}
         if cursor is not None:
             params['cursor'] = cursor
-        prefix = '' if dispatch_kind == 'PREPARATION' else '/paid-check'
+        resource = 'dispatches' if dispatch_kind == 'PREPARATION' else 'paid-check-dispatches'
         return self.request(
-            'GET', f'/connector/v1{prefix}-dispatches/eligible', params=params
+            'GET', f'/connector/v1/{resource}/eligible', params=params
         ).json()
 
     def claim(
@@ -86,12 +86,12 @@ class CloudClient:
         *, dispatch_kind: str = 'PREPARATION', recovery: bool = False,
     ) -> dict[str, Any]:
         # A single transport replay is safe because claim_request_id is durable on the server.
-        prefix = '' if dispatch_kind == 'PREPARATION' else '/paid-check'
+        resource = 'dispatches' if dispatch_kind == 'PREPARATION' else 'paid-check-dispatches'
         action = 'recovery-claims' if recovery else 'claims'
         payload = {'claim_request_id': claim_request_id}
         if recovery:
             payload['resolution'] = 'NO_SUBMISSION_CONFIRMED'
-        path = f'/connector/v1{prefix}-dispatches/{dispatch_id}/{action}'
+        path = f'/connector/v1/{resource}/{dispatch_id}/{action}'
         try:
             response = self.request('POST', path, json=payload)
         except httpx.TransportError:
@@ -107,9 +107,9 @@ class CloudClient:
         *, dispatch_kind: str = 'PREPARATION',
     ) -> dict[str, Any]:
         # Exact result reports are idempotent at the cloud attempt boundary.
-        prefix = '' if dispatch_kind == 'PREPARATION' else '/paid-check'
+        resource = 'dispatches' if dispatch_kind == 'PREPARATION' else 'paid-check-dispatches'
         return self.request(
-            'POST', f'/connector/v1{prefix}-dispatches/{dispatch_id}/results', json=payload,
+            'POST', f'/connector/v1/{resource}/{dispatch_id}/results', json=payload,
         ).json()
 
     def heartbeat(self, runtime_status: str = 'RUNNING') -> dict[str, Any]:

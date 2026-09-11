@@ -11,7 +11,7 @@ import pytest
 from pryecip_local_connector.adapters import (
     CupsAdapter, EscPosNetworkAdapter, FakeAdapter, OutcomeKind, encode_escpos,
 )
-from pryecip_local_connector.cloud import Backoff, jittered_poll
+from pryecip_local_connector.cloud import Backoff, CloudClient, jittered_poll
 from pryecip_local_connector.config import ConnectorConfig, Credentials, TargetConfig, load_config, load_credentials
 from pryecip_local_connector.ledger import IntegrityConflict, Ledger, LedgerEntry
 from pryecip_local_connector.renderer import (
@@ -107,6 +107,41 @@ def test_credentials_require_0600(tmp_path):
         load_credentials(path)
     path.chmod(0o600)
     assert load_credentials(path) == Credentials('id', 'secret')
+
+
+def test_cloud_dispatch_paths_match_preparation_and_paid_check_routes(monkeypatch):
+    config = ConnectorConfig(
+        cloud_base_url='https://example.test', ledger_path=Path('/tmp/ledger.sqlite3'),
+        credentials_path=Path('/tmp/credentials.json'), targets={},
+    )
+    cloud = CloudClient(config, Credentials('client', 'secret'))
+    requests = []
+
+    class Response:
+        def json(self):
+            return {}
+
+    def record(method, path, **kwargs):
+        requests.append((method, path, kwargs))
+        return Response()
+
+    monkeypatch.setattr(cloud, 'request', record)
+    try:
+        for dispatch_kind, resource in (
+            ('PREPARATION', 'dispatches'), ('PAID_CHECK', 'paid-check-dispatches'),
+        ):
+            cloud.eligible(dispatch_kind=dispatch_kind)
+            cloud.claim(7, 'request', dispatch_kind=dispatch_kind)
+            cloud.claim(7, 'request', dispatch_kind=dispatch_kind, recovery=True)
+            cloud.report_result(7, {'result': 'ACTION_REQUIRED'}, dispatch_kind=dispatch_kind)
+            assert [value[1] for value in requests[-4:]] == [
+                f'/connector/v1/{resource}/eligible',
+                f'/connector/v1/{resource}/7/claims',
+                f'/connector/v1/{resource}/7/recovery-claims',
+                f'/connector/v1/{resource}/7/results',
+            ]
+    finally:
+        cloud.close()
 
 
 def test_ledger_restart_full_sync_and_integrity(tmp_path):
