@@ -704,8 +704,11 @@ EXPECTED_DOMAIN_CHECKS = {
     ('preparation_dispatch_attempts', 'ck_preparation_dispatch_attempts_actor'),
     ('restaurant_tax_rules', 'ck_restaurant_tax_rules_rate'),
     ('restaurant_tax_rules', 'ck_restaurant_tax_rules_effective_interval'),
+    ('restaurant_tax_rules', 'ck_restaurant_tax_rules_effect'),
     ('restaurant_tax_rules', 'ck_restaurant_tax_rules_status'),
     ('restaurant_order_item_tax_snapshots', 'ck_order_item_tax_snapshots_values'),
+    ('restaurant_order_item_tax_snapshots', 'ck_order_item_tax_snapshots_effect'),
+    ('restaurant_order_item_tax_snapshots', 'ck_order_item_tax_snapshots_fiscal_money'),
     (
         'restaurant_order_item_tax_snapshots',
         'ck_order_item_tax_snapshots_schema_version',
@@ -1214,14 +1217,16 @@ def _database_contract(connection) -> tuple[set[tuple], set[tuple], set[tuple]]:
             for row in cursor.fetchall()
         }
         cursor.execute(
-            '''
+            f'''
             SELECT KCU.CONSTRAINT_NAME, KCU.TABLE_NAME, KCU.COLUMN_NAME,
                    KCU.REFERENCED_TABLE_NAME, KCU.REFERENCED_COLUMN_NAME,
                    KCU.ORDINAL_POSITION
             FROM information_schema.KEY_COLUMN_USAGE AS KCU
             WHERE KCU.TABLE_SCHEMA = DATABASE()
               AND KCU.REFERENCED_TABLE_NAME IS NOT NULL
-            '''
+              AND KCU.TABLE_NAME IN ({placeholders})
+            ''',
+            tuple(sorted(APPLICATION_TABLES)),
         )
         foreign_keys = {
             (
@@ -2115,6 +2120,67 @@ def test_fresh_install_reaches_portable_database_contract(
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         _assert_database_contract(connection)
+    finally:
+        connection.close()
+
+
+def test_0003_retry_replaces_partial_canonical_foreign_key_and_preserves_data(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0002_auth_tenant_foundation')
+
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES ('Retry','retry','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO users (email,password_hash,display_name,status) "
+                "VALUES ('retry@example.com','hash','Retry User','ACTIVE')"
+            )
+            user_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO tenant_memberships (tenant_id,user_id,status) "
+                "VALUES (%s,%s,'ACTIVE')",
+                (tenant_id, user_id),
+            )
+            membership_id = int(cursor.lastrowid)
+            cursor.execute(
+                "SELECT CONSTRAINT_NAME FROM information_schema.KEY_COLUMN_USAGE "
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='tenant_memberships' "
+                "AND COLUMN_NAME='tenant_id' AND REFERENCED_TABLE_NAME='tenants'"
+            )
+            tenant_constraint = cursor.fetchone()['CONSTRAINT_NAME']
+            cursor.execute(
+                f'ALTER TABLE tenant_memberships DROP FOREIGN KEY `{tenant_constraint}`'
+            )
+            cursor.execute(
+                'ALTER TABLE tenant_memberships '
+                'ADD CONSTRAINT fk_tenant_memberships_tenant '
+                'FOREIGN KEY (tenant_id) REFERENCES users(id) ON DELETE CASCADE'
+            )
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        _assert_database_contract(connection)
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT tenant_id,user_id,status FROM tenant_memberships WHERE id=%s',
+                (membership_id,),
+            )
+            assert cursor.fetchone() == {
+                'tenant_id': tenant_id,
+                'user_id': user_id,
+                'status': 'ACTIVE',
+            }
     finally:
         connection.close()
 

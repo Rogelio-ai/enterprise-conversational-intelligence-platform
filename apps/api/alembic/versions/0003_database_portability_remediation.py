@@ -96,6 +96,7 @@ def _expected_signature(foreign_key: ForeignKeyDefinition) -> tuple:
 def _drop_existing_expected_foreign_keys() -> None:
     inspector = sa.inspect(op.get_bind())
     expected_signatures = {_expected_signature(foreign_key) for foreign_key in FOREIGN_KEYS}
+    expected_names = {foreign_key.name for foreign_key in FOREIGN_KEYS}
 
     for table_name in APPLICATION_TABLES:
         for foreign_key in inspector.get_foreign_keys(table_name):
@@ -105,7 +106,14 @@ def _drop_existing_expected_foreign_keys() -> None:
                 foreign_key['referred_table'],
                 tuple(foreign_key['referred_columns']),
             )
-            if signature in expected_signatures:
+            # MySQL DDL is non-transactional. A previously interrupted attempt can
+            # leave a canonical constraint name attached to a partial definition
+            # while alembic_version still points at 0002. Clear both valid legacy
+            # signatures and canonical-name collisions before rebuilding the set.
+            if (
+                signature in expected_signatures
+                or foreign_key['name'] in expected_names
+            ):
                 op.drop_constraint(foreign_key['name'], table_name, type_='foreignkey')
 
 

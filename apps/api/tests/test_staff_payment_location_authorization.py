@@ -121,6 +121,8 @@ def test_staff_payment_requires_authoritative_location_before_execution_and_repl
         assert replay.json()['state'] == created.json()['state']
         assert executor.execution_calls == 1
 
+        counts_before_mismatch = _financial_counts(connection, check['id'])
+        calls_before_mismatch = executor.execution_calls
         mismatch_replay = client.post(
             url,
             headers=headers,
@@ -128,8 +130,10 @@ def test_staff_payment_requires_authoritative_location_before_execution_and_repl
             json=payload,
         )
         assert mismatch_replay.status_code == 404, mismatch_replay.text
-        assert str(created.json()['id']) not in mismatch_replay.text
+        assert mismatch_replay.json()['error']['code'] == 'PAYMENT_NOT_FOUND'
         assert 'instrument_last_four' not in mismatch_replay.text
+        assert _financial_counts(connection, check['id']) == counts_before_mismatch
+        assert executor.execution_calls == calls_before_mismatch
 
         changed = client.post(
             url,
