@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from decimal import Decimal
 import os
 from pathlib import Path
 import subprocess
@@ -3607,5 +3608,149 @@ def test_0040_location_grants_are_portable_reversible_and_never_backfilled(
         with connection.cursor() as cursor:
             cursor.execute('SELECT COUNT(*) AS grant_count FROM membership_location_grants')
             assert cursor.fetchone()['grant_count'] == 0
+    finally:
+        connection.close()
+
+
+def test_0041_inventory_warehouse_upgrade_preserves_history_and_balances(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0040_staff_location_authorization_scope')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) "
+                "VALUES ('Inventory Tenant','warehouse-upgrade','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) "
+                "VALUES (%s,'ORG','Organization','ACTIVE')",
+                (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO locations '
+                '(tenant_id,organization_id,code,name,timezone,status) '
+                "VALUES (%s,%s,'LOC','Location','America/Mexico_City','ACTIVE')",
+                (tenant_id, organization_id),
+            )
+            location_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO inventory_items '
+                '(tenant_id,organization_id,location_id,code,name,base_uom,'
+                'standard_unit_cost,currency,status,version) '
+                "VALUES (%s,%s,%s,'ITEM','Item','UNIT',1.000000,'MXN','ACTIVE',1)",
+                (tenant_id, organization_id, location_id),
+            )
+            item_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO stock_movements '
+                '(tenant_id,organization_id,location_id,inventory_item_id,'
+                'movement_type,quantity,reversal_of_movement_id,reason,reference,'
+                'recorded_at,actor_type,actor_id,actor_reference,opening_balance_slot,'
+                'idempotency_actor_scope,idempotency_key,request_schema_version,'
+                'request_fingerprint) '
+                "VALUES (%s,%s,%s,%s,'OPENING_BALANCE',12.500000,NULL,NULL,'legacy',"
+                "CURRENT_TIMESTAMP,'EMPLOYEE',1,NULL,1,'EMPLOYEE:1','legacy-opening',1,"
+                "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')",
+                (tenant_id, organization_id, location_id, item_id),
+            )
+            movement_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT id,tenant_id,organization_id,location_id,'
+                'negative_stock_policy,default_slot FROM warehouses '
+                'WHERE location_id=%s',
+                (location_id,),
+            )
+            warehouse = cursor.fetchone()
+            assert warehouse is not None
+            assert warehouse['tenant_id'] == tenant_id
+            assert warehouse['organization_id'] == organization_id
+            assert warehouse['default_slot'] == 1
+            assert warehouse['negative_stock_policy'] == 'ALLOW'
+            cursor.execute(
+                'SELECT id,warehouse_id,quantity,negative_stock_policy,'
+                'negative_stock_warning,resulting_stock_quantity '
+                'FROM stock_movements WHERE id=%s',
+                (movement_id,),
+            )
+            movement = cursor.fetchone()
+            assert movement == {
+                'id': movement_id,
+                'warehouse_id': warehouse['id'],
+                'quantity': Decimal('12.500000'),
+                'negative_stock_policy': 'ALLOW',
+                'negative_stock_warning': 0,
+                'resulting_stock_quantity': None,
+            }
+            cursor.execute(
+                'SELECT SUM(quantity) AS quantity FROM stock_movements '
+                'WHERE tenant_id=%s AND location_id=%s AND inventory_item_id=%s',
+                (tenant_id, location_id, item_id),
+            )
+            before_scope = cursor.fetchone()['quantity']
+            cursor.execute(
+                'SELECT SUM(quantity) AS quantity FROM stock_movements '
+                'WHERE warehouse_id=%s AND inventory_item_id=%s',
+                (warehouse['id'], item_id),
+            )
+            assert cursor.fetchone()['quantity'] == before_scope == Decimal('12.500000')
+            with pytest.raises(pymysql.err.IntegrityError):
+                cursor.execute(
+                    'INSERT INTO warehouses '
+                    '(tenant_id,organization_id,location_id,code,name,status,'
+                    'default_slot,negative_stock_policy,version) '
+                    "VALUES (%s,%s,%s,'OTHER','Other','ACTIVE',1,'ALLOW',1)",
+                    (tenant_id, organization_id, location_id),
+                )
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0040_staff_location_authorization_scope')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT id,quantity FROM stock_movements WHERE id=%s',
+                (movement_id,),
+            )
+            assert cursor.fetchone() == {
+                'id': movement_id, 'quantity': Decimal('12.500000'),
+            }
+            cursor.execute(
+                'SELECT TABLE_NAME FROM information_schema.TABLES '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='warehouses'"
+            )
+            assert cursor.fetchall() == ()
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT sm.id,sm.quantity,w.default_slot '
+                'FROM stock_movements sm JOIN warehouses w ON w.id=sm.warehouse_id '
+                'WHERE sm.id=%s',
+                (movement_id,),
+            )
+            assert cursor.fetchone() == {
+                'id': movement_id,
+                'quantity': Decimal('12.500000'),
+                'default_slot': 1,
+            }
     finally:
         connection.close()

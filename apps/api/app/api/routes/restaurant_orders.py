@@ -93,6 +93,7 @@ class RestaurantOrderResponse(BaseModel):
 class OrderConsumptionMovementResponse(BaseModel):
     model_config = ConfigDict(from_attributes=True)
     stock_movement_id: int
+    warehouse_id: int
     restaurant_order_item_id: int
     restaurant_order_item_component_id: int | None
     source_product_id: int
@@ -104,6 +105,9 @@ class OrderConsumptionMovementResponse(BaseModel):
     unit_cost: Decimal
     currency: str
     extended_cost: Decimal
+    negative_stock_policy: str
+    negative_stock_warning: bool
+    resulting_stock_quantity: Decimal | None
 
 
 class OrderItemConsumptionResponse(BaseModel):

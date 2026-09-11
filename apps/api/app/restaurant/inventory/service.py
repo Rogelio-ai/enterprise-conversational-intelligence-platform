@@ -18,6 +18,7 @@ from app.models import (
     ProductConsumptionComponent,
     ProductConsumptionDefinition,
     StockMovement,
+    Warehouse,
 )
 from app.restaurant.inventory import errors
 from app.restaurant.inventory.contracts import (
@@ -28,6 +29,7 @@ from app.restaurant.inventory.contracts import (
     ProductCostProjection,
     StockMovementProjection,
     StockProjection,
+    WarehouseProjection,
 )
 from app.restaurant.inventory.units import (
     QUANTITY_UNIT,
@@ -77,16 +79,155 @@ def _text(value: str, *, field: str, maximum: int) -> str:
 
 
 async def _location(
-    db: AsyncSession, *, tenant_id: int, location_id: int
+    db: AsyncSession, *, tenant_id: int, location_id: int,
+    for_update: bool = False,
 ) -> Location:
-    value = await db.scalar(
-        select(Location).where(
-            Location.id == location_id, Location.tenant_id == tenant_id
-        )
+    statement = select(Location).where(
+        Location.id == location_id, Location.tenant_id == tenant_id
     )
+    if for_update:
+        statement = statement.with_for_update()
+    value = await db.scalar(statement)
     if value is None:
         raise errors.InventoryScopeNotFoundError('Location not found')
     return value
+
+
+def _warehouse_projection(value: Warehouse) -> WarehouseProjection:
+    return WarehouseProjection(
+        id=value.id,
+        tenant_id=value.tenant_id,
+        organization_id=value.organization_id,
+        location_id=value.location_id,
+        code=value.code,
+        name=value.name,
+        status=value.status,
+        is_default=value.default_slot == 1,
+        negative_stock_policy=value.negative_stock_policy,
+        version=value.version,
+        created_at=value.created_at,
+        updated_at=value.updated_at,
+    )
+
+
+async def resolve_default_warehouse(
+    db: AsyncSession, *, tenant_id: int, location_id: int,
+    for_update: bool = False,
+) -> Warehouse:
+    location = await _location(
+        db, tenant_id=tenant_id, location_id=location_id, for_update=True,
+    )
+    statement = select(Warehouse).where(
+        Warehouse.tenant_id == tenant_id,
+        Warehouse.organization_id == location.organization_id,
+        Warehouse.location_id == location.id,
+        Warehouse.default_slot == 1,
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    value = await db.scalar(statement)
+    if value is None:
+        value = Warehouse(
+            tenant_id=tenant_id,
+            organization_id=location.organization_id,
+            location_id=location.id,
+            code='DEFAULT',
+            name='Default Warehouse',
+            status='ACTIVE',
+            default_slot=1,
+            negative_stock_policy='ALLOW',
+            version=1,
+        )
+        db.add(value)
+        await db.flush()
+    return value
+
+
+async def _warehouse_for_scope(
+    db: AsyncSession, *, tenant_id: int, organization_id: int, location_id: int,
+    warehouse_id: int | None,
+    for_update: bool = False,
+) -> Warehouse:
+    if warehouse_id is None:
+        return await resolve_default_warehouse(
+            db, tenant_id=tenant_id, location_id=location_id,
+            for_update=for_update,
+        )
+    statement = select(Warehouse).where(
+        Warehouse.id == warehouse_id,
+        Warehouse.tenant_id == tenant_id,
+        Warehouse.organization_id == organization_id,
+        Warehouse.location_id == location_id,
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    value = await db.scalar(statement)
+    if value is None:
+        raise errors.WarehouseNotFoundError()
+    return value
+
+
+async def stock_quantity(
+    db: AsyncSession, *, tenant_id: int, warehouse_id: int, inventory_item_id: int,
+) -> Decimal:
+    quantities = (
+        await db.scalars(
+            select(StockMovement.quantity).where(
+                StockMovement.tenant_id == tenant_id,
+                StockMovement.warehouse_id == warehouse_id,
+                StockMovement.inventory_item_id == inventory_item_id,
+            ).order_by(StockMovement.id).with_for_update()
+        )
+    ).all()
+    return sum(
+        (Decimal(value) for value in quantities), start=Decimal(0)
+    ).quantize(QUANTITY_UNIT)
+
+
+async def list_warehouses(
+    db: AsyncSession, *, tenant_id: int, location_id: int,
+) -> tuple[WarehouseProjection, ...]:
+    await resolve_default_warehouse(
+        db, tenant_id=tenant_id, location_id=location_id,
+    )
+    await db.commit()
+    rows = tuple((await db.execute(
+        select(Warehouse).where(
+            Warehouse.tenant_id == tenant_id,
+            Warehouse.location_id == location_id,
+        ).order_by(Warehouse.id)
+    )).scalars().all())
+    return tuple(_warehouse_projection(value) for value in rows)
+
+
+async def update_warehouse_policy(
+    db: AsyncSession, *, tenant_id: int, warehouse_id: int,
+    expected_version: int, negative_stock_policy: str,
+) -> WarehouseProjection:
+    policy = negative_stock_policy.strip().upper()
+    if policy not in ('ALLOW', 'WARN', 'BLOCK'):
+        raise errors.InvalidStockMovementError('Unsupported negative-stock policy')
+    try:
+        value = await db.scalar(
+            select(Warehouse).where(
+                Warehouse.id == warehouse_id,
+                Warehouse.tenant_id == tenant_id,
+            ).with_for_update()
+        )
+        if value is None:
+            raise errors.WarehouseNotFoundError()
+        if value.version != expected_version:
+            raise errors.WarehouseVersionConflictError(
+                f'Expected version {expected_version}, current version is {value.version}'
+            )
+        value.negative_stock_policy = policy
+        value.version += 1
+        await db.commit()
+        await db.refresh(value)
+        return _warehouse_projection(value)
+    except Exception:
+        await db.rollback()
+        raise
 
 
 async def _item(
@@ -105,11 +246,37 @@ async def _item(
     return value
 
 
+async def inventory_item_location(
+    db: AsyncSession, *, tenant_id: int, inventory_item_id: int,
+) -> int:
+    return (await _item(
+        db, tenant_id=tenant_id, inventory_item_id=inventory_item_id,
+    )).location_id
+
+
+async def warehouse_location(
+    db: AsyncSession, *, tenant_id: int, warehouse_id: int,
+) -> int:
+    location_id = await db.scalar(
+        select(Warehouse.location_id).where(
+            Warehouse.id == warehouse_id, Warehouse.tenant_id == tenant_id,
+        )
+    )
+    if location_id is None:
+        raise errors.WarehouseNotFoundError()
+    return location_id
+
+
 async def create_inventory_item(
     db: AsyncSession, *, tenant_id: int, location_id: int, code: str, name: str,
     base_uom: str, standard_unit_cost: Decimal, currency: str,
 ) -> InventoryItem:
-    location = await _location(db, tenant_id=tenant_id, location_id=location_id)
+    location = await _location(
+        db, tenant_id=tenant_id, location_id=location_id, for_update=True,
+    )
+    await resolve_default_warehouse(
+        db, tenant_id=tenant_id, location_id=location_id,
+    )
     code = _text(code, field='Code', maximum=64).upper()
     name = _text(name, field='Name', maximum=200)
     try:
@@ -411,6 +578,7 @@ def _movement_projection(value: StockMovement, base_uom: str) -> StockMovementPr
         id=value.id,
         inventory_item_id=value.inventory_item_id,
         location_id=value.location_id,
+        warehouse_id=value.warehouse_id,
         movement_type=value.movement_type,
         quantity=value.quantity,
         base_uom=base_uom,
@@ -421,11 +589,15 @@ def _movement_projection(value: StockMovement, base_uom: str) -> StockMovementPr
         actor_type=value.actor_type,
         actor_id=value.actor_id,
         actor_reference=value.actor_reference,
+        negative_stock_policy=value.negative_stock_policy,
+        negative_stock_warning=value.negative_stock_warning,
+        resulting_stock_quantity=value.resulting_stock_quantity,
     )
 
 
 async def create_stock_movement(
     db: AsyncSession, *, context: ExecutionContext, inventory_item_id: int,
+    warehouse_id: int | None,
     movement_type: str, quantity: Decimal | None, reversal_of_movement_id: int | None,
     reason: str | None, reference: str | None, idempotency_key: str,
 ) -> tuple[StockMovementProjection, bool]:
@@ -452,17 +624,18 @@ async def create_stock_movement(
             'Only REVERSAL may reference another movement'
         )
     requested_quantity = str(quantity) if quantity is not None else None
-    fingerprint = _fingerprint(
-        {
-            'schema_version': REQUEST_SCHEMA_VERSION,
-            'inventory_item_id': inventory_item_id,
-            'movement_type': movement_type,
-            'quantity': requested_quantity,
-            'reversal_of_movement_id': reversal_of_movement_id,
-            'reason': reason,
-            'reference': reference,
-        }
-    )
+    fingerprint_payload = {
+        'schema_version': REQUEST_SCHEMA_VERSION,
+        'inventory_item_id': inventory_item_id,
+        'movement_type': movement_type,
+        'quantity': requested_quantity,
+        'reversal_of_movement_id': reversal_of_movement_id,
+        'reason': reason,
+        'reference': reference,
+    }
+    if warehouse_id is not None:
+        fingerprint_payload['warehouse_id'] = warehouse_id
+    fingerprint = _fingerprint(fingerprint_payload)
     actor_scope = _actor_scope(context)
     replay = await db.scalar(
         select(StockMovement).where(
@@ -481,11 +654,23 @@ async def create_stock_movement(
         return _movement_projection(replay, item.base_uom), True
 
     try:
+        uncommitted_item = await _item(
+            db, tenant_id=context.tenant_id, inventory_item_id=inventory_item_id,
+        )
+        warehouse = await _warehouse_for_scope(
+            db, tenant_id=uncommitted_item.tenant_id,
+            organization_id=uncommitted_item.organization_id,
+            location_id=uncommitted_item.location_id,
+            warehouse_id=warehouse_id, for_update=True,
+        )
         item = await _item(
             db, tenant_id=context.tenant_id,
-            inventory_item_id=inventory_item_id,
-            for_update=movement_type in ('OPENING_BALANCE', 'REVERSAL'),
+            inventory_item_id=inventory_item_id, for_update=True,
         )
+        if movement_type != 'REVERSAL' and warehouse.status != 'ACTIVE':
+            raise errors.InvalidStockMovementError(
+                'Cannot create a new movement in an inactive Warehouse'
+            )
         if movement_type != 'REVERSAL' and item.status != 'ACTIVE':
             raise errors.InvalidStockMovementError(
                 'Cannot create a new movement for an inactive Inventory Item'
@@ -509,6 +694,7 @@ async def create_stock_movement(
                     StockMovement.id == reversal_of_movement_id,
                     StockMovement.tenant_id == context.tenant_id,
                     StockMovement.inventory_item_id == item.id,
+                    StockMovement.warehouse_id == warehouse.id,
                 ).with_for_update()
             )
             if original is None:
@@ -539,10 +725,32 @@ async def create_stock_movement(
             if not valid_sign:
                 raise errors.InvalidStockMovementError('Movement quantity has the wrong sign')
 
+        current_quantity = await stock_quantity(
+            db, tenant_id=item.tenant_id, warehouse_id=warehouse.id,
+            inventory_item_id=item.id,
+        )
+        resulting_quantity = (current_quantity + normalized_quantity).quantize(
+            QUANTITY_UNIT
+        )
+        warning = (
+            resulting_quantity < _ZERO
+            and warehouse.negative_stock_policy in ('WARN', 'BLOCK')
+        )
+        if (
+            warehouse.negative_stock_policy == 'BLOCK'
+            and normalized_quantity < _ZERO
+            and movement_type != 'REVERSAL'
+            and resulting_quantity < _ZERO
+        ):
+            raise errors.NegativeStockBlockedError(
+                'Movement would make warehouse stock negative'
+            )
+
         movement = StockMovement(
             tenant_id=item.tenant_id,
             organization_id=item.organization_id,
             location_id=item.location_id,
+            warehouse_id=warehouse.id,
             inventory_item_id=item.id,
             movement_type=movement_type,
             quantity=normalized_quantity,
@@ -558,6 +766,9 @@ async def create_stock_movement(
             idempotency_key=idempotency_key,
             request_schema_version=REQUEST_SCHEMA_VERSION,
             request_fingerprint=fingerprint,
+            negative_stock_policy=warehouse.negative_stock_policy,
+            negative_stock_warning=warning,
+            resulting_stock_quantity=resulting_quantity,
         )
         db.add(movement)
         await db.commit()
@@ -592,14 +803,20 @@ async def create_stock_movement(
 
 async def list_stock(
     db: AsyncSession, *, tenant_id: int, location_id: int,
-    inventory_item_id: int | None = None,
+    inventory_item_id: int | None = None, warehouse_id: int | None = None,
 ) -> tuple[StockProjection, ...]:
-    await _location(db, tenant_id=tenant_id, location_id=location_id)
+    location = await _location(db, tenant_id=tenant_id, location_id=location_id)
+    warehouse = await _warehouse_for_scope(
+        db, tenant_id=tenant_id, organization_id=location.organization_id,
+        location_id=location_id, warehouse_id=warehouse_id,
+    )
+    await db.commit()
     balance = (
         select(func.coalesce(func.sum(StockMovement.quantity), 0))
         .where(
             StockMovement.tenant_id == InventoryItem.tenant_id,
             StockMovement.location_id == InventoryItem.location_id,
+            StockMovement.warehouse_id == warehouse.id,
             StockMovement.inventory_item_id == InventoryItem.id,
         )
         .correlate(InventoryItem)
@@ -618,6 +835,7 @@ async def list_stock(
             code=item.code,
             name=item.name,
             location_id=item.location_id,
+            warehouse_id=warehouse.id,
             base_uom=item.base_uom,
             quantity=quantity.quantize(QUANTITY_UNIT),
         )
@@ -627,9 +845,15 @@ async def list_stock(
 
 async def list_stock_movements(
     db: AsyncSession, *, tenant_id: int, location_id: int,
-    inventory_item_id: int | None = None, limit: int = 50, offset: int = 0,
+    inventory_item_id: int | None = None, warehouse_id: int | None = None,
+    limit: int = 50, offset: int = 0,
 ) -> tuple[StockMovementProjection, ...]:
-    await _location(db, tenant_id=tenant_id, location_id=location_id)
+    location = await _location(db, tenant_id=tenant_id, location_id=location_id)
+    warehouse = await _warehouse_for_scope(
+        db, tenant_id=tenant_id, organization_id=location.organization_id,
+        location_id=location_id, warehouse_id=warehouse_id,
+    )
+    await db.commit()
     statement = (
         select(StockMovement, InventoryItem.base_uom)
         .join(
@@ -640,6 +864,7 @@ async def list_stock_movements(
         .where(
             StockMovement.tenant_id == tenant_id,
             StockMovement.location_id == location_id,
+            StockMovement.warehouse_id == warehouse.id,
         )
     )
     if inventory_item_id is not None:

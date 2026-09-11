@@ -292,6 +292,7 @@ def sql_connection(integration_settings: Settings):
                     'product_consumption_components',
                     'product_consumption_definitions',
                     'inventory_items',
+                    'warehouses',
                 ):
                     cursor.execute(
                         f'DELETE FROM {table} WHERE tenant_id IN '

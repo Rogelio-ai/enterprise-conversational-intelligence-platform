@@ -37,6 +37,7 @@ class StockMovementProjection:
     id: int
     inventory_item_id: int
     location_id: int
+    warehouse_id: int
     movement_type: str
     quantity: Decimal
     base_uom: str
@@ -47,6 +48,9 @@ class StockMovementProjection:
     actor_type: str
     actor_id: int | None
     actor_reference: str | None
+    negative_stock_policy: str
+    negative_stock_warning: bool
+    resulting_stock_quantity: Decimal | None
 
 
 @dataclass(frozen=True, slots=True)
@@ -55,8 +59,25 @@ class StockProjection:
     code: str
     name: str
     location_id: int
+    warehouse_id: int
     base_uom: str
     quantity: Decimal
+
+
+@dataclass(frozen=True, slots=True)
+class WarehouseProjection:
+    id: int
+    tenant_id: int
+    organization_id: int
+    location_id: int
+    code: str
+    name: str
+    status: str
+    is_default: bool
+    negative_stock_policy: str
+    version: int
+    created_at: datetime
+    updated_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -86,6 +107,7 @@ class ProductCostProjection:
 @dataclass(frozen=True, slots=True)
 class OrderConsumptionMovementProjection:
     stock_movement_id: int
+    warehouse_id: int
     restaurant_order_item_id: int
     restaurant_order_item_component_id: int | None
     source_product_id: int
@@ -97,6 +119,9 @@ class OrderConsumptionMovementProjection:
     unit_cost: Decimal
     currency: str
     extended_cost: Decimal
+    negative_stock_policy: str
+    negative_stock_warning: bool
+    resulting_stock_quantity: Decimal | None
 
 
 @dataclass(frozen=True, slots=True)

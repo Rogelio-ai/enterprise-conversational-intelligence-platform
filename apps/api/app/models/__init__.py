@@ -34,6 +34,7 @@ from app.models.inventory import (
     ProductConsumptionDefinition,
     RestaurantOrderConsumption,
     StockMovement,
+    Warehouse,
 )
 from app.models.menu import (
     Menu,
@@ -198,6 +199,7 @@ __all__ = [
     'DinerSession',
     'RestaurantMessageIntent',
     'Tenant',
+    'Warehouse',
     'TenantMembership',
     'StockMovement',
     'User',

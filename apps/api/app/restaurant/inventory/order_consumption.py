@@ -22,6 +22,7 @@ from app.models import (
     StockMovement,
 )
 from app.restaurant.inventory import errors
+from app.restaurant.inventory import service as inventory_service
 from app.restaurant.inventory.contracts import (
     OrderConsumptionMovementProjection,
     OrderConsumptionProjection,
@@ -66,6 +67,11 @@ async def materialize_accepted_order(
     )
     if existing is not None:
         return existing
+
+    warehouse = await inventory_service.resolve_default_warehouse(
+        db, tenant_id=order.tenant_id, location_id=order.location_id,
+        for_update=True,
+    )
 
     items = tuple(
         (
@@ -248,6 +254,7 @@ async def materialize_accepted_order(
         {
             'schema_version': SCHEMA_VERSION,
             'restaurant_order_id': order.id,
+            'warehouse_id': warehouse.id,
             'items': [
                 {
                     'id': item.id, 'product_id': item.product_id,
@@ -292,6 +299,13 @@ async def materialize_accepted_order(
     )
     db.add(header)
     await db.flush()
+    balances = {
+        item_id: await inventory_service.stock_quantity(
+            db, tenant_id=order.tenant_id, warehouse_id=warehouse.id,
+            inventory_item_id=item_id,
+        )
+        for item_id in sorted({value['item'].id for value in staged})
+    }
     for value in staged:
         source = value['source']
         definition = value['definition']
@@ -304,16 +318,23 @@ async def materialize_accepted_order(
             {
                 'header_fingerprint': fingerprint,
                 'source_key': source_key,
+                'warehouse_id': warehouse.id,
                 'quantity': _decimal(value['quantity']),
                 'unit_cost': _decimal(Decimal(item.standard_unit_cost)),
                 'currency': item.currency,
             }
+        )
+        balances[item.id] = balances[item.id] - value['quantity']
+        negative_warning = (
+            balances[item.id] < ZERO
+            and warehouse.negative_stock_policy in ('WARN', 'BLOCK')
         )
         db.add(
             StockMovement(
                 tenant_id=order.tenant_id,
                 organization_id=order.organization_id,
                 location_id=order.location_id,
+                warehouse_id=warehouse.id,
                 inventory_item_id=item.id,
                 movement_type='CONSUMPTION',
                 quantity=-value['quantity'],
@@ -329,6 +350,9 @@ async def materialize_accepted_order(
                 idempotency_key=f'order:{order.id}:{hashlib.sha256(source_key.encode()).hexdigest()}',
                 request_schema_version=SCHEMA_VERSION,
                 request_fingerprint=movement_fingerprint,
+                negative_stock_policy=warehouse.negative_stock_policy,
+                negative_stock_warning=negative_warning,
+                resulting_stock_quantity=balances[item.id],
                 restaurant_order_consumption_id=header.id,
                 restaurant_order_id=order.id,
                 restaurant_order_item_id=source.order_item.id,
@@ -438,6 +462,7 @@ async def get_order_consumption(
                 movements=tuple(
                     OrderConsumptionMovementProjection(
                         stock_movement_id=value.id,
+                        warehouse_id=value.warehouse_id,
                         restaurant_order_item_id=item.id,
                         restaurant_order_item_component_id=(
                             value.restaurant_order_item_component_id
@@ -453,6 +478,9 @@ async def get_order_consumption(
                         unit_cost=value.unit_cost_snapshot,
                         currency=value.currency_snapshot,
                         extended_cost=value.extended_cost_snapshot,
+                        negative_stock_policy=value.negative_stock_policy,
+                        negative_stock_warning=value.negative_stock_warning,
+                        resulting_stock_quantity=value.resulting_stock_quantity,
                     )
                     for value in item_movements
                 ),

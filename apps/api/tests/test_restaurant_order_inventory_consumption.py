@@ -119,9 +119,13 @@ def test_simple_acceptance_consumes_once_freezes_cost_and_allows_negative_stock(
     assert projected['theoretical_gross_margin'] == '130.000000000000'
     assert projected['theoretical_margin_percent'] == '86.6667'
     movement = projected['items'][0]['movements'][0]
+    assert movement['warehouse_id'] > 0
     assert movement['consumed_quantity'] == '10.000000'
     assert movement['unit_cost'] == '2.000000'
     assert movement['extended_cost'] == '20.000000000000'
+    assert movement['negative_stock_policy'] == 'ALLOW'
+    assert movement['negative_stock_warning'] is False
+    assert movement['resulting_stock_quantity'] == '-10.000000'
 
     replay = _confirm(client, diner_headers, preview, 'inventory-simple')
     assert replay.status_code == 200

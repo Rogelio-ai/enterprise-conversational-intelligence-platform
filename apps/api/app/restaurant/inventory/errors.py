@@ -13,6 +13,18 @@ class InventoryItemNotFoundError(InventoryError):
     code = 'INVENTORY_ITEM_NOT_FOUND'
 
 
+class WarehouseNotFoundError(InventoryError):
+    code = 'WAREHOUSE_NOT_FOUND'
+
+
+class WarehouseVersionConflictError(InventoryError):
+    code = 'WAREHOUSE_VERSION_CONFLICT'
+
+
+class NegativeStockBlockedError(InventoryError):
+    code = 'NEGATIVE_STOCK_BLOCKED'
+
+
 class DuplicateInventoryItemCodeError(InventoryError):
     code = 'DUPLICATE_INVENTORY_ITEM_CODE'
 

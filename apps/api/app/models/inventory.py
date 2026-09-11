@@ -5,6 +5,7 @@ from decimal import Decimal
 
 from sqlalchemy import (
     BigInteger,
+    Boolean,
     CheckConstraint,
     DateTime,
     ForeignKeyConstraint,
@@ -29,6 +30,72 @@ OPTIONS = {
     'mysql_charset': 'utf8mb4',
     'mysql_collate': 'utf8mb4_unicode_ci',
 }
+
+
+class Warehouse(TimestampMixin, Base):
+    __tablename__ = 'warehouses'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['tenant_id'], ['tenants.id'], name='fk_warehouses_tenant',
+            ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['organization_id', 'tenant_id'],
+            ['organizations.id', 'organizations.tenant_id'],
+            name='fk_warehouses_organization_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['location_id', 'tenant_id', 'organization_id'],
+            ['locations.id', 'locations.tenant_id', 'locations.organization_id'],
+            name='fk_warehouses_location_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id',
+            name='uq_warehouses_scope',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'organization_id', 'location_id', 'code',
+            name='uq_warehouses_location_code',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'organization_id', 'location_id', 'default_slot',
+            name='uq_warehouses_location_default',
+        ),
+        CheckConstraint("status IN ('ACTIVE','INACTIVE')", name='ck_warehouses_status'),
+        CheckConstraint(
+            'default_slot IS NULL OR default_slot=1',
+            name='ck_warehouses_default_slot',
+        ),
+        CheckConstraint(
+            "negative_stock_policy IN ('ALLOW','WARN','BLOCK')",
+            name='ck_warehouses_negative_stock_policy',
+        ),
+        CheckConstraint('version >= 1', name='ck_warehouses_version'),
+        Index(
+            'ix_warehouses_location_status', 'tenant_id', 'location_id',
+            'status', 'id',
+        ),
+        OPTIONS,
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    code: Mapped[str] = mapped_column(
+        String(64, collation='utf8mb4_bin'), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(200), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='ACTIVE', server_default=text("'ACTIVE'")
+    )
+    default_slot: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    negative_stock_policy: Mapped[str] = mapped_column(
+        String(8), nullable=False, default='ALLOW', server_default=text("'ALLOW'")
+    )
+    version: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default=text('1')
+    )
 
 
 class InventoryItem(TimestampMixin, Base):
@@ -256,6 +323,14 @@ class StockMovement(Base):
     __tablename__ = 'stock_movements'
     __table_args__ = (
         ForeignKeyConstraint(
+            ['warehouse_id', 'tenant_id', 'organization_id', 'location_id'],
+            [
+                'warehouses.id', 'warehouses.tenant_id',
+                'warehouses.organization_id', 'warehouses.location_id',
+            ],
+            name='fk_stock_movements_warehouse_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
             ['inventory_item_id', 'tenant_id', 'organization_id', 'location_id'],
             [
                 'inventory_items.id', 'inventory_items.tenant_id',
@@ -266,12 +341,12 @@ class StockMovement(Base):
         ForeignKeyConstraint(
             [
                 'reversal_of_movement_id', 'tenant_id', 'organization_id',
-                'location_id', 'inventory_item_id',
+                'location_id', 'inventory_item_id', 'warehouse_id',
             ],
             [
                 'stock_movements.id', 'stock_movements.tenant_id',
                 'stock_movements.organization_id', 'stock_movements.location_id',
-                'stock_movements.inventory_item_id',
+                'stock_movements.inventory_item_id', 'stock_movements.warehouse_id',
             ],
             name='fk_stock_movements_reversal_scope', ondelete='RESTRICT',
         ),
@@ -333,6 +408,11 @@ class StockMovement(Base):
             name='uq_stock_movements_scope',
         ),
         UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id',
+            'inventory_item_id', 'warehouse_id',
+            name='uq_stock_movements_warehouse_scope',
+        ),
+        UniqueConstraint(
             'tenant_id', 'idempotency_actor_scope', 'idempotency_key',
             name='uq_stock_movements_idempotency',
         ),
@@ -376,6 +456,10 @@ class StockMovement(Base):
         ),
         CheckConstraint('request_schema_version >= 1', name='ck_stock_movements_version'),
         CheckConstraint(
+            "negative_stock_policy IN ('ALLOW','WARN','BLOCK')",
+            name='ck_stock_movements_negative_policy',
+        ),
+        CheckConstraint(
             "(actor_type='EMPLOYEE' AND actor_id IS NOT NULL AND actor_reference IS NULL) OR "
             "(actor_type IN ('SYSTEM','AGENT','EXTERNAL_SYSTEM') AND actor_id IS NULL "
             "AND actor_reference IS NOT NULL)",
@@ -410,6 +494,10 @@ class StockMovement(Base):
             'inventory_item_id', 'recorded_at', 'id',
         ),
         Index(
+            'ix_stock_movements_warehouse_stock', 'tenant_id', 'location_id',
+            'warehouse_id', 'inventory_item_id', 'recorded_at', 'id',
+        ),
+        Index(
             'ix_stock_movements_order_consumption', 'tenant_id',
             'restaurant_order_id', 'restaurant_order_item_id', 'id',
         ),
@@ -420,6 +508,7 @@ class StockMovement(Base):
     tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     movement_type: Mapped[str] = mapped_column(String(24), nullable=False)
     quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
@@ -444,6 +533,15 @@ class StockMovement(Base):
     request_schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
     request_fingerprint: Mapped[str] = mapped_column(
         String(64, collation='ascii_bin'), nullable=False
+    )
+    negative_stock_policy: Mapped[str] = mapped_column(
+        String(8), nullable=False, default='ALLOW', server_default=text("'ALLOW'")
+    )
+    negative_stock_warning: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text('0')
+    )
+    resulting_stock_quantity: Mapped[Decimal | None] = mapped_column(
+        Numeric(19, 6), nullable=True
     )
     restaurant_order_consumption_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True

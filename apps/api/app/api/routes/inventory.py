@@ -18,6 +18,7 @@ from app.restaurant.inventory.contracts import ConsumptionComponentInput
 router = APIRouter(tags=['inventory'])
 Lifecycle = Literal['ACTIVE', 'INACTIVE']
 TrackingMode = Literal['DERIVABLE', 'NON_DERIVABLE']
+NegativeStockPolicy = Literal['ALLOW', 'WARN', 'BLOCK']
 UnitCode = Literal['KG', 'G', 'L', 'ML', 'UNIT', 'PORTION']
 IdempotencyKey = Annotated[
     str,
@@ -126,6 +127,7 @@ class ConsumptionDefinitionResponse(BaseModel):
 class StockMovementRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
     inventory_item_id: int = Field(gt=0)
+    warehouse_id: int | None = Field(default=None, gt=0)
     movement_type: str = Field(min_length=1, max_length=24)
     quantity: ExactDecimal | None = None
     reversal_of_movement_id: int | None = Field(default=None, gt=0)
@@ -138,6 +140,7 @@ class StockMovementResponse(BaseModel):
     id: int
     inventory_item_id: int
     location_id: int
+    warehouse_id: int
     movement_type: str
     quantity: Decimal
     base_uom: str
@@ -148,6 +151,9 @@ class StockMovementResponse(BaseModel):
     actor_type: str
     actor_id: int | None
     actor_reference: str | None
+    negative_stock_policy: str
+    negative_stock_warning: bool
+    resulting_stock_quantity: Decimal | None
 
 
 class StockMovementListResponse(BaseModel):
@@ -162,12 +168,39 @@ class StockResponse(BaseModel):
     code: str
     name: str
     location_id: int
+    warehouse_id: int
     base_uom: str
     quantity: Decimal
 
 
 class StockListResponse(BaseModel):
     items: list[StockResponse]
+
+
+class WarehouseResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    id: int
+    tenant_id: int
+    organization_id: int
+    location_id: int
+    code: str
+    name: str
+    status: str
+    is_default: bool
+    negative_stock_policy: str
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class WarehouseListResponse(BaseModel):
+    items: list[WarehouseResponse]
+
+
+class WarehousePolicyUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+    expected_version: int = Field(ge=1)
+    negative_stock_policy: NegativeStockPolicy
 
 
 class ProductCostResolveRequest(BaseModel):
@@ -207,10 +240,16 @@ def _execution(context: AuthenticatedContext) -> ExecutionContext:
     )
 
 
+def _authorize_location(context: AuthenticatedContext, location_id: int) -> None:
+    if location_id not in context.authorized_location_ids:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Location not found')
+
+
 def _error(exc: Exception) -> HTTPException:
     if isinstance(exc, (
         errors.InventoryScopeNotFoundError,
         errors.InventoryItemNotFoundError,
+        errors.WarehouseNotFoundError,
         errors.ConsumptionDefinitionNotFoundError,
         errors.StockMovementNotFoundError,
     )):
@@ -239,6 +278,7 @@ async def create_inventory_item(
     context: Annotated[AuthenticatedContext, Depends(require_permission('inventory.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Any:
+    _authorize_location(context, payload.location_id)
     try:
         return await service.create_inventory_item(
             db, tenant_id=context.tenant_id, **payload.model_dump()
@@ -256,6 +296,13 @@ async def update_inventory_item(
 ) -> Any:
     values = payload.model_dump(exclude_unset=True)
     try:
+        _authorize_location(
+            context,
+            await service.inventory_item_location(
+                db, tenant_id=context.tenant_id,
+                inventory_item_id=inventory_item_id,
+            ),
+        )
         return await service.update_inventory_item(
             db, tenant_id=context.tenant_id,
             inventory_item_id=inventory_item_id, **values,
@@ -273,6 +320,7 @@ async def list_inventory_items(
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> InventoryItemListResponse:
+    _authorize_location(context, location_id)
     try:
         values = await service.list_inventory_items(
             db, tenant_id=context.tenant_id, location_id=location_id,
@@ -293,6 +341,7 @@ async def get_consumption_definition(
     db: Annotated[AsyncSession, Depends(get_db)],
     location_id: int = Query(gt=0),
 ) -> Any:
+    _authorize_location(context, location_id)
     try:
         return await service.get_consumption_definition(
             db, tenant_id=context.tenant_id, product_id=product_id,
@@ -313,6 +362,7 @@ async def put_consumption_definition(
     db: Annotated[AsyncSession, Depends(get_db)],
     location_id: int = Query(gt=0),
 ) -> Any:
+    _authorize_location(context, location_id)
     try:
         return await service.put_consumption_definition(
             db,
@@ -343,6 +393,13 @@ async def create_stock_movement(
     idempotency_key: IdempotencyKey,
 ) -> Any:
     try:
+        _authorize_location(
+            context,
+            await service.inventory_item_location(
+                db, tenant_id=context.tenant_id,
+                inventory_item_id=payload.inventory_item_id,
+            ),
+        )
         value, replayed = await service.create_stock_movement(
             db, context=_execution(context), idempotency_key=idempotency_key,
             **payload.model_dump(),
@@ -360,11 +417,14 @@ async def list_stock(
     db: Annotated[AsyncSession, Depends(get_db)],
     location_id: int = Query(gt=0),
     inventory_item_id: int | None = Query(default=None, gt=0),
+    warehouse_id: int | None = Query(default=None, gt=0),
 ) -> StockListResponse:
+    _authorize_location(context, location_id)
     try:
         values = await service.list_stock(
             db, tenant_id=context.tenant_id, location_id=location_id,
             inventory_item_id=inventory_item_id,
+            warehouse_id=warehouse_id,
         )
         return StockListResponse(items=list(values))
     except Exception as exc:
@@ -377,13 +437,16 @@ async def list_stock_movements(
     db: Annotated[AsyncSession, Depends(get_db)],
     location_id: int = Query(gt=0),
     inventory_item_id: int | None = Query(default=None, gt=0),
+    warehouse_id: int | None = Query(default=None, gt=0),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> StockMovementListResponse:
+    _authorize_location(context, location_id)
     try:
         values = await service.list_stock_movements(
             db, tenant_id=context.tenant_id, location_id=location_id,
-            inventory_item_id=inventory_item_id, limit=limit, offset=offset,
+            inventory_item_id=inventory_item_id, warehouse_id=warehouse_id,
+            limit=limit, offset=offset,
         )
         return StockMovementListResponse(items=list(values), limit=limit, offset=offset)
     except Exception as exc:
@@ -400,10 +463,50 @@ async def resolve_current_product_cost(
     context: Annotated[AuthenticatedContext, Depends(require_permission('inventory.read'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Any:
+    _authorize_location(context, payload.location_id)
     try:
         return await service.resolve_current_product_cost(
             db, tenant_id=context.tenant_id, product_id=product_id,
             location_id=payload.location_id,
+        )
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@router.get('/inventory/warehouses', response_model=WarehouseListResponse)
+async def list_warehouses(
+    context: Annotated[AuthenticatedContext, Depends(require_permission('inventory.read'))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    location_id: int = Query(gt=0),
+) -> WarehouseListResponse:
+    _authorize_location(context, location_id)
+    try:
+        values = await service.list_warehouses(
+            db, tenant_id=context.tenant_id, location_id=location_id,
+        )
+        return WarehouseListResponse(items=list(values))
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@router.patch('/inventory/warehouses/{warehouse_id}', response_model=WarehouseResponse)
+async def update_warehouse_policy(
+    warehouse_id: Annotated[int, Path(gt=0)],
+    payload: WarehousePolicyUpdateRequest,
+    context: Annotated[AuthenticatedContext, Depends(require_permission('inventory.manage'))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Any:
+    try:
+        _authorize_location(
+            context,
+            await service.warehouse_location(
+                db, tenant_id=context.tenant_id, warehouse_id=warehouse_id,
+            ),
+        )
+        return await service.update_warehouse_policy(
+            db, tenant_id=context.tenant_id, warehouse_id=warehouse_id,
+            expected_version=payload.expected_version,
+            negative_stock_policy=payload.negative_stock_policy,
         )
     except Exception as exc:
         raise _error(exc) from exc

@@ -91,6 +91,12 @@ def _scope(connection, slug: str, permissions=()) -> Scope:
         'VALUES (%s,%s,%s)',
         (tenant_id, membership_id, role_id),
     )
+    _execute(
+        connection,
+        'INSERT INTO membership_location_grants '
+        '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
+        (tenant_id, membership_id, location_id),
+    )
     for permission in permissions:
         _permission(connection, role_id, permission)
     return Scope(
