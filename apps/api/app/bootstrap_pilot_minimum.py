@@ -32,10 +32,12 @@ from app.models import (
     PreparationArea,
     PreparationDeliveryConnector,
     PreparationDeliveryDestination,
+    ProductFiscalClassification,
     Product,
     ProductCategory,
     ProductPreparationRoute,
     ProductPrice,
+    RestaurantTaxRule,
     Resource,
     Role,
     RolePermission,
@@ -55,6 +57,8 @@ ADMIN_EMAIL = 'usopublico001@gmail.com'
 ADMIN_DISPLAY_NAME = 'Rogelio'
 LOCAL_TARGET_KEY = 'workstation_hp_p1005'
 CONEKTA_CREDENTIAL_BINDING = 'pilot-location-conekta-test'
+FISCAL_JURISDICTION_CODE = 'MX'
+TAX_CLASSIFICATION_CODE = 'PREPILOT-IVA-16'
 
 
 STAFF = (
@@ -291,7 +295,8 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                     location = Location(
                         tenant_id=core.tenant_id, organization_id=organization.id,
                         code=LOCATION_CODE, name=LOCATION_NAME,
-                        timezone=LOCATION_TIMEZONE, status='ACTIVE',
+                        timezone=LOCATION_TIMEZONE,
+                        country_code=FISCAL_JURISDICTION_CODE, status='ACTIVE',
                     )
                     session.add(location)
                     await session.flush()
@@ -301,6 +306,13 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                         location, 'Location', name=LOCATION_NAME,
                         timezone=LOCATION_TIMEZONE, status='ACTIVE',
                     )
+                    if location.country_code is None:
+                        location.country_code = FISCAL_JURISDICTION_CODE
+                        created.append('location_country_code')
+                    elif location.country_code != FISCAL_JURISDICTION_CODE:
+                        raise RuntimeError(
+                            'existing Location conflicts with pilot fiscal jurisdiction'
+                        )
 
                 await _grant(
                     session, core.tenant_id, core.membership_id, location.id,
@@ -409,6 +421,7 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                             tenant_id=core.tenant_id, organization_id=organization.id,
                             category_id=category.id, name=name,
                             description='Producto sintético para certificación local pre-pilot.',
+                            tax_classification_code=TAX_CLASSIFICATION_CODE,
                             status='ACTIVE', source='PLATFORM',
                         )
                         session.add(product)
@@ -419,7 +432,53 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                             product, f'Product {stable_key}', category_id=category.id,
                             status='ACTIVE', source='PLATFORM',
                         )
+                        if product.tax_classification_code is None:
+                            product.tax_classification_code = TAX_CLASSIFICATION_CODE
+                            created.append(f'product_tax_classification:{stable_key}')
+                        elif product.tax_classification_code != TAX_CLASSIFICATION_CODE:
+                            raise RuntimeError(
+                                f'existing Product {stable_key} conflicts with pilot tax classification'
+                            )
                     products[stable_key] = product
+
+                    fiscal_classification = await _one(
+                        session,
+                        select(ProductFiscalClassification).where(
+                            ProductFiscalClassification.tenant_id == core.tenant_id,
+                            ProductFiscalClassification.organization_id == organization.id,
+                            ProductFiscalClassification.product_id == product.id,
+                            ProductFiscalClassification.fiscal_jurisdiction_code
+                            == FISCAL_JURISDICTION_CODE,
+                            ProductFiscalClassification.status == 'ACTIVE',
+                            ProductFiscalClassification.effective_to.is_(None),
+                        ),
+                        f'Fiscal Product Classification {stable_key}',
+                    )
+                    fiscal_values = {
+                        'product_classification_scheme': 'PREPILOT-PRODUCT-SCHEME',
+                        'product_classification_code': f'PREPILOT-{stable_key}',
+                        'unit_classification_scheme': 'PREPILOT-UNIT-SCHEME',
+                        'unit_classification_code': 'EACH',
+                    }
+                    if fiscal_classification is None:
+                        fiscal_classification = ProductFiscalClassification(
+                            tenant_id=core.tenant_id,
+                            organization_id=organization.id,
+                            product_id=product.id,
+                            fiscal_jurisdiction_code=FISCAL_JURISDICTION_CODE,
+                            effective_from=datetime(2026, 1, 1),
+                            effective_to=None,
+                            status='ACTIVE',
+                            **fiscal_values,
+                        )
+                        session.add(fiscal_classification)
+                        created.append(f'product_fiscal_classification:{stable_key}')
+                    else:
+                        _match(
+                            fiscal_classification,
+                            f'Fiscal Product Classification {stable_key}',
+                            **fiscal_values,
+                        )
 
                     price = await _one(session, select(ProductPrice).where(
                         ProductPrice.tenant_id == core.tenant_id,
@@ -465,6 +524,39 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                             route, f'Preparation Route {stable_key}', policy=policy,
                             preparation_area_id=expected_area,
                         )
+
+                tax_rule = await _one(session, select(RestaurantTaxRule).where(
+                    RestaurantTaxRule.tenant_id == core.tenant_id,
+                    RestaurantTaxRule.organization_id == organization.id,
+                    RestaurantTaxRule.location_id.is_(None),
+                    RestaurantTaxRule.tax_classification_code == TAX_CLASSIFICATION_CODE,
+                    RestaurantTaxRule.status == 'ACTIVE',
+                    RestaurantTaxRule.effective_to.is_(None),
+                ), 'Restaurant Tax Rule')
+                tax_values = {
+                    'jurisdiction_code': 'MX-PREPILOT',
+                    'tax_category': 'IVA',
+                    'tax_treatment': 'TAXABLE',
+                    'tax_effect': 'TRANSFERRED',
+                    'tax_rate': Decimal('0.160000'),
+                    'calculation_policy': 'INCLUDED_PRICE_SINGLE_TAX',
+                    'rounding_policy': 'DECIMAL_4_HALF_UP',
+                }
+                if tax_rule is None:
+                    tax_rule = RestaurantTaxRule(
+                        tenant_id=core.tenant_id,
+                        organization_id=organization.id,
+                        location_id=None,
+                        tax_classification_code=TAX_CLASSIFICATION_CODE,
+                        effective_from=datetime(2026, 1, 1),
+                        effective_to=None,
+                        status='ACTIVE',
+                        **tax_values,
+                    )
+                    session.add(tax_rule)
+                    created.append('restaurant_tax_rule')
+                else:
+                    _match(tax_rule, 'Restaurant Tax Rule', **tax_values)
 
                 menu = await _one(session, select(Menu).where(
                     Menu.tenant_id == core.tenant_id,
