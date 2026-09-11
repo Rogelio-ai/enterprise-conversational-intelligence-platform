@@ -1,0 +1,204 @@
+name: pryecip-prepilot
+
+x-api-environment: &api-environment
+  APP_NAME: ECIP API Local Pre-Pilot
+  APP_ENV: staging
+  API_HOST: 0.0.0.0
+  API_PORT: 8000
+  LOG_LEVEL: INFO
+  PUBLIC_ORIGIN: http://127.0.0.1:18080
+  TRUSTED_HOSTS: 127.0.0.1,localhost,api,api-restore
+  DOCS_ENABLED: "false"
+  PASSWORD_MIN_LENGTH: "8"
+  MYSQL_PORT: 3306
+  MYSQL_DATABASE: ${MYSQL_DATABASE:-pryecip_pilot_local}
+  MYSQL_PASSWORD_FILE: /run/secrets/mysql_password
+  AUTH_JWT_SECRET_FILE: /run/secrets/auth_jwt_secret
+  RESTAURANT_ACCESS_CODE_SECRET_FILE: /run/secrets/diner_access_secret
+  ELECTRONIC_PAYMENTS_ENABLED: "false"
+  CONEKTA_ENVIRONMENT: disabled
+  CFDI_ISSUANCE_ENABLED: "false"
+  CONNECTOR_DELIVERY_ENABLED: "true"
+  EXTERNAL_POS_ENABLED: "false"
+
+x-api-secrets: &api-secrets
+  - mysql_password
+  - auth_jwt_secret
+  - diner_access_secret
+
+services:
+  mysql:
+    image: mysql:8.4@sha256:a2d126916bc2ba79a890a4bf62d305eb8b68fcbdd35c6e582d529df18faf5ebb
+    entrypoint: [/opt/pryecip/scripts/mysql-pilot-entrypoint.sh]
+    command: [mysqld]
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-pryecip_pilot_local}
+      MYSQL_USER: ${MYSQL_MIGRATION_USER:-ecip_migrator}
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_migration_password
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+      MYSQL_RUNTIME_USER: ${MYSQL_USER:-ecip_runtime}
+    secrets:
+      - mysql_password
+      - mysql_migration_password
+      - mysql_root_password
+    volumes:
+      - mysql-pilot-data:/var/lib/mysql
+      - ./scripts/mysql-pilot-init.sh:/docker-entrypoint-initdb.d/10-runtime-user.sh:ro
+      - ./scripts:/opt/pryecip/scripts:ro
+      - ${PILOT_BACKUP_DIR:?PILOT_BACKUP_DIR is required}:/backup
+    healthcheck:
+      test: [CMD, mysqladmin, --defaults-extra-file=/run/ecip-root.cnf, ping, --silent, -h, 127.0.0.1]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks: [database]
+
+  migrate:
+    build:
+      context: ./apps/api
+      target: runtime
+    profiles: [tools]
+    user: root
+    entrypoint: [/opt/pryecip/pilot-api-entrypoint.sh]
+    environment:
+      <<: *api-environment
+      MYSQL_HOST: mysql
+      MYSQL_USER: ${MYSQL_MIGRATION_USER:-ecip_migrator}
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_migration_password
+    secrets:
+      - mysql_migration_password
+      - auth_jwt_secret
+      - diner_access_secret
+    volumes:
+      - ./scripts/pilot-api-entrypoint.sh:/opt/pryecip/pilot-api-entrypoint.sh:ro
+    command: [alembic, upgrade, head]
+    depends_on:
+      mysql: {condition: service_healthy}
+    networks: [database]
+
+  bootstrap:
+    build:
+      context: ./apps/api
+      target: runtime
+    profiles: [tools]
+    user: root
+    entrypoint: [/opt/pryecip/pilot-api-entrypoint.sh]
+    environment:
+      <<: *api-environment
+      MYSQL_HOST: mysql
+      MYSQL_USER: ${MYSQL_USER:-ecip_runtime}
+      PILOT_ADMIN_PASSWORD_FILE: /run/secrets/pilot_admin_password
+      PILOT_STAFF_PASSWORD_FILE: /run/secrets/pilot_staff_password
+    secrets:
+      - mysql_password
+      - auth_jwt_secret
+      - diner_access_secret
+      - pilot_admin_password
+      - pilot_staff_password
+    volumes:
+      - ./scripts/pilot-api-entrypoint.sh:/opt/pryecip/pilot-api-entrypoint.sh:ro
+    command: [python, -m, app.bootstrap_pilot_minimum]
+    depends_on:
+      mysql: {condition: service_healthy}
+    networks: [database]
+
+  api:
+    build:
+      context: ./apps/api
+      target: runtime
+    restart: unless-stopped
+    user: root
+    entrypoint: [/opt/pryecip/pilot-api-entrypoint.sh]
+    command: [uvicorn, app.main:create_app, --factory, --host, 0.0.0.0, --port, "8000"]
+    environment:
+      <<: *api-environment
+      MYSQL_HOST: mysql
+      MYSQL_USER: ${MYSQL_USER:-ecip_runtime}
+    secrets: *api-secrets
+    volumes:
+      - ./scripts/pilot-api-entrypoint.sh:/opt/pryecip/pilot-api-entrypoint.sh:ro
+    ports: ["127.0.0.1:${PILOT_API_PORT:-18080}:8000"]
+    depends_on:
+      mysql: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks: [app, database]
+
+  mysql-restore:
+    image: mysql:8.4@sha256:a2d126916bc2ba79a890a4bf62d305eb8b68fcbdd35c6e582d529df18faf5ebb
+    entrypoint: [/opt/pryecip/scripts/mysql-pilot-entrypoint.sh]
+    command: [mysqld]
+    profiles: [restore]
+    environment:
+      MYSQL_DATABASE: ${MYSQL_DATABASE:-pryecip_pilot_local}
+      MYSQL_USER: ${MYSQL_MIGRATION_USER:-ecip_migrator}
+      MYSQL_PASSWORD_FILE: /run/secrets/mysql_migration_password
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/mysql_root_password
+      MYSQL_RUNTIME_USER: ${MYSQL_USER:-ecip_runtime}
+    secrets:
+      - mysql_password
+      - mysql_migration_password
+      - mysql_root_password
+    volumes:
+      - mysql-restore-data:/var/lib/mysql
+      - ./scripts/mysql-pilot-init.sh:/docker-entrypoint-initdb.d/10-runtime-user.sh:ro
+      - ./scripts:/opt/pryecip/scripts:ro
+      - ${PILOT_BACKUP_DIR:?PILOT_BACKUP_DIR is required}:/backup:ro
+    healthcheck:
+      test: [CMD, mysqladmin, --defaults-extra-file=/run/ecip-root.cnf, ping, --silent, -h, 127.0.0.1]
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    networks: [restore-database]
+
+  api-restore:
+    build:
+      context: ./apps/api
+      target: runtime
+    profiles: [restore]
+    user: root
+    entrypoint: [/opt/pryecip/pilot-api-entrypoint.sh]
+    command: [uvicorn, app.main:create_app, --factory, --host, 0.0.0.0, --port, "8000"]
+    environment:
+      <<: *api-environment
+      MYSQL_HOST: mysql-restore
+      MYSQL_USER: ${MYSQL_USER:-ecip_runtime}
+    secrets: *api-secrets
+    volumes:
+      - ./scripts/pilot-api-entrypoint.sh:/opt/pryecip/pilot-api-entrypoint.sh:ro
+    ports: ["127.0.0.1:${PILOT_RESTORE_API_PORT:-18081}:8000"]
+    depends_on:
+      mysql-restore: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    networks: [restore-app, restore-database]
+
+secrets:
+  mysql_password: {file: "${MYSQL_PASSWORD_FILE:?MYSQL_PASSWORD_FILE is required}"}
+  mysql_migration_password: {file: "${MYSQL_MIGRATION_PASSWORD_FILE:?MYSQL_MIGRATION_PASSWORD_FILE is required}"}
+  mysql_root_password: {file: "${MYSQL_ROOT_PASSWORD_FILE:?MYSQL_ROOT_PASSWORD_FILE is required}"}
+  auth_jwt_secret: {file: "${AUTH_JWT_SECRET_FILE:?AUTH_JWT_SECRET_FILE is required}"}
+  diner_access_secret: {file: "${DINER_ACCESS_SECRET_FILE:?DINER_ACCESS_SECRET_FILE is required}"}
+  pilot_admin_password: {file: "${PILOT_ADMIN_PASSWORD_FILE:?PILOT_ADMIN_PASSWORD_FILE is required}"}
+  pilot_staff_password: {file: "${PILOT_STAFF_PASSWORD_FILE:?PILOT_STAFF_PASSWORD_FILE is required}"}
+
+networks:
+  app: {}
+  database: {internal: true}
+  restore-app: {}
+  restore-database: {internal: true}
+
+volumes:
+  mysql-pilot-data: {}
+  mysql-restore-data: {}
