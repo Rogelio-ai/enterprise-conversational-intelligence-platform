@@ -135,3 +135,27 @@ class GoodsReceiptConflictError(InventoryError):
 
 class InvalidGoodsReceiptError(InventoryError):
     code = 'INVALID_GOODS_RECEIPT'
+
+
+class InventoryLossNotFoundError(InventoryError):
+    code = 'INVENTORY_LOSS_NOT_FOUND'
+
+
+class InventoryLossConflictError(InventoryError):
+    code = 'INVENTORY_LOSS_CONFLICT'
+
+
+class InvalidInventoryLossError(InventoryError):
+    code = 'INVALID_INVENTORY_LOSS'
+
+
+class InventoryLossApprovalRequiredError(InventoryError):
+    code = 'INVENTORY_LOSS_APPROVAL_REQUIRED'
+
+
+class InventoryLossPolicyNotFoundError(InventoryError):
+    code = 'INVENTORY_LOSS_POLICY_NOT_FOUND'
+
+
+class InventoryLossPolicyConflictError(InventoryError):
+    code = 'INVENTORY_LOSS_POLICY_CONFLICT'

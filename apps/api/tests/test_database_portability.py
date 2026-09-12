@@ -2136,7 +2136,7 @@ def test_0042_fresh_install_reaches_uom_cost_evidence_contract(
     try:
         with connection.cursor() as cursor:
             cursor.execute('SELECT version_num FROM alembic_version')
-            assert cursor.fetchone()['version_num'] == '0044_supplier_direct_receiving'
+            assert cursor.fetchone()['version_num'] == '0045_dedicated_inventory_loss'
             cursor.execute(
                 'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION '
                 'FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() '
@@ -2225,6 +2225,26 @@ def test_0042_fresh_install_reaches_uom_cost_evidence_contract(
             )
             assert {row['COLUMN_NAME'] for row in cursor.fetchall()} == {
                 'goods_receipt_id', 'goods_receipt_line_id',
+            }
+            cursor.execute(
+                'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION '
+                'FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() '
+                "AND TABLE_NAME IN ('inventory_losses','inventory_loss_policies')"
+            )
+            assert {
+                row['TABLE_NAME']: (row['ENGINE'], row['TABLE_COLLATION'])
+                for row in cursor.fetchall()
+            } == {
+                'inventory_losses': ('InnoDB', 'utf8mb4_unicode_ci'),
+                'inventory_loss_policies': ('InnoDB', 'utf8mb4_unicode_ci'),
+            }
+            cursor.execute(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='stock_movements' "
+                "AND COLUMN_NAME IN ('inventory_loss_id','loss_movement_role')"
+            )
+            assert {row['COLUMN_NAME'] for row in cursor.fetchall()} == {
+                'inventory_loss_id', 'loss_movement_role',
             }
     finally:
         connection.close()
@@ -2423,7 +2443,7 @@ def test_0044_upgrade_preserves_stock_and_downgrade_reupgrade_is_safe(
     try:
         with connection.cursor() as cursor:
             cursor.execute('SELECT version_num FROM alembic_version')
-            assert cursor.fetchone()['version_num'] == '0044_supplier_direct_receiving'
+            assert cursor.fetchone()['version_num'] == '0045_dedicated_inventory_loss'
             cursor.execute(
                 'SELECT quantity,goods_receipt_id,goods_receipt_line_id '
                 'FROM stock_movements WHERE id=%s', (movement_id,),
@@ -2538,6 +2558,158 @@ def test_0044_upgrade_preserves_stock_and_downgrade_reupgrade_is_safe(
                 'movement_type': 'GOODS_RECEIPT',
                 'goods_receipt_id': receipt_id,
                 'goods_receipt_line_id': receipt_line_id,
+            }
+    finally:
+        connection.close()
+
+
+def test_0045_upgrade_preserves_legacy_stock_and_refuses_loss_history_downgrade(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0044_supplier_direct_receiving')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) "
+                "VALUES ('Loss','loss-0045','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) "
+                "VALUES (%s,'ORG','Organization','ACTIVE')", (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO locations '
+                '(tenant_id,organization_id,code,name,timezone,status) '
+                "VALUES (%s,%s,'LOC','Location','UTC','ACTIVE')",
+                (tenant_id, organization_id),
+            )
+            location_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO warehouses '
+                '(tenant_id,organization_id,location_id,code,name,status,'
+                'default_slot,negative_stock_policy,version) '
+                "VALUES (%s,%s,%s,'DEFAULT','Default','ACTIVE',1,'ALLOW',1)",
+                (tenant_id, organization_id, location_id),
+            )
+            warehouse_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO inventory_items '
+                '(tenant_id,organization_id,location_id,code,name,base_uom,'
+                'standard_unit_cost,currency,status,version) '
+                "VALUES (%s,%s,%s,'ITEM','Item','UNIT',2,'MXN','ACTIVE',1)",
+                (tenant_id, organization_id, location_id),
+            )
+            item_id = int(cursor.lastrowid)
+            for movement_type, quantity, key, resulting in (
+                ('OPENING_BALANCE', '5.000000', 'legacy-opening', '5.000000'),
+                ('MANUAL_OUT', '-1.000000', 'legacy-out', '4.000000'),
+            ):
+                cursor.execute(
+                    'INSERT INTO stock_movements '
+                    '(tenant_id,organization_id,location_id,warehouse_id,'
+                    'inventory_item_id,movement_type,quantity,reason,reference,'
+                    'recorded_at,actor_type,actor_id,idempotency_actor_scope,'
+                    'idempotency_key,request_schema_version,request_fingerprint,'
+                    'negative_stock_policy,negative_stock_warning,'
+                    'resulting_stock_quantity,evidence_status,opening_balance_slot) '
+                    "VALUES (%s,%s,%s,%s,%s,%s,%s,'legacy','pre-b5',"
+                    "CURRENT_TIMESTAMP,'EMPLOYEE',1,'EMPLOYEE:1',%s,1,"
+                    "'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',"
+                    "'ALLOW',0,%s,'LEGACY_UNAVAILABLE',%s)",
+                    (
+                        tenant_id, organization_id, location_id, warehouse_id,
+                        item_id, movement_type, quantity, key, resulting,
+                        1 if movement_type == 'OPENING_BALANCE' else None,
+                    ),
+                )
+            cursor.execute(
+                'SELECT COALESCE(SUM(quantity),0) AS balance FROM stock_movements '
+                'WHERE tenant_id=%s AND warehouse_id=%s AND inventory_item_id=%s',
+                (tenant_id, warehouse_id, item_id),
+            )
+            balance_before = cursor.fetchone()['balance']
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0045_dedicated_inventory_loss'
+            cursor.execute(
+                'SELECT COALESCE(SUM(quantity),0) AS balance FROM stock_movements '
+                'WHERE tenant_id=%s AND warehouse_id=%s AND inventory_item_id=%s',
+                (tenant_id, warehouse_id, item_id),
+            )
+            assert cursor.fetchone()['balance'] == balance_before
+            cursor.execute('SELECT COUNT(*) AS count FROM inventory_losses')
+            assert cursor.fetchone()['count'] == 0
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0044_supplier_direct_receiving')
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'INSERT INTO inventory_losses '
+                '(tenant_id,organization_id,location_id,warehouse_id,inventory_item_id,'
+                'category,source_quantity,source_uom,conversion_factor,'
+                'base_uom_evidence,normalized_quantity,evidence_status,reason,'
+                'occurred_at,created_by_actor_id,status,version,approval_required,'
+                'approval_reason,posted_at,posted_by_actor_id,post_actor_scope,'
+                'post_idempotency_key,post_fingerprint) '
+                "VALUES (%s,%s,%s,%s,%s,'WASTE',1,'UNIT',1,'UNIT',1,"
+                "'COST_NON_DERIVABLE','migration loss',CURRENT_TIMESTAMP,1,"
+                "'POSTED',2,0,'BELOW_THRESHOLD',CURRENT_TIMESTAMP,1,"
+                "'EMPLOYEE:1','loss-post',"
+                "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')",
+                (tenant_id, organization_id, location_id, warehouse_id, item_id),
+            )
+            loss_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO stock_movements '
+                '(tenant_id,organization_id,location_id,warehouse_id,inventory_item_id,'
+                'movement_type,quantity,reason,reference,recorded_at,actor_type,actor_id,'
+                'idempotency_actor_scope,idempotency_key,request_schema_version,'
+                'request_fingerprint,negative_stock_policy,negative_stock_warning,'
+                'resulting_stock_quantity,source_quantity,source_uom,conversion_factor,'
+                'base_uom_evidence,evidence_status,inventory_loss_id,loss_movement_role) '
+                "VALUES (%s,%s,%s,%s,%s,'WASTE',-1,'loss','loss',CURRENT_TIMESTAMP,"
+                "'EMPLOYEE',1,%s,'POST',1,"
+                "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',"
+                "'ALLOW',0,3,-1,'UNIT',1,'UNIT','COST_NON_DERIVABLE',%s,'ORIGINAL')",
+                (
+                    tenant_id, organization_id, location_id, warehouse_id, item_id,
+                    f'INVENTORY_LOSS:{loss_id}', loss_id,
+                ),
+            )
+            loss_movement_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    with pytest.raises(subprocess.CalledProcessError):
+        _run_alembic_downgrade(database_name, '0044_supplier_direct_receiving')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0045_dedicated_inventory_loss'
+            cursor.execute(
+                'SELECT movement_type,inventory_loss_id,loss_movement_role '
+                'FROM stock_movements WHERE id=%s', (loss_movement_id,),
+            )
+            assert cursor.fetchone() == {
+                'movement_type': 'WASTE', 'inventory_loss_id': loss_id,
+                'loss_movement_role': 'ORIGINAL',
             }
     finally:
         connection.close()

@@ -31,6 +31,8 @@ from app.models.intelligence import IntelligenceDerivation, RestaurantMessageInt
 from app.models.inventory import (
     GoodsReceipt,
     GoodsReceiptLine,
+    InventoryLoss,
+    InventoryLossPolicy,
     InventoryCostRevision,
     InventoryItem,
     ItemUomConversion,
@@ -142,6 +144,8 @@ __all__ = [
     'InventoryItem',
     'GoodsReceipt',
     'GoodsReceiptLine',
+    'InventoryLoss',
+    'InventoryLossPolicy',
     'InventoryCostRevision',
     'ItemUomConversion',
     'IssuerFiscalProfile',

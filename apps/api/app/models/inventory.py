@@ -924,6 +924,272 @@ class GoodsReceiptLine(Base):
     )
 
 
+class InventoryLossPolicy(TimestampMixin, Base):
+    __tablename__ = 'inventory_loss_policies'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['warehouse_id', 'tenant_id', 'organization_id', 'location_id'],
+            ['warehouses.id', 'warehouses.tenant_id', 'warehouses.organization_id',
+             'warehouses.location_id'],
+            name='fk_inventory_loss_policies_warehouse_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'warehouse_id', name='uq_inventory_loss_policies_warehouse',
+        ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id', 'warehouse_id',
+            name='uq_inventory_loss_policies_scope',
+        ),
+        CheckConstraint(
+            'approval_value_threshold >= 0',
+            name='ck_inventory_loss_policies_threshold',
+        ),
+        CheckConstraint(
+            "currency REGEXP '^[A-Z][A-Z][A-Z]$'",
+            name='ck_inventory_loss_policies_currency',
+        ),
+        CheckConstraint(
+            "status IN ('ACTIVE','INACTIVE')",
+            name='ck_inventory_loss_policies_status',
+        ),
+        CheckConstraint('version >= 1', name='ck_inventory_loss_policies_version'),
+        OPTIONS,
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    approval_value_threshold: Mapped[Decimal] = mapped_column(
+        Numeric(31, 12), nullable=False
+    )
+    currency: Mapped[str] = mapped_column(
+        String(3, collation='ascii_bin'), nullable=False
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='ACTIVE', server_default=text("'ACTIVE'")
+    )
+    version: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default=text('1')
+    )
+
+
+class InventoryLoss(TimestampMixin, Base):
+    __tablename__ = 'inventory_losses'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['warehouse_id', 'tenant_id', 'organization_id', 'location_id'],
+            ['warehouses.id', 'warehouses.tenant_id', 'warehouses.organization_id',
+             'warehouses.location_id'],
+            name='fk_inventory_losses_warehouse_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['inventory_item_id', 'tenant_id', 'organization_id', 'location_id'],
+            ['inventory_items.id', 'inventory_items.tenant_id',
+             'inventory_items.organization_id', 'inventory_items.location_id'],
+            name='fk_inventory_losses_item_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['conversion_revision_id', 'tenant_id', 'organization_id', 'location_id',
+             'inventory_item_id'],
+            ['item_uom_conversions.id', 'item_uom_conversions.tenant_id',
+             'item_uom_conversions.organization_id',
+             'item_uom_conversions.location_id',
+             'item_uom_conversions.inventory_item_id'],
+            name='fk_inventory_losses_conversion_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['standard_cost_revision_id', 'tenant_id', 'organization_id',
+             'location_id', 'inventory_item_id'],
+            ['inventory_cost_revisions.id', 'inventory_cost_revisions.tenant_id',
+             'inventory_cost_revisions.organization_id',
+             'inventory_cost_revisions.location_id',
+             'inventory_cost_revisions.inventory_item_id'],
+            name='fk_inventory_losses_cost_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id', 'warehouse_id',
+            'inventory_item_id', name='uq_inventory_losses_scope',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'post_actor_scope', 'post_idempotency_key',
+            name='uq_inventory_losses_post_idempotency',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'approval_actor_scope', 'approval_idempotency_key',
+            name='uq_inventory_losses_approval_idempotency',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'reversal_actor_scope', 'reversal_idempotency_key',
+            name='uq_inventory_losses_reversal_idempotency',
+        ),
+        CheckConstraint(
+            "category IN ('WASTE','SPOILAGE','BREAKAGE','EXPIRY',"
+            "'PREPARATION_LOSS','OTHER')",
+            name='ck_inventory_losses_category',
+        ),
+        CheckConstraint(
+            "status IN ('DRAFT','PENDING_APPROVAL','POSTED','CANCELLED','REVERSED')",
+            name='ck_inventory_losses_status',
+        ),
+        CheckConstraint('source_quantity > 0', name='ck_inventory_losses_quantity'),
+        CheckConstraint(
+            "source_uom REGEXP '^[A-Z][A-Z0-9_]{0,31}$'",
+            name='ck_inventory_losses_source_uom',
+        ),
+        CheckConstraint(
+            "category<>'OTHER' OR reason IS NOT NULL",
+            name='ck_inventory_losses_other_reason',
+        ),
+        CheckConstraint(
+            "evidence_status IN ('PENDING','RESOLVED','COST_NON_DERIVABLE')",
+            name='ck_inventory_losses_evidence_status',
+        ),
+        CheckConstraint(
+            "(evidence_status='PENDING' AND conversion_factor IS NULL AND "
+            "base_uom_evidence IS NULL AND normalized_quantity IS NULL AND "
+            "standard_cost_revision_id IS NULL AND standard_unit_cost_evidence IS NULL "
+            "AND cost_currency_evidence IS NULL AND extended_loss_cost IS NULL) OR "
+            "(evidence_status='RESOLVED' AND conversion_factor>0 AND "
+            "base_uom_evidence IS NOT NULL AND normalized_quantity>0 AND "
+            "standard_cost_revision_id IS NOT NULL AND standard_unit_cost_evidence>=0 "
+            "AND cost_currency_evidence IS NOT NULL AND extended_loss_cost>=0) OR "
+            "(evidence_status='COST_NON_DERIVABLE' AND conversion_factor>0 AND "
+            "base_uom_evidence IS NOT NULL AND normalized_quantity>0 AND "
+            "standard_cost_revision_id IS NULL AND standard_unit_cost_evidence IS NULL "
+            "AND cost_currency_evidence IS NULL AND extended_loss_cost IS NULL)",
+            name='ck_inventory_losses_evidence',
+        ),
+        CheckConstraint(
+            '(approved_by_actor_id IS NULL OR approval_requested_by_actor_id IS NULL '
+            'OR approved_by_actor_id<>approval_requested_by_actor_id)',
+            name='ck_inventory_losses_separation',
+        ),
+        CheckConstraint(
+            "approval_reason IS NULL OR approval_reason IN ('BELOW_THRESHOLD',"
+            "'VALUE_THRESHOLD','COST_NON_DERIVABLE','CURRENCY_MISMATCH','NO_POLICY')",
+            name='ck_inventory_losses_approval_reason',
+        ),
+        CheckConstraint(
+            "(status='DRAFT' AND evidence_status='PENDING' AND posted_at IS NULL "
+            "AND cancelled_at IS NULL AND reversed_at IS NULL) OR "
+            "(status='PENDING_APPROVAL' AND approval_required=1 AND "
+            "evidence_status<>'PENDING' AND approval_requested_at IS NOT NULL AND "
+            "approval_requested_by_actor_id IS NOT NULL AND post_actor_scope IS NOT NULL "
+            "AND post_idempotency_key IS NOT NULL AND post_fingerprint IS NOT NULL "
+            "AND posted_at IS NULL AND cancelled_at IS NULL AND reversed_at IS NULL) OR "
+            "(status='POSTED' AND evidence_status<>'PENDING' AND posted_at IS NOT NULL "
+            "AND posted_by_actor_id IS NOT NULL AND post_actor_scope IS NOT NULL "
+            "AND post_idempotency_key IS NOT NULL AND post_fingerprint IS NOT NULL "
+            "AND cancelled_at IS NULL AND reversed_at IS NULL AND "
+            "(approval_required=0 OR (approved_at IS NOT NULL AND "
+            "approved_by_actor_id IS NOT NULL))) OR "
+            "(status='CANCELLED' AND cancelled_at IS NOT NULL AND "
+            "cancelled_by_actor_id IS NOT NULL AND posted_at IS NULL AND reversed_at IS NULL) OR "
+            "(status='REVERSED' AND evidence_status<>'PENDING' AND posted_at IS NOT NULL "
+            "AND posted_by_actor_id IS NOT NULL AND reversed_at IS NOT NULL AND "
+            "reversed_by_actor_id IS NOT NULL AND reversal_actor_scope IS NOT NULL AND "
+            "reversal_idempotency_key IS NOT NULL AND reversal_fingerprint IS NOT NULL "
+            "AND cancelled_at IS NULL)",
+            name='ck_inventory_losses_lifecycle',
+        ),
+        CheckConstraint('version >= 1', name='ck_inventory_losses_version'),
+        Index(
+            'ix_inventory_losses_location_status', 'tenant_id', 'location_id',
+            'status', 'id',
+        ),
+        OPTIONS,
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    category: Mapped[str] = mapped_column(String(24), nullable=False)
+    source_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    source_uom: Mapped[str] = mapped_column(
+        String(32, collation='ascii_bin'), nullable=False
+    )
+    conversion_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversion_factor: Mapped[Decimal | None] = mapped_column(
+        Numeric(25, 12), nullable=True
+    )
+    base_uom_evidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    normalized_quantity: Mapped[Decimal | None] = mapped_column(
+        Numeric(19, 6), nullable=True
+    )
+    standard_cost_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    standard_unit_cost_evidence: Mapped[Decimal | None] = mapped_column(
+        Numeric(19, 6), nullable=True
+    )
+    cost_currency_evidence: Mapped[str | None] = mapped_column(
+        String(3, collation='ascii_bin'), nullable=True
+    )
+    extended_loss_cost: Mapped[Decimal | None] = mapped_column(
+        Numeric(31, 12), nullable=True
+    )
+    evidence_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default='PENDING', server_default=text("'PENDING'")
+    )
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    occurred_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    created_by_actor_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default='DRAFT', server_default=text("'DRAFT'")
+    )
+    version: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default=text('1')
+    )
+    approval_required: Mapped[bool] = mapped_column(
+        Boolean, nullable=False, default=False, server_default=text('0')
+    )
+    approval_reason: Mapped[str | None] = mapped_column(String(32), nullable=True)
+    approval_requested_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    approval_requested_by_actor_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    approved_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    posted_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    cancelled_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reversed_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    reversed_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    post_actor_scope: Mapped[str | None] = mapped_column(
+        String(200, collation='ascii_bin'), nullable=True
+    )
+    post_idempotency_key: Mapped[str | None] = mapped_column(
+        String(128, collation='ascii_bin'), nullable=True
+    )
+    post_fingerprint: Mapped[str | None] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=True
+    )
+    approval_actor_scope: Mapped[str | None] = mapped_column(
+        String(200, collation='ascii_bin'), nullable=True
+    )
+    approval_idempotency_key: Mapped[str | None] = mapped_column(
+        String(128, collation='ascii_bin'), nullable=True
+    )
+    approval_fingerprint: Mapped[str | None] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=True
+    )
+    reversal_actor_scope: Mapped[str | None] = mapped_column(
+        String(200, collation='ascii_bin'), nullable=True
+    )
+    reversal_idempotency_key: Mapped[str | None] = mapped_column(
+        String(128, collation='ascii_bin'), nullable=True
+    )
+    reversal_fingerprint: Mapped[str | None] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=True
+    )
+
+
 class StockMovement(Base):
     __tablename__ = 'stock_movements'
     __table_args__ = (
@@ -1061,6 +1327,14 @@ class StockMovement(Base):
             name='fk_stock_movements_receipt_line_scope', ondelete='RESTRICT',
         ),
         ForeignKeyConstraint(
+            ['inventory_loss_id', 'tenant_id', 'organization_id', 'location_id',
+             'warehouse_id', 'inventory_item_id'],
+            ['inventory_losses.id', 'inventory_losses.tenant_id',
+             'inventory_losses.organization_id', 'inventory_losses.location_id',
+             'inventory_losses.warehouse_id', 'inventory_losses.inventory_item_id'],
+            name='fk_stock_movements_loss_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
             ['source_product_id', 'tenant_id', 'organization_id'],
             ['products.id', 'products.tenant_id', 'products.organization_id'],
             name='fk_stock_movements_source_product_scope', ondelete='RESTRICT',
@@ -1105,16 +1379,20 @@ class StockMovement(Base):
         UniqueConstraint(
             'goods_receipt_line_id', name='uq_stock_movements_receipt_line'
         ),
+        UniqueConstraint(
+            'inventory_loss_id', 'loss_movement_role',
+            name='uq_stock_movements_loss_role',
+        ),
         CheckConstraint(
             "movement_type IN ('OPENING_BALANCE','MANUAL_IN','MANUAL_OUT',"
-            "'ADJUSTMENT','REVERSAL','CONSUMPTION','GOODS_RECEIPT')",
+            "'ADJUSTMENT','REVERSAL','CONSUMPTION','GOODS_RECEIPT','WASTE')",
             name='ck_stock_movements_type',
         ),
         CheckConstraint('quantity <> 0', name='ck_stock_movements_nonzero'),
         CheckConstraint(
             "(movement_type IN ('OPENING_BALANCE','MANUAL_IN','GOODS_RECEIPT') "
             "AND quantity>0) OR "
-            "(movement_type IN ('MANUAL_OUT','CONSUMPTION') AND quantity<0) OR "
+            "(movement_type IN ('MANUAL_OUT','CONSUMPTION','WASTE') AND quantity<0) OR "
             "(movement_type IN ('ADJUSTMENT','REVERSAL') AND quantity<>0)",
             name='ck_stock_movements_sign',
         ),
@@ -1200,6 +1478,16 @@ class StockMovement(Base):
             name='ck_stock_movements_receipt_evidence',
         ),
         CheckConstraint(
+            "(movement_type='WASTE' AND inventory_loss_id IS NOT NULL AND "
+            "loss_movement_role='ORIGINAL') OR "
+            "(movement_type='REVERSAL' AND ((inventory_loss_id IS NULL AND "
+            "loss_movement_role IS NULL) OR (inventory_loss_id IS NOT NULL AND "
+            "loss_movement_role='REVERSAL'))) OR "
+            "(movement_type NOT IN ('WASTE','REVERSAL') AND inventory_loss_id IS NULL "
+            "AND loss_movement_role IS NULL)",
+            name='ck_stock_movements_loss_evidence',
+        ),
+        CheckConstraint(
             '(unit_cost_snapshot IS NULL OR unit_cost_snapshot >= 0) AND '
             '(extended_cost_snapshot IS NULL OR extended_cost_snapshot >= 0)',
             name='ck_stock_movements_consumption_cost',
@@ -1219,6 +1507,10 @@ class StockMovement(Base):
         Index(
             'ix_stock_movements_receipt', 'tenant_id', 'goods_receipt_id',
             'goods_receipt_line_id',
+        ),
+        Index(
+            'ix_stock_movements_loss', 'tenant_id', 'inventory_loss_id',
+            'loss_movement_role',
         ),
         OPTIONS,
     )
@@ -1289,6 +1581,8 @@ class StockMovement(Base):
     )
     goods_receipt_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     goods_receipt_line_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    inventory_loss_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    loss_movement_role: Mapped[str | None] = mapped_column(String(16), nullable=True)
     restaurant_order_consumption_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True
     )

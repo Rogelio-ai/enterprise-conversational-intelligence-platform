@@ -184,6 +184,8 @@ class StockMovementResponse(BaseModel):
     evidence_status: str
     goods_receipt_id: int | None
     goods_receipt_line_id: int | None
+    inventory_loss_id: int | None
+    loss_movement_role: str | None
 
 
 class StockMovementListResponse(BaseModel):
