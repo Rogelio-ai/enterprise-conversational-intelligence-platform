@@ -19,6 +19,10 @@ class ConsumptionComponentProjection:
     inventory_item_name: str
     quantity: Decimal
     base_uom: str
+    source_quantity: Decimal | None = None
+    source_uom: str | None = None
+    conversion_revision_id: int | None = None
+    conversion_factor: Decimal | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -30,6 +34,11 @@ class ConsumptionDefinitionProjection:
     status: str
     tracking_mode: str
     components: tuple[ConsumptionComponentProjection, ...]
+    recipe_version_id: int | None = None
+    recipe_revision: int | None = None
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
+    published_at: datetime | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -154,6 +163,8 @@ class OrderConsumptionMovementProjection:
     base_uom: str
     consumed_quantity: Decimal
     consumption_definition_version: int
+    consumption_version_id: int | None
+    consumption_version_component_id: int | None
     unit_cost: Decimal
     currency: str
     extended_cost: Decimal

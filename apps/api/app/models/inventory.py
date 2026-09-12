@@ -378,6 +378,148 @@ class ProductConsumptionComponent(Base):
     )
 
 
+class ProductConsumptionVersion(Base):
+    __tablename__ = 'product_consumption_versions'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['definition_id', 'tenant_id', 'organization_id', 'location_id'],
+            [
+                'product_consumption_definitions.id',
+                'product_consumption_definitions.tenant_id',
+                'product_consumption_definitions.organization_id',
+                'product_consumption_definitions.location_id',
+            ],
+            name='fk_consumption_versions_definition_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id', 'definition_id',
+            name='uq_consumption_versions_scope',
+        ),
+        UniqueConstraint(
+            'definition_id', 'revision', name='uq_consumption_versions_revision',
+        ),
+        CheckConstraint('revision >= 1', name='ck_consumption_versions_revision'),
+        CheckConstraint(
+            "status IN ('ACTIVE','INACTIVE')", name='ck_consumption_versions_status',
+        ),
+        CheckConstraint(
+            "tracking_mode IN ('DERIVABLE','NON_DERIVABLE')",
+            name='ck_consumption_versions_tracking_mode',
+        ),
+        CheckConstraint(
+            "publication_status='PUBLISHED'",
+            name='ck_consumption_versions_publication',
+        ),
+        CheckConstraint(
+            'effective_to IS NULL OR effective_to >= effective_from',
+            name='ck_consumption_versions_effectivity',
+        ),
+        Index(
+            'ix_consumption_versions_resolve', 'tenant_id', 'location_id',
+            'definition_id', 'effective_from', 'effective_to', 'revision',
+        ),
+        OPTIONS,
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    definition_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    tracking_mode: Mapped[str] = mapped_column(String(24), nullable=False)
+    publication_status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='PUBLISHED',
+        server_default=text("'PUBLISHED'"),
+    )
+    effective_from: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source: Mapped[str] = mapped_column(String(48, collation='ascii_bin'), nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.current_timestamp()
+    )
+
+
+class ProductConsumptionVersionComponent(Base):
+    __tablename__ = 'product_consumption_version_components'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            [
+                'version_id', 'tenant_id', 'organization_id', 'location_id',
+                'definition_id',
+            ],
+            [
+                'product_consumption_versions.id',
+                'product_consumption_versions.tenant_id',
+                'product_consumption_versions.organization_id',
+                'product_consumption_versions.location_id',
+                'product_consumption_versions.definition_id',
+            ],
+            name='fk_version_components_version_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['inventory_item_id', 'tenant_id', 'organization_id', 'location_id'],
+            [
+                'inventory_items.id', 'inventory_items.tenant_id',
+                'inventory_items.organization_id', 'inventory_items.location_id',
+            ],
+            name='fk_version_components_item_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            [
+                'conversion_revision_id', 'tenant_id', 'organization_id',
+                'location_id', 'inventory_item_id',
+            ],
+            [
+                'item_uom_conversions.id', 'item_uom_conversions.tenant_id',
+                'item_uom_conversions.organization_id',
+                'item_uom_conversions.location_id',
+                'item_uom_conversions.inventory_item_id',
+            ],
+            name='fk_version_components_conversion_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id', 'definition_id',
+            'version_id', name='uq_version_components_scope',
+        ),
+        UniqueConstraint(
+            'version_id', 'inventory_item_id',
+            name='uq_version_components_version_item',
+        ),
+        CheckConstraint(
+            'quantity > 0 AND source_quantity > 0 AND conversion_factor > 0',
+            name='ck_version_components_quantity_evidence',
+        ),
+        Index(
+            'ix_version_components_version', 'tenant_id', 'version_id',
+            'inventory_item_id', 'id',
+        ),
+        OPTIONS,
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    definition_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    version_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    source_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    source_uom: Mapped[str] = mapped_column(
+        String(32, collation='ascii_bin'), nullable=False
+    )
+    conversion_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(25, 12), nullable=False)
+    base_uom_evidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class RestaurantOrderConsumption(Base):
     __tablename__ = 'restaurant_order_consumptions'
     __table_args__ = (
@@ -470,6 +612,36 @@ class StockMovement(Base):
                 'inventory_cost_revisions.inventory_item_id',
             ],
             name='fk_stock_movements_cost_revision_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            [
+                'consumption_version_id', 'tenant_id', 'organization_id',
+                'location_id', 'consumption_definition_id',
+            ],
+            [
+                'product_consumption_versions.id',
+                'product_consumption_versions.tenant_id',
+                'product_consumption_versions.organization_id',
+                'product_consumption_versions.location_id',
+                'product_consumption_versions.definition_id',
+            ],
+            name='fk_stock_movements_consumption_version_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            [
+                'consumption_version_component_id', 'tenant_id', 'organization_id',
+                'location_id', 'consumption_definition_id',
+                'consumption_version_id',
+            ],
+            [
+                'product_consumption_version_components.id',
+                'product_consumption_version_components.tenant_id',
+                'product_consumption_version_components.organization_id',
+                'product_consumption_version_components.location_id',
+                'product_consumption_version_components.definition_id',
+                'product_consumption_version_components.version_id',
+            ],
+            name='fk_stock_movements_version_component_scope', ondelete='RESTRICT',
         ),
         ForeignKeyConstraint(
             [
@@ -743,6 +915,10 @@ class StockMovement(Base):
         BigInteger, nullable=True
     )
     consumption_definition_version: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    consumption_version_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    consumption_version_component_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True
     )
     inventory_item_name_snapshot: Mapped[str | None] = mapped_column(

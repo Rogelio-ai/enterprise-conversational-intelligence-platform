@@ -13,8 +13,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.models import (
     InventoryItem,
     Product,
-    ProductConsumptionComponent,
     ProductConsumptionDefinition,
+    ProductConsumptionVersion,
+    ProductConsumptionVersionComponent,
     RestaurantOrder,
     RestaurantOrderConsumption,
     RestaurantOrderItem,
@@ -136,74 +137,73 @@ async def materialize_accepted_order(
             .order_by(Product.id)
             .with_for_update()
         )
-    definitions = tuple(
-        (
-            await db.execute(
-                select(ProductConsumptionDefinition)
-                .where(
-                    ProductConsumptionDefinition.tenant_id == order.tenant_id,
-                    ProductConsumptionDefinition.organization_id == order.organization_id,
-                    ProductConsumptionDefinition.location_id == order.location_id,
-                    ProductConsumptionDefinition.product_id.in_(product_ids),
-                )
-                .order_by(ProductConsumptionDefinition.product_id)
-                .with_for_update()
-            )
-        ).scalars().all()
-    ) if product_ids else ()
-    definitions_by_product = {value.product_id: value for value in definitions}
-    definition_ids = [value.id for value in definitions]
+    definitions_by_product: dict[
+        int, tuple[ProductConsumptionDefinition, ProductConsumptionVersion]
+    ] = {}
+    for product_id in product_ids:
+        resolved = await inventory_service.resolve_consumption_version(
+            db, tenant_id=order.tenant_id, product_id=product_id,
+            location_id=order.location_id, as_of=order.accepted_at,
+            for_update=True,
+        )
+        if resolved is not None:
+            definitions_by_product[product_id] = resolved
+    version_ids = [value[1].id for value in definitions_by_product.values()]
     rows = tuple(
         (
             await db.execute(
-                select(ProductConsumptionComponent, InventoryItem)
+                select(ProductConsumptionVersionComponent, InventoryItem)
                 .join(
                     InventoryItem,
-                    (InventoryItem.id == ProductConsumptionComponent.inventory_item_id)
-                    & (InventoryItem.tenant_id == ProductConsumptionComponent.tenant_id)
-                    & (InventoryItem.organization_id == ProductConsumptionComponent.organization_id)
-                    & (InventoryItem.location_id == ProductConsumptionComponent.location_id),
+                    (InventoryItem.id == ProductConsumptionVersionComponent.inventory_item_id)
+                    & (InventoryItem.tenant_id == ProductConsumptionVersionComponent.tenant_id)
+                    & (InventoryItem.organization_id == ProductConsumptionVersionComponent.organization_id)
+                    & (InventoryItem.location_id == ProductConsumptionVersionComponent.location_id),
                 )
                 .where(
-                    ProductConsumptionComponent.tenant_id == order.tenant_id,
-                    ProductConsumptionComponent.definition_id.in_(definition_ids),
+                    ProductConsumptionVersionComponent.tenant_id == order.tenant_id,
+                    ProductConsumptionVersionComponent.version_id.in_(version_ids),
                 )
                 .order_by(
-                    ProductConsumptionComponent.definition_id,
-                    ProductConsumptionComponent.inventory_item_id,
+                    ProductConsumptionVersionComponent.version_id,
+                    ProductConsumptionVersionComponent.inventory_item_id,
                 )
                 .with_for_update()
             )
         ).all()
-    ) if definition_ids else ()
-    recipe_rows: dict[int, list[tuple[ProductConsumptionComponent, InventoryItem]]] = (
+    ) if version_ids else ()
+    recipe_rows: dict[
+        int, list[tuple[ProductConsumptionVersionComponent, InventoryItem]]
+    ] = (
         defaultdict(list)
     )
     for component, item in rows:
-        recipe_rows[component.definition_id].append((component, item))
+        recipe_rows[component.version_id].append((component, item))
 
     unresolved: list[dict[str, object]] = []
     staged: list[dict[str, object]] = []
     fingerprint_sources: list[dict[str, object]] = []
     for source in sources:
-        definition = definitions_by_product.get(source.product_id)
+        authority = definitions_by_product.get(source.product_id)
         source_evidence = {
             'restaurant_order_item_id': source.order_item.id,
             'restaurant_order_item_component_id': source.order_item_component_id,
             'product_id': source.product_id,
             'multiplier': _decimal(source.multiplier),
         }
-        if definition is None or definition.status != 'ACTIVE':
+        if authority is None or authority[1].status != 'ACTIVE':
             unresolved.append({**source_evidence, 'reason': 'MISSING_DEFINITION'})
             fingerprint_sources.append({**source_evidence, 'resolution': 'MISSING'})
             continue
-        if definition.tracking_mode == 'NON_DERIVABLE':
+        definition, recipe_version = authority
+        if recipe_version.tracking_mode == 'NON_DERIVABLE':
             unresolved.append({**source_evidence, 'reason': 'NON_DERIVABLE'})
             fingerprint_sources.append(
                 {
                     **source_evidence, 'resolution': 'NON_DERIVABLE',
                     'definition_id': definition.id,
-                    'definition_version': definition.version,
+                    'definition_version': recipe_version.revision,
+                    'recipe_version_id': recipe_version.id,
                 }
             )
             continue
@@ -211,13 +211,16 @@ async def materialize_accepted_order(
             {
                 **source_evidence, 'resolution': 'DERIVABLE',
                 'definition_id': definition.id,
-                'definition_version': definition.version,
+                'definition_version': recipe_version.revision,
+                'recipe_version_id': recipe_version.id,
             }
         )
-        for recipe_component, item in recipe_rows[definition.id]:
+        for recipe_component, item in recipe_rows[recipe_version.id]:
             consumed = source.multiplier * Decimal(recipe_component.quantity)
+            source_consumed = source.multiplier * Decimal(recipe_component.source_quantity)
             try:
                 consumed = exact_quantity(consumed, positive=True)
+                source_consumed = exact_quantity(source_consumed, positive=True)
             except UnitConversionError:
                 unresolved.append(
                     {
@@ -234,8 +237,11 @@ async def materialize_accepted_order(
                     'source_key': source_key,
                     'source': source,
                     'definition': definition,
+                    'recipe_version': recipe_version,
+                    'recipe_component': recipe_component,
                     'item': item,
                     'quantity': consumed,
+                    'source_quantity': source_consumed,
                     'extended_cost': extended_cost,
                 }
             )
@@ -301,7 +307,9 @@ async def materialize_accepted_order(
                     'inventory_item_id': value['item'].id,
                     'quantity': _decimal(value['quantity']),
                     'definition_id': value['definition'].id,
-                    'definition_version': value['definition'].version,
+                    'definition_version': value['recipe_version'].revision,
+                    'recipe_version_id': value['recipe_version'].id,
+                    'recipe_component_id': value['recipe_component'].id,
                     'cost_revision_id': (
                         value['cost_revision'].id
                         if value['cost_revision'] is not None else None
@@ -345,9 +353,13 @@ async def materialize_accepted_order(
     for value in staged:
         source = value['source']
         definition = value['definition']
+        recipe_version = value['recipe_version']
+        recipe_component = value['recipe_component']
         item = value['item']
         assert isinstance(source, _Source)
         assert isinstance(definition, ProductConsumptionDefinition)
+        assert isinstance(recipe_version, ProductConsumptionVersion)
+        assert isinstance(recipe_component, ProductConsumptionVersionComponent)
         assert isinstance(item, InventoryItem)
         cost_revision = value['cost_revision']
         unit_cost = (
@@ -364,6 +376,8 @@ async def materialize_accepted_order(
                 'source_key': source_key,
                 'warehouse_id': warehouse.id,
                 'quantity': _decimal(value['quantity']),
+                'recipe_version_id': recipe_version.id,
+                'recipe_component_id': recipe_component.id,
                 'cost_revision_id': cost_revision.id if cost_revision is not None else None,
                 'unit_cost': _decimal(Decimal(unit_cost)),
                 'currency': cost_currency,
@@ -398,11 +412,11 @@ async def materialize_accepted_order(
                 negative_stock_policy=warehouse.negative_stock_policy,
                 negative_stock_warning=negative_warning,
                 resulting_stock_quantity=balances[item.id],
-                source_quantity=-value['quantity'],
-                source_uom=item.base_uom,
-                conversion_revision_id=None,
-                conversion_factor=Decimal('1.000000000000'),
-                base_uom_evidence=item.base_uom,
+                source_quantity=-value['source_quantity'],
+                source_uom=recipe_component.source_uom,
+                conversion_revision_id=recipe_component.conversion_revision_id,
+                conversion_factor=recipe_component.conversion_factor,
+                base_uom_evidence=recipe_component.base_uom_evidence,
                 standard_cost_revision_id=(
                     cost_revision.id if cost_revision is not None else None
                 ),
@@ -426,7 +440,9 @@ async def materialize_accepted_order(
                 restaurant_order_item_component_id=source.order_item_component_id,
                 source_product_id=source.product_id,
                 consumption_definition_id=definition.id,
-                consumption_definition_version=definition.version,
+                consumption_definition_version=recipe_version.revision,
+                consumption_version_id=recipe_version.id,
+                consumption_version_component_id=recipe_component.id,
                 inventory_item_name_snapshot=item.name,
                 base_uom_snapshot=item.base_uom,
                 unit_cost_snapshot=unit_cost,
@@ -541,6 +557,10 @@ async def get_order_consumption(
                         consumed_quantity=-Decimal(value.quantity),
                         consumption_definition_version=(
                             value.consumption_definition_version
+                        ),
+                        consumption_version_id=value.consumption_version_id,
+                        consumption_version_component_id=(
+                            value.consumption_version_component_id
                         ),
                         unit_cost=value.unit_cost_snapshot,
                         currency=value.currency_snapshot,

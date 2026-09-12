@@ -102,6 +102,8 @@ class OrderConsumptionMovementResponse(BaseModel):
     base_uom: str
     consumed_quantity: Decimal
     consumption_definition_version: int
+    consumption_version_id: int | None
+    consumption_version_component_id: int | None
     unit_cost: Decimal
     currency: str
     extended_cost: Decimal

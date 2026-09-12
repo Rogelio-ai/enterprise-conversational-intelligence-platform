@@ -95,7 +95,7 @@ class ConsumptionComponentRequest(BaseModel):
     model_config = ConfigDict(extra='forbid')
     inventory_item_id: int = Field(gt=0)
     quantity: ExactDecimal = Field(gt=0)
-    uom: UnitCode
+    uom: str = Field(min_length=1, max_length=32)
 
 
 class ConsumptionDefinitionRequest(BaseModel):
@@ -104,17 +104,24 @@ class ConsumptionDefinitionRequest(BaseModel):
     status: Lifecycle = 'ACTIVE'
     tracking_mode: TrackingMode
     components: tuple[ConsumptionComponentRequest, ...] = ()
+    effective_from: datetime | None = None
 
 
 class ConsumptionComponentResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     inventory_item_id: int
     inventory_item_code: str
     inventory_item_name: str
     quantity: Decimal
     base_uom: str
+    source_quantity: Decimal | None = None
+    source_uom: str | None = None
+    conversion_revision_id: int | None = None
+    conversion_factor: Decimal | None = None
 
 
 class ConsumptionDefinitionResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
     id: int
     product_id: int
     location_id: int
@@ -122,6 +129,16 @@ class ConsumptionDefinitionResponse(BaseModel):
     status: str
     tracking_mode: str
     components: tuple[ConsumptionComponentResponse, ...]
+    recipe_version_id: int | None = None
+    recipe_revision: int | None = None
+    effective_from: datetime | None = None
+    effective_to: datetime | None = None
+    published_at: datetime | None = None
+
+
+class ConsumptionDefinitionVersionListResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    items: list[ConsumptionDefinitionResponse]
 
 
 class StockMovementRequest(BaseModel):
@@ -415,12 +432,13 @@ async def get_consumption_definition(
     context: Annotated[AuthenticatedContext, Depends(require_permission('inventory.read'))],
     db: Annotated[AsyncSession, Depends(get_db)],
     location_id: int = Query(gt=0),
+    as_of: datetime | None = Query(default=None),
 ) -> Any:
     _authorize_location(context, location_id)
     try:
         return await service.get_consumption_definition(
             db, tenant_id=context.tenant_id, product_id=product_id,
-            location_id=location_id,
+            location_id=location_id, as_of=_utc_naive(as_of),
         )
     except Exception as exc:
         raise _error(exc) from exc
@@ -447,11 +465,34 @@ async def put_consumption_definition(
             expected_version=payload.expected_version,
             status=payload.status,
             tracking_mode=payload.tracking_mode,
+            effective_from=_utc_naive(payload.effective_from),
+            actor_id=context.membership_id,
             components=tuple(
                 ConsumptionComponentInput(**component.model_dump())
                 for component in payload.components
             ),
         )
+    except Exception as exc:
+        raise _error(exc) from exc
+
+
+@router.get(
+    '/products/{product_id}/consumption-definition/versions',
+    response_model=ConsumptionDefinitionVersionListResponse,
+)
+async def list_consumption_definition_versions(
+    product_id: Annotated[int, Path(gt=0)],
+    context: Annotated[AuthenticatedContext, Depends(require_permission('inventory.read'))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    location_id: int = Query(gt=0),
+) -> ConsumptionDefinitionVersionListResponse:
+    _authorize_location(context, location_id)
+    try:
+        values = await service.list_consumption_definition_versions(
+            db, tenant_id=context.tenant_id, product_id=product_id,
+            location_id=location_id,
+        )
+        return ConsumptionDefinitionVersionListResponse(items=list(values))
     except Exception as exc:
         raise _error(exc) from exc
 

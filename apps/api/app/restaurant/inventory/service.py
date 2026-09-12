@@ -19,6 +19,8 @@ from app.models import (
     Product,
     ProductConsumptionComponent,
     ProductConsumptionDefinition,
+    ProductConsumptionVersion,
+    ProductConsumptionVersionComponent,
     StockMovement,
     Warehouse,
 )
@@ -670,23 +672,24 @@ async def list_inventory_items(
 
 
 async def _definition_projection(
-    db: AsyncSession, definition: ProductConsumptionDefinition
+    db: AsyncSession, definition: ProductConsumptionDefinition,
+    version: ProductConsumptionVersion,
 ) -> ConsumptionDefinitionProjection:
     rows = (
         await db.execute(
-            select(ProductConsumptionComponent, InventoryItem)
+            select(ProductConsumptionVersionComponent, InventoryItem)
             .join(
                 InventoryItem,
-                (InventoryItem.id == ProductConsumptionComponent.inventory_item_id)
-                & (InventoryItem.tenant_id == ProductConsumptionComponent.tenant_id)
-                & (InventoryItem.organization_id == ProductConsumptionComponent.organization_id)
-                & (InventoryItem.location_id == ProductConsumptionComponent.location_id),
+                (InventoryItem.id == ProductConsumptionVersionComponent.inventory_item_id)
+                & (InventoryItem.tenant_id == ProductConsumptionVersionComponent.tenant_id)
+                & (InventoryItem.organization_id == ProductConsumptionVersionComponent.organization_id)
+                & (InventoryItem.location_id == ProductConsumptionVersionComponent.location_id),
             )
             .where(
-                ProductConsumptionComponent.tenant_id == definition.tenant_id,
-                ProductConsumptionComponent.definition_id == definition.id,
+                ProductConsumptionVersionComponent.tenant_id == definition.tenant_id,
+                ProductConsumptionVersionComponent.version_id == version.id,
             )
-            .order_by(ProductConsumptionComponent.inventory_item_id)
+            .order_by(ProductConsumptionVersionComponent.inventory_item_id)
         )
     ).all()
     return ConsumptionDefinitionProjection(
@@ -703,31 +706,92 @@ async def _definition_projection(
                 inventory_item_name=item.name,
                 quantity=component.quantity,
                 base_uom=item.base_uom,
+                source_quantity=component.source_quantity,
+                source_uom=component.source_uom,
+                conversion_revision_id=component.conversion_revision_id,
+                conversion_factor=component.conversion_factor,
             )
             for component, item in rows
         ),
+        recipe_version_id=version.id,
+        recipe_revision=version.revision,
+        effective_from=version.effective_from,
+        effective_to=version.effective_to,
+        published_at=version.published_at,
     )
+
+
+async def resolve_consumption_version(
+    db: AsyncSession, *, tenant_id: int, product_id: int, location_id: int,
+    as_of: datetime, for_update: bool = False,
+) -> tuple[ProductConsumptionDefinition, ProductConsumptionVersion] | None:
+    statement = (
+        select(ProductConsumptionDefinition, ProductConsumptionVersion)
+        .join(
+            ProductConsumptionVersion,
+            (ProductConsumptionVersion.definition_id == ProductConsumptionDefinition.id)
+            & (ProductConsumptionVersion.tenant_id == ProductConsumptionDefinition.tenant_id)
+            & (ProductConsumptionVersion.location_id == ProductConsumptionDefinition.location_id),
+        )
+        .where(
+            ProductConsumptionDefinition.tenant_id == tenant_id,
+            ProductConsumptionDefinition.location_id == location_id,
+            ProductConsumptionDefinition.product_id == product_id,
+            ProductConsumptionVersion.publication_status == 'PUBLISHED',
+            ProductConsumptionVersion.effective_from <= as_of,
+            (
+                ProductConsumptionVersion.effective_to.is_(None)
+                | (ProductConsumptionVersion.effective_to > as_of)
+            ),
+        )
+        .order_by(
+            ProductConsumptionVersion.effective_from.desc(),
+            ProductConsumptionVersion.revision.desc(),
+        )
+        .limit(1)
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return (await db.execute(statement)).first()
 
 
 async def get_consumption_definition(
     db: AsyncSession, *, tenant_id: int, product_id: int, location_id: int,
+    as_of: datetime | None = None,
 ) -> ConsumptionDefinitionProjection:
-    value = await db.scalar(
-        select(ProductConsumptionDefinition).where(
-            ProductConsumptionDefinition.tenant_id == tenant_id,
-            ProductConsumptionDefinition.location_id == location_id,
-            ProductConsumptionDefinition.product_id == product_id,
-        )
+    value = await resolve_consumption_version(
+        db, tenant_id=tenant_id, product_id=product_id, location_id=location_id,
+        as_of=as_of or await _database_now(db),
     )
     if value is None:
         raise errors.ConsumptionDefinitionNotFoundError()
-    return await _definition_projection(db, value)
+    return await _definition_projection(db, value[0], value[1])
+
+
+async def list_consumption_definition_versions(
+    db: AsyncSession, *, tenant_id: int, product_id: int, location_id: int,
+) -> tuple[ConsumptionDefinitionProjection, ...]:
+    definition = await db.scalar(select(ProductConsumptionDefinition).where(
+        ProductConsumptionDefinition.tenant_id == tenant_id,
+        ProductConsumptionDefinition.location_id == location_id,
+        ProductConsumptionDefinition.product_id == product_id,
+    ))
+    if definition is None:
+        raise errors.ConsumptionDefinitionNotFoundError()
+    versions = tuple((await db.scalars(select(ProductConsumptionVersion).where(
+        ProductConsumptionVersion.tenant_id == tenant_id,
+        ProductConsumptionVersion.definition_id == definition.id,
+    ).order_by(ProductConsumptionVersion.revision))).all())
+    return tuple(
+        [await _definition_projection(db, definition, version) for version in versions]
+    )
 
 
 async def put_consumption_definition(
     db: AsyncSession, *, tenant_id: int, product_id: int, location_id: int,
     expected_version: int, status: str, tracking_mode: str,
-    components: tuple[ConsumptionComponentInput, ...],
+    components: tuple[ConsumptionComponentInput, ...], effective_from: datetime | None,
+    actor_id: int,
 ) -> ConsumptionDefinitionProjection:
     status = status.strip().upper()
     tracking_mode = tracking_mode.strip().upper()
@@ -792,6 +856,32 @@ async def put_consumption_definition(
                 )
             )
 
+        published_at = await _database_now(db)
+        effective_from = effective_from or published_at
+        latest = await db.scalar(
+            select(ProductConsumptionVersion).where(
+                ProductConsumptionVersion.tenant_id == tenant_id,
+                ProductConsumptionVersion.definition_id == definition.id,
+            ).order_by(ProductConsumptionVersion.revision.desc()).limit(1).with_for_update()
+        )
+        if latest is not None and effective_from < latest.effective_from:
+            raise errors.InvalidConsumptionDefinitionError(
+                'Recipe versions cannot be backdated before the latest version'
+            )
+        if latest is not None and latest.effective_to is None:
+            latest.effective_to = effective_from
+        recipe_version = ProductConsumptionVersion(
+            tenant_id=tenant_id, organization_id=location.organization_id,
+            location_id=location_id, definition_id=definition.id,
+            revision=1 if latest is None else latest.revision + 1,
+            status=status, tracking_mode=tracking_mode,
+            publication_status='PUBLISHED', effective_from=effective_from,
+            effective_to=None, actor_id=actor_id, source='CURRENT_DEFINITION_PUT',
+            published_at=published_at,
+        )
+        db.add(recipe_version)
+        await db.flush()
+
         items: dict[int, InventoryItem] = {}
         if ids:
             item_rows = tuple(
@@ -817,13 +907,13 @@ async def put_consumption_definition(
                 )
         for component in components:
             try:
-                quantity = convert_quantity(
-                    component.quantity,
-                    from_uom=component.uom,
-                    to_uom=items[component.inventory_item_id].base_uom,
+                quantity, source_uom, conversion, factor = await resolve_quantity_evidence(
+                    db, item=items[component.inventory_item_id],
+                    quantity=component.quantity, source_uom=component.uom,
+                    as_of=effective_from,
                 )
                 exact_quantity(quantity, positive=True)
-            except UnitConversionError as exc:
+            except (UnitConversionError, errors.InventoryError) as exc:
                 raise errors.InvalidConsumptionDefinitionError(str(exc)) from exc
             db.add(
                 ProductConsumptionComponent(
@@ -835,9 +925,19 @@ async def put_consumption_definition(
                     quantity=quantity,
                 )
             )
+            db.add(ProductConsumptionVersionComponent(
+                tenant_id=tenant_id, organization_id=location.organization_id,
+                location_id=location_id, definition_id=definition.id,
+                version_id=recipe_version.id,
+                inventory_item_id=component.inventory_item_id, quantity=quantity,
+                source_quantity=component.quantity, source_uom=source_uom,
+                conversion_revision_id=conversion.id if conversion is not None else None,
+                conversion_factor=factor,
+                base_uom_evidence=items[component.inventory_item_id].base_uom,
+            ))
         await db.commit()
         await db.refresh(definition)
-        return await _definition_projection(db, definition)
+        return await _definition_projection(db, definition, recipe_version)
     except IntegrityError as exc:
         await db.rollback()
         winner = await db.scalar(
@@ -1243,22 +1343,20 @@ async def list_stock_movements(
 async def resolve_current_product_cost(
     db: AsyncSession, *, tenant_id: int, product_id: int, location_id: int,
 ) -> ProductCostProjection:
-    definition = await db.scalar(
-        select(ProductConsumptionDefinition).where(
-            ProductConsumptionDefinition.tenant_id == tenant_id,
-            ProductConsumptionDefinition.location_id == location_id,
-            ProductConsumptionDefinition.product_id == product_id,
-            ProductConsumptionDefinition.status == 'ACTIVE',
-        )
+    as_of = await _database_now(db)
+    resolved = await resolve_consumption_version(
+        db, tenant_id=tenant_id, product_id=product_id,
+        location_id=location_id, as_of=as_of,
     )
-    if definition is None:
+    if resolved is None or resolved[1].status != 'ACTIVE':
         raise errors.ConsumptionDefinitionNotFoundError()
-    if definition.tracking_mode == 'NON_DERIVABLE':
+    definition, recipe_version = resolved
+    if recipe_version.tracking_mode == 'NON_DERIVABLE':
         return ProductCostProjection(
             product_id=product_id,
             location_id=location_id,
-            definition_version=definition.version,
-            tracking_mode=definition.tracking_mode,
+            definition_version=recipe_version.revision,
+            tracking_mode=recipe_version.tracking_mode,
             cost_status='NON_DERIVABLE',
             currency=None,
             components=(),
@@ -1266,20 +1364,19 @@ async def resolve_current_product_cost(
         )
     rows = (
         await db.execute(
-            select(ProductConsumptionComponent, InventoryItem)
+            select(ProductConsumptionVersionComponent, InventoryItem)
             .join(
                 InventoryItem,
-                (InventoryItem.id == ProductConsumptionComponent.inventory_item_id)
-                & (InventoryItem.tenant_id == ProductConsumptionComponent.tenant_id),
+                (InventoryItem.id == ProductConsumptionVersionComponent.inventory_item_id)
+                & (InventoryItem.tenant_id == ProductConsumptionVersionComponent.tenant_id),
             )
             .where(
-                ProductConsumptionComponent.tenant_id == tenant_id,
-                ProductConsumptionComponent.definition_id == definition.id,
+                ProductConsumptionVersionComponent.tenant_id == tenant_id,
+                ProductConsumptionVersionComponent.version_id == recipe_version.id,
             )
-            .order_by(ProductConsumptionComponent.inventory_item_id)
+            .order_by(ProductConsumptionVersionComponent.inventory_item_id)
         )
     ).all()
-    as_of = await _database_now(db)
     resolved_rows = []
     for component, item in rows:
         revision = await resolve_cost_as_of(
@@ -1288,8 +1385,8 @@ async def resolve_current_product_cost(
         if revision is None:
             return ProductCostProjection(
                 product_id=product_id, location_id=location_id,
-                definition_version=definition.version,
-                tracking_mode=definition.tracking_mode,
+                definition_version=recipe_version.revision,
+                tracking_mode=recipe_version.tracking_mode,
                 cost_status='NON_DERIVABLE', currency=None, components=(),
                 total_theoretical_cost=None,
             )
@@ -1310,8 +1407,8 @@ async def resolve_current_product_cost(
         return ProductCostProjection(
             product_id=product_id,
             location_id=location_id,
-            definition_version=definition.version,
-            tracking_mode=definition.tracking_mode,
+            definition_version=recipe_version.revision,
+            tracking_mode=recipe_version.tracking_mode,
             cost_status='CURRENCY_MISMATCH',
             currency=None,
             components=components,
@@ -1321,8 +1418,8 @@ async def resolve_current_product_cost(
     return ProductCostProjection(
         product_id=product_id,
         location_id=location_id,
-        definition_version=definition.version,
-        tracking_mode=definition.tracking_mode,
+        definition_version=recipe_version.revision,
+        tracking_mode=recipe_version.tracking_mode,
         cost_status='RESOLVED',
         currency=currency,
         components=components,
