@@ -45,7 +45,7 @@ async function expectPageFitsViewport(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
 }
 
-test('WS-34-B7 deterministic Staff Web P0 journey reaches real inventory authorities', async ({ page }) => {
+test('WS-34-B8 deterministic Staff Web P0 journey reaches real inventory authorities', async ({ page }) => {
   await page.setViewportSize({ width: 1440, height: 900 });
   await login(page, OPERATOR);
   await openInventory(page, 'Existencias');
@@ -176,4 +176,23 @@ test('WS-34-B7 deterministic Staff Web P0 journey reaches real inventory authori
   await expect(page.getByText('11 UNIT')).toBeVisible();
   await expect(page.getByText('12 UNIT')).toBeVisible();
   await expect(page.getByText(/Última compra.*20/)).toBeVisible();
+
+  await switchActor(page, OPERATOR);
+  await openInventory(page, 'Órdenes de compra');
+  await page.getByLabel('Proveedor').selectOption({ label: 'Proveedor E2E' });
+  await page.getByLabel('Presentación').selectOption({ index: 1 });
+  await page.getByLabel('Cantidad ordenada').fill('2'); await page.getByLabel('Precio acordado').fill('18'); await page.getByRole('button', { name: 'Agregar línea' }).click();
+  await page.getByLabel('Presentación').selectOption({ index: 2 });
+  await page.getByLabel('Cantidad ordenada').fill('3'); await page.getByLabel('Precio acordado').fill('5'); await page.getByRole('button', { name: 'Agregar línea' }).click();
+  await page.getByRole('button', { name: 'Crear DRAFT' }).click(); await expect(page.getByText(/DRAFT/).first()).toBeVisible();
+  await page.getByRole('link', { name: 'Existencias' }).click(); await expect(page.getByText('11 UNIT')).toBeVisible(); await expect(page.getByText('12 UNIT')).toBeVisible();
+  await page.getByRole('link', { name: 'Órdenes de compra' }).click(); await page.getByRole('button', { name: /^#\d+ · DRAFT/ }).click(); await page.getByRole('button', { name: 'Enviar a aprobación' }).click();
+  await switchActor(page, APPROVER); await openInventory(page, 'Órdenes de compra'); await page.getByRole('button', { name: /SUBMITTED/ }).click(); await page.getByRole('button', { name: 'Aprobar' }).click();
+  await page.getByRole('link', { name: 'Existencias' }).click(); await expect(page.getByText('11 UNIT')).toBeVisible(); await expect(page.getByText('12 UNIT')).toBeVisible();
+  await page.getByRole('link', { name: 'Recepción' }).click(); await page.getByLabel('Orden de compra (opcional)').selectOption({ index: 1 }); await page.getByLabel('Artículo / presentación').selectOption({ index: 1 }); await page.getByLabel('Recibido', { exact: true }).fill('1'); await page.getByLabel('Aceptado', { exact: true }).fill('1'); await page.getByLabel('Costo unitario').fill('20'); await page.getByRole('button', { name: 'Agregar línea' }).click(); await page.getByRole('button', { name: 'Crear un DRAFT con todas las líneas' }).click(); await page.getByRole('button', { name: 'Aceptar una vez y publicar todas las líneas' }).click();
+  await page.getByRole('link', { name: 'Órdenes de compra' }).click(); await page.getByRole('button', { name: /PARTIALLY_RECEIVED/ }).click(); await expect(page.getByText(/Pendiente 1/)).toBeVisible();
+  await page.getByRole('link', { name: 'Recepción' }).click(); await page.getByLabel('Orden de compra (opcional)').selectOption({ index: 1 }); await addReceiptLine(page, 1, '1', '18'); await addReceiptLine(page, 2, '3', '5'); await page.getByRole('button', { name: 'Crear un DRAFT con todas las líneas' }).click(); await page.getByRole('button', { name: 'Aceptar una vez y publicar todas las líneas' }).click();
+  await page.getByRole('link', { name: 'Órdenes de compra' }).click(); await page.getByRole('button', { name: /RECEIVED/ }).click();
+  const firstLineCostEvidence = page.locator('article.inventory-state-note').filter({ hasText: 'Línea 1' }).locator('small').filter({ hasText: /variación.*1/i });
+  await expect(firstLineCostEvidence).toBeVisible(); await page.getByRole('button', { name: 'Cerrar' }).click(); await expect(page.getByText(/CLOSED/).first()).toBeVisible(); await expectPageFitsViewport(page);
 });

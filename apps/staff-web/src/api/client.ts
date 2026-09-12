@@ -43,6 +43,7 @@ import type {
   InventoryReconciliation,
   InventorySupplier,
   PhysicalCount,
+  PurchaseOrder,
 } from './contracts';
 import { readCredential } from '../session/storage';
 
@@ -140,6 +141,10 @@ export const staffApi = {
   acceptGoodsReceipt(receiptId: number, expectedVersion: number, key: string): Promise<GoodsReceipt> {
     return request(`/inventory/goods-receipts/${receiptId}:accept`, { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ expected_version: expectedVersion }) });
   },
+  purchaseOrders(locationId: number): Promise<{items: PurchaseOrder[]}> { return request(`/inventory/purchase-orders?location_id=${locationId}`); },
+  createPurchaseOrder(payload: object): Promise<PurchaseOrder> { return request('/inventory/purchase-orders', { method: 'POST', body: JSON.stringify(payload) }); },
+  amendPurchaseOrder(id: number, payload: object): Promise<PurchaseOrder> { return request(`/inventory/purchase-orders/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }); },
+  actOnPurchaseOrder(id: number, action: 'submit'|'approve'|'cancel'|'close', expectedVersion: number, key: string): Promise<PurchaseOrder> { return request(`/inventory/purchase-orders/${id}:${action}`, { method: 'POST', headers: {'Idempotency-Key': key}, body: JSON.stringify({expected_version: expectedVersion}) }); },
   inventoryLosses(locationId: number): Promise<{ items: InventoryLoss[] }> {
     return request(`/inventory/losses?location_id=${locationId}`);
   },

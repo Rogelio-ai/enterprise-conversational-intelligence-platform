@@ -1,13 +1,14 @@
 import { useMemo, useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { NavLink, useParams } from 'react-router-dom';
-import type { GoodsReceipt, InventoryIntelligence, InventoryLoss, PhysicalCount } from '../api/contracts';
+import type { GoodsReceipt, InventoryIntelligence, InventoryLoss, PhysicalCount, PurchaseOrder } from '../api/contracts';
 import { ApiError, staffApi } from '../api/client';
 import { useStaffContext } from '../context/StaffContext';
 import { useAuth } from '../session/AuthContext';
+import { PurchaseOrders } from './PurchaseOrders';
 
 const views = [
-  ['overview', 'Resumen'], ['stock', 'Existencias'], ['receiving', 'Recepción'],
+  ['overview', 'Resumen'], ['stock', 'Existencias'], ['receiving', 'Recepción'], ['purchase-orders', 'Órdenes de compra'],
   ['losses', 'Pérdidas'], ['counts', 'Conteos físicos'], ['reconciliation', 'Conciliación'],
 ] as const;
 
@@ -32,6 +33,7 @@ interface ReceiptDraftLine {
   rejected: string;
   unitCost: string;
   currency: string;
+  purchaseOrderLineId?: number;
 }
 
 function errorMessage(error: unknown) {
@@ -96,19 +98,24 @@ function Receiving({ data, refresh }: { data: InventoryIntelligence; refresh: ()
   const [draftLines, setDraftLines] = useState<ReceiptDraftLine[]>([]);
   const [compositionError, setCompositionError] = useState<string>();
   const [receipt, setReceipt] = useState<GoodsReceipt | null>(null);
+  const [purchaseOrderId, setPurchaseOrderId] = useState(0);
   const keys = useRef(new Map<string, string>());
   const suppliers = useQuery({ queryKey: ['inventory', 'suppliers', location?.id], queryFn: () => staffApi.inventorySuppliers(location!.id), enabled: Boolean(location && hasPermission('inventory.receipt.manage')), retry: false });
+  const purchaseOrders = useQuery({ queryKey: ['inventory', 'purchase-orders', location?.id], queryFn: () => staffApi.purchaseOrders(location!.id), enabled: Boolean(location && hasPermission('inventory.purchase_order.read')), retry: false });
   const offerings = useQuery({ queryKey: ['inventory', 'offerings', location?.id, supplierId], queryFn: () => staffApi.inventoryOfferings(location!.id, supplierId), enabled: Boolean(location && supplierId), retry: false });
   const selectedOffering = offerings.data?.items.find((item) => item.id === offeringId);
+  const selectedPurchaseOrder = purchaseOrders.data?.items.find((item) => item.id === purchaseOrderId);
   const commandKey = (name: string) => { const found = keys.current.get(name); if (found) return found; const value = crypto.randomUUID(); keys.current.set(name, value); return value; };
   const create = useMutation({
     mutationFn: () => staffApi.createGoodsReceipt({
       supplier_id: supplierId, location_id: location!.id,
-      warehouse_id: data.warehouses[0]?.id, external_reference: reference || null,
+      warehouse_id: selectedPurchaseOrder?.warehouse_id ?? data.warehouses[0]?.id, external_reference: reference || null,
+      purchase_order_id: purchaseOrderId || null,
       lines: draftLines.map((line) => ({
         supplier_offering_id: line.offeringId, received_quantity: line.received,
         accepted_quantity: line.accepted, rejected_quantity: line.rejected,
         unit_cost: line.unitCost, currency: line.currency,
+        purchase_order_line_id: line.purchaseOrderLineId ?? null,
       })),
     }),
     onSuccess: (value) => { setReceipt(value); void queryClient.invalidateQueries({ queryKey: ['inventory'] }); },
@@ -124,6 +131,7 @@ function Receiving({ data, refresh }: { data: InventoryIntelligence; refresh: ()
       offeringId: selectedOffering.id, inventoryItemId: selectedOffering.inventory_item_id,
       purchaseUom: selectedOffering.purchase_uom, received, accepted, rejected,
       unitCost, currency,
+      purchaseOrderLineId: selectedPurchaseOrder?.lines.find((line) => line.supplier_offering_id === selectedOffering.id)?.id,
     }]);
     setOfferingId(0); setReceived(''); setAccepted(''); setRejected('0'); setUnitCost(''); setCompositionError(undefined);
   };
@@ -135,8 +143,9 @@ function Receiving({ data, refresh }: { data: InventoryIntelligence; refresh: ()
     <section className="inventory-panel inventory-form"><h2>Nueva recepción directa</h2><p className="inventory-state-note">Compón una sola recepción con todas sus líneas. El DRAFT no modifica stock; solo ACEPTAR publica el conjunto atómicamente.</p>
       {suppliers.isPending ? <p role="status">Cargando proveedores autorizados…</p> : null}
       <Feedback error={suppliers.error || offerings.error} />
+      {hasPermission('inventory.purchase_order.read') ? <label>Orden de compra (opcional)<select value={purchaseOrderId} onChange={(event) => { const id = Number(event.target.value); const order = purchaseOrders.data?.items.find((value) => value.id === id); setPurchaseOrderId(id); if (order) setSupplierId(order.supplier_id); setDraftLines([]); }}><option value="">Recepción directa</option>{purchaseOrders.data?.items.filter((value) => ['APPROVED','PARTIALLY_RECEIVED'].includes(value.status)).map((value) => <option value={value.id} key={value.id}>#{value.id} · {value.status}</option>)}</select></label> : null}
       <label>Proveedor<select value={supplierId} required disabled={Boolean(receipt)} onChange={(event) => { setSupplierId(Number(event.target.value)); setOfferingId(0); setDraftLines([]); }}><option value="">Seleccionar</option>{suppliers.data?.items.filter((item) => item.status === 'ACTIVE').map((item) => <option value={item.id} key={item.id}>{item.name}</option>)}</select></label>
-      <label>Artículo / presentación<select value={offeringId} required onChange={(event) => setOfferingId(Number(event.target.value))}><option value="">Seleccionar</option>{offerings.data?.items.filter((item) => item.status === 'ACTIVE').map((item) => <option value={item.id} key={item.id}>Artículo #{item.inventory_item_id} · {item.purchase_uom}</option>)}</select></label>
+      <label>Artículo / presentación<select value={offeringId} required onChange={(event) => setOfferingId(Number(event.target.value))}><option value="">Seleccionar</option>{offerings.data?.items.filter((item) => item.status === 'ACTIVE' && (!selectedPurchaseOrder || selectedPurchaseOrder.lines.some((line) => line.supplier_offering_id === item.id && Number(line.remaining_quantity) > 0))).map((item) => <option value={item.id} key={item.id}>Artículo #{item.inventory_item_id} · {item.purchase_uom}</option>)}</select></label>
       <div className="inventory-form-grid"><label>Recibido<input inputMode="decimal" required value={received} onChange={(event) => { setReceived(event.target.value); if (!accepted) setAccepted(event.target.value); }} /></label><label>Aceptado<input inputMode="decimal" required value={accepted} onChange={(event) => setAccepted(event.target.value)} /></label><label>Rechazado<input inputMode="decimal" required value={rejected} onChange={(event) => setRejected(event.target.value)} /></label></div>
       <p>UOM congelada: <strong>{selectedOffering?.purchase_uom ?? 'Selecciona una presentación'}</strong></p>
       <div className="inventory-form-grid"><label>Costo unitario<input inputMode="decimal" required value={unitCost} onChange={(event) => setUnitCost(event.target.value)} /></label><label>Moneda<input maxLength={3} required value={currency} onChange={(event) => setCurrency(event.target.value.toUpperCase())} /></label></div>
@@ -229,5 +238,5 @@ export function InventoryPage() {
   const data = intelligence.data; const refresh = () => { void intelligence.refetch(); };
   const hasWarehouses = Boolean(data?.warehouses.length);
   const title = useMemo(() => views.find(([key]) => key === activeView)?.[1] ?? 'Resumen', [activeView]);
-  return <section className="inventory-page" aria-labelledby="inventory-heading"><header className="inventory-heading"><div><p className="eyebrow">Control de inventario · {location?.name}</p><h1 id="inventory-heading">Inventario</h1><p>{title}. Estado operativo confirmado por el servidor.</p></div><div><label>Almacén<select value={warehouseId ?? ''} onChange={(event) => setWarehouseId(event.target.value ? Number(event.target.value) : undefined)}><option value="">Todos</option>{data?.warehouses.map((value) => <option value={value.id} key={value.id}>{value.name}</option>)}</select></label><button className="secondary-button" disabled={intelligence.isFetching} onClick={refresh}>{intelligence.isFetching ? 'Actualizando…' : 'Actualizar'}</button></div></header><nav className="inventory-nav" aria-label="Secciones de inventario">{views.map(([key, label]) => <NavLink key={key} end={key === 'overview'} to={key === 'overview' ? '/inventory' : `/inventory/${key}`}>{label}</NavLink>)}</nav>{intelligence.isPending ? <div className="inventory-panel inventory-loading" role="status"><span className="state-spinner" aria-hidden="true">◌</span><span>Cargando inventario confirmado…</span></div> : null}{intelligence.isError ? <div className="inventory-panel inventory-feedback--error" role="alert"><strong>No fue posible cargar inventario.</strong><p>{errorMessage(intelligence.error)}</p><button className="secondary-button" onClick={refresh}>Reintentar</button></div> : null}{data && !hasWarehouses ? <div className="inventory-panel inventory-empty" role="status"><strong>No hay almacenes activos.</strong> Habilita un almacén para consultar o registrar operación de inventario.</div> : null}{data && hasWarehouses && activeView === 'overview' ? <Overview data={data} /> : null}{data && hasWarehouses && activeView === 'stock' ? <Stock data={data} /> : null}{data && hasWarehouses && activeView === 'receiving' ? <Receiving data={data} refresh={refresh} /> : null}{data && hasWarehouses && activeView === 'losses' ? <Losses data={data} refresh={refresh} /> : null}{data && hasWarehouses && activeView === 'counts' ? <Counts data={data} refresh={refresh} /> : null}{data && hasWarehouses && activeView === 'reconciliation' ? <Reconciliation data={data} refresh={refresh} /> : null}</section>;
+  return <section className="inventory-page" aria-labelledby="inventory-heading"><header className="inventory-heading"><div><p className="eyebrow">Control de inventario · {location?.name}</p><h1 id="inventory-heading">Inventario</h1><p>{title}. Estado operativo confirmado por el servidor.</p></div><div><label>Almacén<select value={warehouseId ?? ''} onChange={(event) => setWarehouseId(event.target.value ? Number(event.target.value) : undefined)}><option value="">Todos</option>{data?.warehouses.map((value) => <option value={value.id} key={value.id}>{value.name}</option>)}</select></label><button className="secondary-button" disabled={intelligence.isFetching} onClick={refresh}>{intelligence.isFetching ? 'Actualizando…' : 'Actualizar'}</button></div></header><nav className="inventory-nav" aria-label="Secciones de inventario">{views.map(([key, label]) => <NavLink key={key} end={key === 'overview'} to={key === 'overview' ? '/inventory' : `/inventory/${key}`}>{label}</NavLink>)}</nav>{intelligence.isPending ? <div className="inventory-panel inventory-loading" role="status"><span className="state-spinner" aria-hidden="true">◌</span><span>Cargando inventario confirmado…</span></div> : null}{intelligence.isError ? <div className="inventory-panel inventory-feedback--error" role="alert"><strong>No fue posible cargar inventario.</strong><p>{errorMessage(intelligence.error)}</p><button className="secondary-button" onClick={refresh}>Reintentar</button></div> : null}{data && !hasWarehouses ? <div className="inventory-panel inventory-empty" role="status"><strong>No hay almacenes activos.</strong> Habilita un almacén para consultar o registrar operación de inventario.</div> : null}{data && hasWarehouses && activeView === 'overview' ? <Overview data={data} /> : null}{data && hasWarehouses && activeView === 'stock' ? <Stock data={data} /> : null}{data && hasWarehouses && activeView === 'receiving' ? <Receiving data={data} refresh={refresh} /> : null}{data && hasWarehouses && activeView === 'purchase-orders' ? <PurchaseOrders data={data} /> : null}{data && hasWarehouses && activeView === 'losses' ? <Losses data={data} refresh={refresh} /> : null}{data && hasWarehouses && activeView === 'counts' ? <Counts data={data} refresh={refresh} /> : null}{data && hasWarehouses && activeView === 'reconciliation' ? <Reconciliation data={data} refresh={refresh} /> : null}</section>;
 }

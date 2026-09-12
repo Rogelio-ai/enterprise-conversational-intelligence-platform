@@ -123,6 +123,7 @@ class ReceiptLineCreateRequest(BaseModel):
     rejected_quantity: ExactDecimal = Field(ge=0)
     unit_cost: ExactDecimal = Field(ge=0)
     currency: str = Field(min_length=3, max_length=3)
+    purchase_order_line_id: int | None = Field(default=None, gt=0)
 
     @model_validator(mode='after')
     def quantities_balance(self) -> 'ReceiptLineCreateRequest':
@@ -137,6 +138,7 @@ class ReceiptCreateRequest(BaseModel):
     location_id: int = Field(gt=0)
     warehouse_id: int = Field(gt=0)
     external_reference: str | None = Field(default=None, max_length=200)
+    purchase_order_id: int | None = Field(default=None, gt=0)
     lines: tuple[ReceiptLineCreateRequest, ...] = Field(min_length=1)
 
 
@@ -163,6 +165,7 @@ class ReceiptLineResponse(BaseModel):
     extended_cost: Decimal | None
     evidence_status: str
     stock_movement_id: int | None
+    purchase_order_line_id: int | None
 
 
 class ReceiptResponse(BaseModel):
@@ -172,6 +175,7 @@ class ReceiptResponse(BaseModel):
     location_id: int
     warehouse_id: int
     supplier_id: int
+    purchase_order_id: int | None
     external_reference: str | None
     status: str
     version: int

@@ -27,6 +27,8 @@ PERMISSIONS = (
     'inventory.count.read', 'inventory.count.manage', 'inventory.count.approve',
     'inventory.count.post', 'inventory.reconciliation.read',
     'inventory.reconciliation.manage',
+    'inventory.purchase_order.read', 'inventory.purchase_order.manage',
+    'inventory.purchase_order.approve',
 )
 
 
@@ -147,13 +149,15 @@ def verify(db) -> None:
             'posted_full_counts': "SELECT COUNT(*) AS n FROM physical_counts WHERE tenant_id=%s AND count_scope='FULL' AND status='POSTED'",
             'incomplete_full_counts': "SELECT COUNT(*) AS n FROM physical_counts WHERE tenant_id=%s AND count_scope='FULL' AND status='APPROVED'",
             'closed_reconciliations': "SELECT COUNT(*) AS n FROM inventory_reconciliations WHERE tenant_id=%s AND status='CLOSED'",
+            'closed_purchase_orders': "SELECT COUNT(*) AS n FROM purchase_orders WHERE tenant_id=%s AND status='CLOSED'",
         }.items():
             cursor.execute(sql, (tenant_id,))
             checks[name] = int(cursor.fetchone()['n'])
     expected = {
-        'accepted_receipts': 1, 'receipt_lines': 2, 'receipt_movements': 2,
+        'accepted_receipts': 3, 'receipt_lines': 5, 'receipt_movements': 5,
         'posted_losses': 1, 'posted_partial_counts': 1, 'posted_full_counts': 1,
         'incomplete_full_counts': 1, 'closed_reconciliations': 1,
+        'closed_purchase_orders': 1,
     }
     if checks != expected:
         raise RuntimeError(f'authoritative E2E evidence mismatch: {checks} != {expected}')

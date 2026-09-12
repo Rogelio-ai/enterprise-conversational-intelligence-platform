@@ -14,7 +14,8 @@ const permissions = [
   'inventory.receipt.accept', 'inventory.loss.read', 'inventory.loss.manage',
   'inventory.loss.approve', 'inventory.count.read', 'inventory.count.manage',
   'inventory.count.approve', 'inventory.count.post', 'inventory.reconciliation.read',
-  'inventory.reconciliation.manage',
+    'inventory.reconciliation.manage',
+    'inventory.purchase_order.read', 'inventory.purchase_order.manage', 'inventory.purchase_order.approve',
 ];
 const identity: StaffIdentity = { user_id: 1, email: 'inventory@example.test', display_name: 'Iris Inventario', tenant_id: 11, membership_id: 12, authorized_location_ids: [21], roles: ['INVENTORY_OPERATOR'], permissions };
 const location = { id: 21, tenant_id: 11, organization_id: 31, code: 'CENTRO', name: 'Sucursal Centro', timezone: 'America/Mexico_City', status: 'ACTIVE' };
@@ -44,6 +45,19 @@ function mockApi(currentIdentity = identity, acceptConflict = false, inventoryDa
     if (url.endsWith('/auth/me')) return json(currentIdentity);
     if (url.includes('/locations?')) return json({ items: [location], limit: 100, offset: 0 });
     if (url.includes('/inventory/intelligence?')) return json(inventoryData);
+    if (url.includes('/inventory/purchase-orders?')) return json({ items: [] });
+    if (url.endsWith('/inventory/purchase-orders') && init?.method === 'POST') {
+      const payload = JSON.parse(String(init.body));
+      return json({ id: 101, location_id: 21, warehouse_id: 41, supplier_id: 71, status: 'DRAFT', currency: 'MXN', cost_visible: true, expected_delivery_at: payload.expected_delivery_at, external_reference: null, notes: null, version: 1, lines: payload.lines.map((line: any, index: number) => ({ id: 102 + index, ...line, inventory_item_id: index ? 52 : 51, line_number: index + 1, source_uom: 'KG', normalized_ordered_quantity: line.ordered_quantity, base_uom_evidence: 'KG', accepted_quantity: '0.000000', rejected_quantity: '0.000000', remaining_quantity: line.ordered_quantity, currency: 'MXN', received_unit_price: null, price_variance: null })) }, 201);
+    }
+    if (url.endsWith('/inventory/purchase-orders/101') && init?.method === 'PATCH') {
+      const payload = JSON.parse(String(init.body));
+      return json({ id: 101, location_id: 21, warehouse_id: 41, supplier_id: 71, status: 'DRAFT', currency: 'MXN', cost_visible: true, expected_delivery_at: payload.expected_delivery_at, external_reference: payload.external_reference, notes: payload.notes, version: 2, receipts: [], submitted_at: null, approved_at: null, terminated_at: null, lines: payload.lines.map((line: any, index: number) => ({ id: 102 + index, ...line, inventory_item_id: index ? 52 : 51, line_number: index + 1, source_uom: 'KG', conversion_factor: '1.000000', normalized_ordered_quantity: line.ordered_quantity, base_uom_evidence: 'KG', accepted_quantity: '0.000000', rejected_quantity: '0.000000', remaining_quantity: line.ordered_quantity, currency: 'MXN', received_unit_price: null, price_variance: null, receipt_allocations: [] })) });
+    }
+    if (/\/inventory\/purchase-orders\/101:(submit|approve|cancel|close)$/.test(url)) {
+      const action = url.split(':').at(-1); const status = action === 'submit' ? 'SUBMITTED' : action === 'approve' ? 'APPROVED' : action === 'cancel' ? 'CANCELLED' : 'CLOSED';
+      return json({ id: 101, location_id: 21, warehouse_id: 41, supplier_id: 71, status, currency: 'MXN', cost_visible: true, expected_delivery_at: null, external_reference: null, notes: null, version: action === 'submit' ? 2 : 3, lines: [] });
+    }
     if (url.includes('/inventory/suppliers?')) return json({ items: [{ id: 71, code: 'NORTE', name: 'Proveedor Norte', status: 'ACTIVE', location_ids: [21] }] });
     if (url.includes('/inventory/suppliers/71/offerings?')) return json({ items: [
       { id: 72, supplier_id: 71, location_id: 21, inventory_item_id: 51, purchase_uom: 'KG', status: 'ACTIVE' },
@@ -116,6 +130,30 @@ describe('Inventory Staff Web', () => {
     expect(screen.queryByRole('heading', { name: 'Nueva recepción directa' })).not.toBeInTheDocument();
     expect(container.querySelector('.inventory-page')).not.toHaveTextContent('000000');
   });
+
+  it('creates a multi-line purchase-order draft and submits it without claiming stock impact', async () => {
+    mockApi(); const user = userEvent.setup(); renderInventory('/inventory/purchase-orders');
+    expect(await screen.findByRole('heading', { name: 'Nueva orden de compra' })).toBeVisible();
+    expect(screen.getByText(/No modifica existencias/)).toBeVisible();
+    await screen.findByRole('option', { name: 'Proveedor Norte' });
+    await user.selectOptions(screen.getByLabelText('Proveedor'), '71');
+    await screen.findByRole('option', { name: 'Artículo #51 · KG' });
+    await user.selectOptions(screen.getByLabelText('Presentación'), '72');
+    await user.type(screen.getByLabelText('Cantidad ordenada'), '10'); await user.type(screen.getByLabelText('Precio acordado'), '5'); await user.click(screen.getByRole('button', { name: 'Agregar línea' }));
+    await user.selectOptions(screen.getByLabelText('Presentación'), '73'); await user.type(screen.getByLabelText('Cantidad ordenada'), '4'); await user.type(screen.getByLabelText('Precio acordado'), '3'); await user.click(screen.getByRole('button', { name: 'Agregar línea' }));
+    await user.click(screen.getByRole('button', { name: 'Crear DRAFT' }));
+    expect(await screen.findByText('#101 · DRAFT')).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Editar DRAFT' }));
+    await user.click(screen.getByRole('button', { name: 'Editar línea 1' }));
+    await user.clear(screen.getByLabelText('Cantidad ordenada')); await user.type(screen.getByLabelText('Cantidad ordenada'), '11');
+    await user.click(screen.getByRole('button', { name: 'Guardar línea' }));
+    await user.click(screen.getByRole('button', { name: 'Quitar línea 2' }));
+    await user.selectOptions(screen.getByLabelText('Presentación'), '73'); await user.type(screen.getByLabelText('Cantidad ordenada'), '4'); await user.type(screen.getByLabelText('Precio acordado'), '3'); await user.click(screen.getByRole('button', { name: 'Agregar línea' }));
+    await user.click(screen.getByRole('button', { name: 'Guardar cambios del DRAFT' }));
+    expect(await screen.findByText(/Ordenado 11/)).toBeVisible();
+    await user.click(screen.getByRole('button', { name: 'Enviar a aprobación' }));
+    expect(await screen.findByText('#101 · SUBMITTED')).toBeVisible();
+  }, 15_000);
 
   it('composes, edits, removes, and accepts one authoritative multi-line receipt', async () => {
     const api = mockApi(); const user = userEvent.setup(); renderInventory('/inventory/receiving');

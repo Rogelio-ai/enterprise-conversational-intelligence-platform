@@ -120,6 +120,8 @@ POST_0026_APPLICATION_TABLES = {
     'paid_check_dispatches',
     'physical_count_lines',
     'physical_counts',
+    'purchase_orders',
+    'purchase_order_lines',
     'product_consumption_components',
     'product_consumption_definitions',
     'product_consumption_version_components',
@@ -2165,7 +2167,7 @@ def test_0047_full_count_scope_fresh_populated_retry_and_downgrade_reupgrade(
     isolated_database, integration_settings: Settings,
 ) -> None:
     database_name, _ = isolated_database
-    _run_alembic(database_name, 'head')
+    _run_alembic(database_name, '0047_physical_count_full_scope')
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         with connection.cursor() as cursor:
@@ -2213,8 +2215,8 @@ def test_0047_full_count_scope_fresh_populated_retry_and_downgrade_reupgrade(
     finally:
         connection.close()
 
-    _run_alembic(database_name, 'head')
-    _run_alembic(database_name, 'head')
+    _run_alembic(database_name, '0047_physical_count_full_scope')
+    _run_alembic(database_name, '0047_physical_count_full_scope')
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         with connection.cursor() as cursor:
@@ -2253,7 +2255,7 @@ def test_0047_full_count_scope_fresh_populated_retry_and_downgrade_reupgrade(
     finally:
         connection.close()
 
-    _run_alembic(database_name, 'head')
+    _run_alembic(database_name, '0047_physical_count_full_scope')
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         with connection.cursor() as cursor:
@@ -2261,6 +2263,92 @@ def test_0047_full_count_scope_fresh_populated_retry_and_downgrade_reupgrade(
             assert cursor.fetchone()['count_scope'] == 'PARTIAL'
             cursor.execute('SELECT COUNT(*) AS movements FROM stock_movements')
             assert cursor.fetchone()['movements'] == 0
+    finally:
+        connection.close()
+
+
+def test_0048_purchase_orders_preserve_receipts_stock_and_safe_reversibility(
+    isolated_database, integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0047_physical_count_full_scope')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("INSERT INTO tenants (name,slug,status) VALUES ('B8','b8-migration','ACTIVE')")
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO organizations (tenant_id,code,name,status) VALUES (%s,'ORG','Org','ACTIVE')", (tenant_id,))
+            organization_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO locations (tenant_id,organization_id,code,name,timezone,status) VALUES (%s,%s,'LOC','Location','UTC','ACTIVE')", (tenant_id, organization_id))
+            location_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO warehouses (tenant_id,organization_id,location_id,code,name,status,default_slot,negative_stock_policy,version) VALUES (%s,%s,%s,'MAIN','Main','ACTIVE',1,'ALLOW',1)", (tenant_id, organization_id, location_id))
+            warehouse_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO inventory_items (tenant_id,organization_id,location_id,code,name,base_uom,standard_unit_cost,currency,status,version) VALUES (%s,%s,%s,'ITEM','Item','UNIT',2,'MXN','ACTIVE',1)", (tenant_id, organization_id, location_id))
+            item_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO stock_movements (tenant_id,organization_id,location_id,warehouse_id,inventory_item_id,movement_type,quantity,recorded_at,actor_type,actor_id,idempotency_actor_scope,idempotency_key,request_schema_version,request_fingerprint,negative_stock_policy,negative_stock_warning,resulting_stock_quantity,evidence_status,opening_balance_slot) VALUES (%s,%s,%s,%s,%s,'OPENING_BALANCE',8,CURRENT_TIMESTAMP,'EMPLOYEE',1,'EMPLOYEE:1','b8-opening',1,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','ALLOW',0,8,'LEGACY_UNAVAILABLE',1)", (tenant_id, organization_id, location_id, warehouse_id, item_id))
+            movement_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO suppliers (tenant_id,organization_id,code,name,status,version) VALUES (%s,%s,'SUP','Supplier','ACTIVE',1)", (tenant_id, organization_id))
+            supplier_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO supplier_locations (tenant_id,organization_id,location_id,supplier_id,status) VALUES (%s,%s,%s,%s,'ACTIVE')", (tenant_id, organization_id, location_id, supplier_id))
+            cursor.execute("INSERT INTO supplier_offerings (tenant_id,organization_id,location_id,supplier_id,inventory_item_id,purchase_uom,status,version) VALUES (%s,%s,%s,%s,%s,'UNIT','ACTIVE',1)", (tenant_id, organization_id, location_id, supplier_id, item_id))
+            offering_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO goods_receipts (tenant_id,organization_id,location_id,warehouse_id,supplier_id,external_reference,status,version,created_by_actor_id) VALUES (%s,%s,%s,%s,%s,'DIRECT-BEFORE-B8','DRAFT',1,1)", (tenant_id, organization_id, location_id, warehouse_id, supplier_id))
+            receipt_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO goods_receipt_lines (tenant_id,organization_id,location_id,warehouse_id,supplier_id,goods_receipt_id,supplier_offering_id,inventory_item_id,line_number,received_quantity,accepted_quantity,rejected_quantity,source_uom,unit_cost,currency,evidence_status) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,1,1,0,'UNIT',2,'MXN','PENDING')", (tenant_id, organization_id, location_id, warehouse_id, supplier_id, receipt_id, offering_id, item_id))
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    try:
+        _run_alembic(database_name, 'head')
+    except subprocess.CalledProcessError as exc:
+        pytest.fail(exc.stderr)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0048_purchase_order_operations'
+            cursor.execute('SELECT purchase_order_id FROM goods_receipts WHERE id=%s', (receipt_id,))
+            assert cursor.fetchone()['purchase_order_id'] is None
+            cursor.execute('SELECT quantity FROM stock_movements WHERE id=%s', (movement_id,))
+            assert cursor.fetchone()['quantity'] == Decimal('8.000000')
+            cursor.execute('SELECT COUNT(*) AS count FROM purchase_orders')
+            assert cursor.fetchone()['count'] == 0
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0047_physical_count_full_scope')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT status FROM goods_receipts WHERE id=%s', (receipt_id,))
+            assert cursor.fetchone()['status'] == 'DRAFT'
+            cursor.execute('SELECT quantity FROM stock_movements WHERE id=%s', (movement_id,))
+            assert cursor.fetchone()['quantity'] == Decimal('8.000000')
+    finally:
+        connection.close()
+
+    try:
+        _run_alembic(database_name, 'head')
+    except subprocess.CalledProcessError as exc:
+        pytest.fail(exc.stderr)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("INSERT INTO purchase_orders (tenant_id,organization_id,location_id,warehouse_id,supplier_id,status,currency,version,created_by_actor_id) VALUES (%s,%s,%s,%s,%s,'DRAFT','MXN',1,1)", (tenant_id, organization_id, location_id, warehouse_id, supplier_id))
+            purchase_order_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO purchase_order_lines (tenant_id,organization_id,location_id,warehouse_id,supplier_id,purchase_order_id,supplier_offering_id,inventory_item_id,line_number,ordered_quantity,source_uom,conversion_factor,base_uom_evidence,normalized_ordered_quantity,agreed_unit_price,currency) VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,2,'UNIT',1,'UNIT',2,2,'MXN')", (tenant_id, organization_id, location_id, warehouse_id, supplier_id, purchase_order_id, offering_id, item_id))
+    finally:
+        connection.close()
+    with pytest.raises(subprocess.CalledProcessError):
+        _run_alembic_downgrade(database_name, '0047_physical_count_full_scope')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0048_purchase_order_operations'
+            cursor.execute('SELECT quantity FROM stock_movements WHERE id=%s', (movement_id,))
+            assert cursor.fetchone()['quantity'] == Decimal('8.000000')
     finally:
         connection.close()
 

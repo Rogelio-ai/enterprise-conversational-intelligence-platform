@@ -719,6 +719,90 @@ class SupplierOffering(TimestampMixin, Base):
     )
 
 
+class PurchaseOrder(TimestampMixin, Base):
+    __tablename__ = 'purchase_orders'
+    __table_args__ = (
+        CheckConstraint("status IN ('DRAFT','SUBMITTED','APPROVED','PARTIALLY_RECEIVED','RECEIVED','CLOSED','CANCELLED')", name='ck_purchase_orders_status'),
+        CheckConstraint('version >= 1', name='ck_purchase_orders_version'),
+        CheckConstraint("currency REGEXP '^[A-Z][A-Z][A-Z]$'", name='ck_purchase_orders_currency'),
+        CheckConstraint(
+            "(status='DRAFT' AND submitted_at IS NULL AND approved_at IS NULL AND terminated_at IS NULL) OR "
+            "(status='SUBMITTED' AND submitted_at IS NOT NULL AND submitted_by_actor_id IS NOT NULL AND approved_at IS NULL AND terminated_at IS NULL) OR "
+            "(status IN ('APPROVED','PARTIALLY_RECEIVED','RECEIVED') AND submitted_at IS NOT NULL AND submitted_by_actor_id IS NOT NULL AND approved_at IS NOT NULL AND approved_by_actor_id IS NOT NULL AND terminated_at IS NULL) OR "
+            "(status='CLOSED' AND submitted_at IS NOT NULL AND approved_at IS NOT NULL AND terminated_at IS NOT NULL AND terminated_by_actor_id IS NOT NULL) OR "
+            "(status='CANCELLED' AND terminated_at IS NOT NULL AND terminated_by_actor_id IS NOT NULL)",
+            name='ck_purchase_orders_lifecycle_evidence',
+        ),
+        UniqueConstraint('id', 'tenant_id', 'organization_id', 'location_id', 'supplier_id', 'warehouse_id', name='uq_purchase_orders_scope'),
+        ForeignKeyConstraint(['supplier_id', 'tenant_id', 'organization_id'], ['suppliers.id', 'suppliers.tenant_id', 'suppliers.organization_id'], name='fk_purchase_orders_supplier_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['supplier_id', 'tenant_id', 'organization_id', 'location_id'], ['supplier_locations.supplier_id', 'supplier_locations.tenant_id', 'supplier_locations.organization_id', 'supplier_locations.location_id'], name='fk_purchase_orders_availability_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['warehouse_id', 'tenant_id', 'organization_id', 'location_id'], ['warehouses.id', 'warehouses.tenant_id', 'warehouses.organization_id', 'warehouses.location_id'], name='fk_purchase_orders_warehouse_scope', ondelete='RESTRICT'),
+        Index('ix_purchase_orders_location_status', 'tenant_id', 'location_id', 'status', 'id'), OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    supplier_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(24), nullable=False, default='DRAFT', server_default=text("'DRAFT'"))
+    currency: Mapped[str] = mapped_column(String(3, collation='ascii_bin'), nullable=False)
+    expected_delivery_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    external_reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    notes: Mapped[str | None] = mapped_column(String(1000), nullable=True)
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1, server_default=text('1'))
+    created_by_actor_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    submitted_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    approved_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    terminated_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    terminated_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    submitted_command_key: Mapped[str | None] = mapped_column(String(128, collation='ascii_bin'), nullable=True)
+    approved_command_key: Mapped[str | None] = mapped_column(String(128, collation='ascii_bin'), nullable=True)
+    terminated_command_key: Mapped[str | None] = mapped_column(String(128, collation='ascii_bin'), nullable=True)
+    terminated_action: Mapped[str | None] = mapped_column(String(16, collation='ascii_bin'), nullable=True)
+    last_command_key: Mapped[str | None] = mapped_column(String(128, collation='ascii_bin'), nullable=True)
+    last_command_action: Mapped[str | None] = mapped_column(String(16, collation='ascii_bin'), nullable=True)
+
+
+class PurchaseOrderLine(Base):
+    __tablename__ = 'purchase_order_lines'
+    __table_args__ = (
+        ForeignKeyConstraint(['purchase_order_id', 'tenant_id', 'organization_id', 'location_id', 'supplier_id', 'warehouse_id'], ['purchase_orders.id', 'purchase_orders.tenant_id', 'purchase_orders.organization_id', 'purchase_orders.location_id', 'purchase_orders.supplier_id', 'purchase_orders.warehouse_id'], name='fk_purchase_order_lines_order_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['supplier_offering_id', 'tenant_id', 'organization_id', 'location_id', 'supplier_id', 'inventory_item_id'], ['supplier_offerings.id', 'supplier_offerings.tenant_id', 'supplier_offerings.organization_id', 'supplier_offerings.location_id', 'supplier_offerings.supplier_id', 'supplier_offerings.inventory_item_id'], name='fk_purchase_order_lines_offering_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['conversion_revision_id', 'tenant_id', 'organization_id', 'location_id', 'inventory_item_id'], ['item_uom_conversions.id', 'item_uom_conversions.tenant_id', 'item_uom_conversions.organization_id', 'item_uom_conversions.location_id', 'item_uom_conversions.inventory_item_id'], name='fk_purchase_order_lines_conversion_scope', ondelete='RESTRICT'),
+        UniqueConstraint('id', 'purchase_order_id', name='uq_purchase_order_lines_order'),
+        UniqueConstraint('id', 'tenant_id', 'organization_id', 'location_id', 'supplier_id', 'warehouse_id', 'supplier_offering_id', 'inventory_item_id', name='uq_purchase_order_lines_receipt_scope'),
+        UniqueConstraint('purchase_order_id', 'supplier_offering_id', name='uq_purchase_order_lines_offering'),
+        UniqueConstraint('purchase_order_id', 'line_number', name='uq_purchase_order_lines_number'),
+        CheckConstraint('ordered_quantity > 0 AND conversion_factor > 0 AND normalized_ordered_quantity > 0 AND agreed_unit_price >= 0', name='ck_purchase_order_lines_values'),
+        CheckConstraint('line_number >= 1', name='ck_purchase_order_lines_number'),
+        CheckConstraint("currency REGEXP '^[A-Z][A-Z][A-Z]$'", name='ck_purchase_order_lines_currency'),
+        CheckConstraint("source_uom REGEXP '^[A-Z][A-Z0-9_]{0,31}$'", name='ck_purchase_order_lines_source_uom'),
+        OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    supplier_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    purchase_order_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    supplier_offering_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    ordered_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    source_uom: Mapped[str] = mapped_column(String(32, collation='ascii_bin'), nullable=False)
+    conversion_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(25, 12), nullable=False)
+    base_uom_evidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    normalized_ordered_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    agreed_unit_price: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3, collation='ascii_bin'), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
+
+
 class GoodsReceipt(TimestampMixin, Base):
     __tablename__ = 'goods_receipts'
     __table_args__ = (
@@ -742,6 +826,14 @@ class GoodsReceipt(TimestampMixin, Base):
                 'warehouses.organization_id', 'warehouses.location_id',
             ],
             name='fk_goods_receipts_warehouse_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['purchase_order_id', 'tenant_id', 'organization_id', 'location_id',
+             'supplier_id', 'warehouse_id'],
+            ['purchase_orders.id', 'purchase_orders.tenant_id',
+             'purchase_orders.organization_id', 'purchase_orders.location_id',
+             'purchase_orders.supplier_id', 'purchase_orders.warehouse_id'],
+            name='fk_goods_receipts_purchase_order_scope', ondelete='RESTRICT',
         ),
         UniqueConstraint(
             'id', 'tenant_id', 'organization_id', 'location_id', 'supplier_id',
@@ -781,6 +873,7 @@ class GoodsReceipt(TimestampMixin, Base):
     location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     supplier_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    purchase_order_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     external_reference: Mapped[str | None] = mapped_column(
         String(200, collation='utf8mb4_bin'), nullable=True
     )
@@ -841,6 +934,16 @@ class GoodsReceiptLine(Base):
             ],
             name='fk_goods_receipt_lines_conversion_scope', ondelete='RESTRICT',
         ),
+        ForeignKeyConstraint(
+            ['purchase_order_line_id', 'tenant_id', 'organization_id', 'location_id',
+             'supplier_id', 'warehouse_id', 'supplier_offering_id', 'inventory_item_id'],
+            ['purchase_order_lines.id', 'purchase_order_lines.tenant_id',
+             'purchase_order_lines.organization_id', 'purchase_order_lines.location_id',
+             'purchase_order_lines.supplier_id', 'purchase_order_lines.warehouse_id',
+             'purchase_order_lines.supplier_offering_id',
+             'purchase_order_lines.inventory_item_id'],
+            name='fk_goods_receipt_lines_purchase_order_scope', ondelete='RESTRICT',
+        ),
         UniqueConstraint(
             'id', 'tenant_id', 'organization_id', 'location_id',
             'goods_receipt_id', 'inventory_item_id', name='uq_goods_receipt_lines_scope',
@@ -894,6 +997,7 @@ class GoodsReceiptLine(Base):
     goods_receipt_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     supplier_offering_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    purchase_order_line_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     line_number: Mapped[int] = mapped_column(Integer, nullable=False)
     received_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
     accepted_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)

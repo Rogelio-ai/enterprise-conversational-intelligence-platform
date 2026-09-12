@@ -20,6 +20,8 @@ from app.models import (
     Supplier,
     SupplierLocation,
     SupplierOffering,
+    PurchaseOrder,
+    PurchaseOrderLine,
     Warehouse,
 )
 from app.restaurant.inventory import errors
@@ -385,6 +387,7 @@ def _line_projection(value: GoodsReceiptLine) -> dict:
         'id': value.id, 'line_number': value.line_number,
         'supplier_offering_id': value.supplier_offering_id,
         'inventory_item_id': value.inventory_item_id,
+        'purchase_order_line_id': value.purchase_order_line_id,
         'received_quantity': value.received_quantity,
         'accepted_quantity': value.accepted_quantity,
         'rejected_quantity': value.rejected_quantity,
@@ -443,6 +446,7 @@ async def _receipt_projection(db: AsyncSession, value: GoodsReceipt) -> dict:
         'id': value.id, 'tenant_id': value.tenant_id,
         'organization_id': value.organization_id, 'location_id': value.location_id,
         'warehouse_id': value.warehouse_id, 'supplier_id': value.supplier_id,
+        'purchase_order_id': value.purchase_order_id,
         'external_reference': value.external_reference, 'status': value.status,
         'version': value.version, 'created_by_actor_id': value.created_by_actor_id,
         'accepted_at': value.accepted_at,
@@ -457,7 +461,7 @@ async def _receipt_projection(db: AsyncSession, value: GoodsReceipt) -> dict:
 async def create_receipt(
     db: AsyncSession, *, context: ExecutionContext, supplier_id: int,
     location_id: int, warehouse_id: int, external_reference: str | None,
-    lines: tuple[dict, ...],
+    lines: tuple[dict, ...], purchase_order_id: int | None = None,
 ) -> dict:
     actor_scope = _actor_scope(context)
     del actor_scope
@@ -479,10 +483,29 @@ async def create_receipt(
         raise errors.InventoryScopeNotFoundError()
     if supplier.status != 'ACTIVE' or warehouse.status != 'ACTIVE':
         raise errors.InvalidGoodsReceiptError('Supplier and Warehouse must be active')
+    purchase_order = None
+    if purchase_order_id is not None:
+        purchase_order = await db.scalar(select(PurchaseOrder).where(
+            PurchaseOrder.id == purchase_order_id,
+            PurchaseOrder.tenant_id == context.tenant_id,
+            PurchaseOrder.organization_id == supplier.organization_id,
+            PurchaseOrder.location_id == location_id,
+            PurchaseOrder.supplier_id == supplier.id,
+            PurchaseOrder.warehouse_id == warehouse.id,
+        ))
+        if purchase_order is None:
+            raise errors.InventoryScopeNotFoundError()
+        if purchase_order.status not in ('APPROVED', 'PARTIALLY_RECEIVED'):
+            raise errors.GoodsReceiptConflictError('Purchase order is not receivable')
+    elif any(data.get('purchase_order_line_id') is not None for data in lines):
+        raise errors.InvalidGoodsReceiptError(
+            'A direct receipt cannot allocate a purchase-order line'
+        )
     receipt = GoodsReceipt(
         tenant_id=context.tenant_id, organization_id=supplier.organization_id,
         location_id=location_id, warehouse_id=warehouse.id,
         supplier_id=supplier.id, external_reference=_text(external_reference, 200),
+        purchase_order_id=purchase_order_id,
         status='DRAFT', created_by_actor_id=context.principal_id,
     )
     db.add(receipt)
@@ -506,6 +529,23 @@ async def create_receipt(
                 or offering.status != 'ACTIVE' or item is None or item.status != 'ACTIVE'
             ):
                 raise errors.InvalidSupplierOfferingError('Offering is not active in receipt scope')
+            purchase_order_line_id = data.get('purchase_order_line_id')
+            if purchase_order is not None:
+                purchase_order_line = await db.scalar(select(PurchaseOrderLine).where(
+                    PurchaseOrderLine.id == purchase_order_line_id,
+                    PurchaseOrderLine.purchase_order_id == purchase_order.id,
+                    PurchaseOrderLine.tenant_id == context.tenant_id,
+                    PurchaseOrderLine.organization_id == supplier.organization_id,
+                    PurchaseOrderLine.location_id == location_id,
+                    PurchaseOrderLine.warehouse_id == warehouse.id,
+                    PurchaseOrderLine.supplier_id == supplier.id,
+                    PurchaseOrderLine.supplier_offering_id == offering.id,
+                    PurchaseOrderLine.inventory_item_id == item.id,
+                ))
+                if purchase_order_line is None:
+                    raise errors.InvalidGoodsReceiptError(
+                        'Receipt line does not match purchase order'
+                    )
             received = _quantity(data['received_quantity'], positive=True)
             accepted = _quantity(data['accepted_quantity'])
             rejected = _quantity(data['rejected_quantity'])
@@ -522,6 +562,7 @@ async def create_receipt(
                 supplier_id=supplier.id, goods_receipt_id=receipt.id,
                 supplier_offering_id=offering.id, inventory_item_id=item.id,
                 line_number=index, received_quantity=received,
+                purchase_order_line_id=purchase_order_line_id,
                 accepted_quantity=accepted, rejected_quantity=rejected,
                 source_uom=offering.purchase_uom,
                 unit_cost=_cost(data['unit_cost']), currency=currency,
@@ -602,6 +643,35 @@ async def accept_receipt(
     ).order_by(GoodsReceiptLine.line_number).with_for_update())).all())
     if not lines:
         raise errors.InvalidGoodsReceiptError('Receipt has no lines')
+    purchase_order = None
+    if receipt.purchase_order_id is not None:
+        purchase_order = await db.scalar(select(PurchaseOrder).where(
+            PurchaseOrder.id == receipt.purchase_order_id,
+            PurchaseOrder.tenant_id == context.tenant_id,
+            PurchaseOrder.location_id == receipt.location_id,
+            PurchaseOrder.supplier_id == receipt.supplier_id,
+            PurchaseOrder.warehouse_id == receipt.warehouse_id,
+        ).with_for_update())
+        if purchase_order is None:
+            raise errors.InventoryScopeNotFoundError()
+        if purchase_order.status not in ('APPROVED', 'PARTIALLY_RECEIVED'):
+            raise errors.GoodsReceiptConflictError('Purchase order is not receivable')
+        for line in lines:
+            po_line = await db.scalar(select(PurchaseOrderLine).where(
+                PurchaseOrderLine.id == line.purchase_order_line_id,
+                PurchaseOrderLine.purchase_order_id == purchase_order.id,
+                PurchaseOrderLine.supplier_offering_id == line.supplier_offering_id,
+            ).with_for_update())
+            if (
+                po_line is None or po_line.source_uom != line.source_uom
+                or po_line.currency != line.currency
+            ):
+                raise errors.InvalidGoodsReceiptError('Receipt line does not match purchase order')
+            prior = await db.scalar(select(func.coalesce(func.sum(GoodsReceiptLine.accepted_quantity), Decimal('0'))).join(
+                GoodsReceipt, GoodsReceipt.id == GoodsReceiptLine.goods_receipt_id,
+            ).where(GoodsReceipt.status == 'ACCEPTED', GoodsReceiptLine.purchase_order_line_id == po_line.id))
+            if prior + line.accepted_quantity > po_line.ordered_quantity:
+                raise errors.GoodsReceiptConflictError('Accepted quantity exceeds remaining purchase order obligation')
     fingerprint = _fingerprint({
         'schema_version': 1, 'receipt_id': receipt.id,
         'receipt_version': receipt.version,
@@ -713,6 +783,17 @@ async def accept_receipt(
         receipt.acceptance_actor_scope = actor_scope
         receipt.acceptance_idempotency_key = idempotency_key
         receipt.acceptance_fingerprint = fingerprint
+        if purchase_order is not None:
+            await db.flush()
+            po_lines = (await db.scalars(select(PurchaseOrderLine).where(PurchaseOrderLine.purchase_order_id == purchase_order.id))).all()
+            complete = True
+            any_received = False
+            for po_line in po_lines:
+                accepted = await db.scalar(select(func.coalesce(func.sum(GoodsReceiptLine.accepted_quantity), Decimal('0'))).join(GoodsReceipt, GoodsReceipt.id == GoodsReceiptLine.goods_receipt_id).where(GoodsReceipt.status == 'ACCEPTED', GoodsReceiptLine.purchase_order_line_id == po_line.id))
+                any_received = any_received or accepted > 0
+                complete = complete and accepted >= po_line.ordered_quantity
+            purchase_order.status = 'RECEIVED' if complete else 'PARTIALLY_RECEIVED' if any_received else 'APPROVED'
+            purchase_order.version += 1
         await db.commit()
         await db.refresh(receipt)
         return await _receipt_projection(db, receipt), False
