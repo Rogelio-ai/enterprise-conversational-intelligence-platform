@@ -99,3 +99,39 @@ class OrderConsumptionNotFoundError(InventoryError):
 
 class OrderConsumptionConflictError(InventoryError):
     code = 'ORDER_CONSUMPTION_CONFLICT'
+
+
+class SupplierNotFoundError(InventoryError):
+    code = 'SUPPLIER_NOT_FOUND'
+
+
+class SupplierConflictError(InventoryError):
+    code = 'SUPPLIER_CONFLICT'
+
+
+class InvalidSupplierError(InventoryError):
+    code = 'INVALID_SUPPLIER'
+
+
+class SupplierOfferingNotFoundError(InventoryError):
+    code = 'SUPPLIER_OFFERING_NOT_FOUND'
+
+
+class SupplierOfferingConflictError(InventoryError):
+    code = 'SUPPLIER_OFFERING_CONFLICT'
+
+
+class InvalidSupplierOfferingError(InventoryError):
+    code = 'INVALID_SUPPLIER_OFFERING'
+
+
+class GoodsReceiptNotFoundError(InventoryError):
+    code = 'GOODS_RECEIPT_NOT_FOUND'
+
+
+class GoodsReceiptConflictError(InventoryError):
+    code = 'GOODS_RECEIPT_CONFLICT'
+
+
+class InvalidGoodsReceiptError(InventoryError):
+    code = 'INVALID_GOODS_RECEIPT'

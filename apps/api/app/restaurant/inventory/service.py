@@ -997,6 +997,8 @@ def _movement_projection(value: StockMovement, base_uom: str) -> StockMovementPr
         cost_currency_evidence=value.cost_currency_evidence,
         extended_standard_cost=value.extended_standard_cost,
         evidence_status=value.evidence_status,
+        goods_receipt_id=value.goods_receipt_id,
+        goods_receipt_line_id=value.goods_receipt_line_id,
     )
 
 

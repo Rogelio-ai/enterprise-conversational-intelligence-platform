@@ -289,6 +289,11 @@ def sql_connection(integration_settings: Settings):
             try:
                 for table in (
                     'stock_movements',
+                    'goods_receipt_lines',
+                    'goods_receipts',
+                    'supplier_offerings',
+                    'supplier_locations',
+                    'suppliers',
                     'product_consumption_version_components',
                     'product_consumption_versions',
                     'item_uom_conversions',

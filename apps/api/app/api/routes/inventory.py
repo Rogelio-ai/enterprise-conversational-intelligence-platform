@@ -182,6 +182,8 @@ class StockMovementResponse(BaseModel):
     cost_currency_evidence: str | None
     extended_standard_cost: Decimal | None
     evidence_status: str
+    goods_receipt_id: int | None
+    goods_receipt_line_id: int | None
 
 
 class StockMovementListResponse(BaseModel):

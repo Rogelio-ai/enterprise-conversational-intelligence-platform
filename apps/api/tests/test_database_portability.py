@@ -2136,7 +2136,7 @@ def test_0042_fresh_install_reaches_uom_cost_evidence_contract(
     try:
         with connection.cursor() as cursor:
             cursor.execute('SELECT version_num FROM alembic_version')
-            assert cursor.fetchone()['version_num'] == '0043_immutable_recipe_versions'
+            assert cursor.fetchone()['version_num'] == '0044_supplier_direct_receiving'
             cursor.execute(
                 'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION '
                 'FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() '
@@ -2202,6 +2202,30 @@ def test_0042_fresh_install_reaches_uom_cost_evidence_contract(
             assert {row['COLUMN_NAME'] for row in cursor.fetchall()} == {
                 'consumption_version_id', 'consumption_version_component_id',
             }
+            cursor.execute(
+                'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION '
+                'FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() '
+                "AND TABLE_NAME IN ('suppliers','supplier_locations',"
+                "'supplier_offerings','goods_receipts','goods_receipt_lines')"
+            )
+            receiving_tables = {
+                row['TABLE_NAME']: (row['ENGINE'], row['TABLE_COLLATION'])
+                for row in cursor.fetchall()
+            }
+            assert receiving_tables == {
+                name: ('InnoDB', 'utf8mb4_unicode_ci') for name in (
+                    'suppliers', 'supplier_locations', 'supplier_offerings',
+                    'goods_receipts', 'goods_receipt_lines',
+                )
+            }
+            cursor.execute(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='stock_movements' "
+                "AND COLUMN_NAME IN ('goods_receipt_id','goods_receipt_line_id')"
+            )
+            assert {row['COLUMN_NAME'] for row in cursor.fetchall()} == {
+                'goods_receipt_id', 'goods_receipt_line_id',
+            }
     finally:
         connection.close()
 
@@ -2260,6 +2284,7 @@ def test_0043_backfills_recipe_v1_and_downgrade_reupgrade_preserves_legacy(
             component_id = int(cursor.lastrowid)
     finally:
         connection.close()
+
 
     _run_alembic(database_name, 'head')
     _run_alembic(database_name, 'head')
@@ -2328,6 +2353,191 @@ def test_0043_backfills_recipe_v1_and_downgrade_reupgrade_preserves_legacy(
             )
             assert cursor.fetchone() == {
                 'id': component_id, 'quantity': Decimal('12.500000'),
+            }
+    finally:
+        connection.close()
+
+
+def test_0044_upgrade_preserves_stock_and_downgrade_reupgrade_is_safe(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0043_immutable_recipe_versions')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) "
+                "VALUES ('Receiving','receiving-0044','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) "
+                "VALUES (%s,'ORG','Organization','ACTIVE')", (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO locations '
+                '(tenant_id,organization_id,code,name,timezone,status) '
+                "VALUES (%s,%s,'LOC','Location','UTC','ACTIVE')",
+                (tenant_id, organization_id),
+            )
+            location_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO warehouses '
+                '(tenant_id,organization_id,location_id,code,name,status,'
+                'default_slot,negative_stock_policy,version) '
+                "VALUES (%s,%s,%s,'DEFAULT','Default','ACTIVE',1,'ALLOW',1)",
+                (tenant_id, organization_id, location_id),
+            )
+            warehouse_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO inventory_items '
+                '(tenant_id,organization_id,location_id,code,name,base_uom,'
+                'standard_unit_cost,currency,status,version) '
+                "VALUES (%s,%s,%s,'ITEM','Item','UNIT',2,'MXN','ACTIVE',1)",
+                (tenant_id, organization_id, location_id),
+            )
+            item_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO stock_movements '
+                '(tenant_id,organization_id,location_id,warehouse_id,inventory_item_id,'
+                'movement_type,quantity,reason,reference,recorded_at,actor_type,actor_id,'
+                'idempotency_actor_scope,idempotency_key,request_schema_version,'
+                'request_fingerprint,negative_stock_policy,negative_stock_warning,'
+                'evidence_status,opening_balance_slot) '
+                "VALUES (%s,%s,%s,%s,%s,'OPENING_BALANCE',9.500000,NULL,'pre-b4',"
+                "CURRENT_TIMESTAMP,'EMPLOYEE',1,'EMPLOYEE:1','pre-b4',1,"
+                "'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',"
+                "'ALLOW',0,'LEGACY_UNAVAILABLE',1)",
+                (tenant_id, organization_id, location_id, warehouse_id, item_id),
+            )
+            movement_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0044_supplier_direct_receiving'
+            cursor.execute(
+                'SELECT quantity,goods_receipt_id,goods_receipt_line_id '
+                'FROM stock_movements WHERE id=%s', (movement_id,),
+            )
+            assert cursor.fetchone() == {
+                'quantity': Decimal('9.500000'),
+                'goods_receipt_id': None, 'goods_receipt_line_id': None,
+            }
+            cursor.execute('SELECT COUNT(*) AS count FROM suppliers')
+            assert cursor.fetchone()['count'] == 0
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0043_immutable_recipe_versions')
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT quantity,goods_receipt_id,goods_receipt_line_id '
+                'FROM stock_movements WHERE id=%s', (movement_id,),
+            )
+            assert cursor.fetchone() == {
+                'quantity': Decimal('9.500000'),
+                'goods_receipt_id': None, 'goods_receipt_line_id': None,
+            }
+
+            cursor.execute(
+                'INSERT INTO suppliers '
+                '(tenant_id,organization_id,code,name,status,version) '
+                "VALUES (%s,%s,'SUPPLIER','Supplier','ACTIVE',1)",
+                (tenant_id, organization_id),
+            )
+            supplier_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO supplier_locations '
+                '(tenant_id,organization_id,location_id,supplier_id,status) '
+                "VALUES (%s,%s,%s,%s,'ACTIVE')",
+                (tenant_id, organization_id, location_id, supplier_id),
+            )
+            cursor.execute(
+                'INSERT INTO supplier_offerings '
+                '(tenant_id,organization_id,location_id,supplier_id,'
+                'inventory_item_id,purchase_uom,status,version) '
+                "VALUES (%s,%s,%s,%s,%s,'UNIT','ACTIVE',1)",
+                (tenant_id, organization_id, location_id, supplier_id, item_id),
+            )
+            offering_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO goods_receipts '
+                '(tenant_id,organization_id,location_id,warehouse_id,supplier_id,'
+                'status,version,created_by_actor_id,accepted_at,accepted_by_actor_id,'
+                'acceptance_actor_scope,acceptance_idempotency_key,'
+                'acceptance_fingerprint) '
+                "VALUES (%s,%s,%s,%s,%s,'ACCEPTED',2,1,CURRENT_TIMESTAMP,1,"
+                "'EMPLOYEE:1','accepted-history',"
+                "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa')",
+                (tenant_id, organization_id, location_id, warehouse_id, supplier_id),
+            )
+            receipt_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO goods_receipt_lines '
+                '(tenant_id,organization_id,location_id,warehouse_id,supplier_id,'
+                'goods_receipt_id,supplier_offering_id,inventory_item_id,line_number,'
+                'received_quantity,accepted_quantity,rejected_quantity,source_uom,'
+                'unit_cost,currency,conversion_factor,base_uom_evidence,'
+                'normalized_quantity,extended_cost,evidence_status) '
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s,1,5,5,0,'UNIT',3,'MXN',1,"
+                "'UNIT',5,15,'RESOLVED')",
+                (
+                    tenant_id, organization_id, location_id, warehouse_id,
+                    supplier_id, receipt_id, offering_id, item_id,
+                ),
+            )
+            receipt_line_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO stock_movements '
+                '(tenant_id,organization_id,location_id,warehouse_id,inventory_item_id,'
+                'movement_type,quantity,reason,reference,recorded_at,actor_type,actor_id,'
+                'idempotency_actor_scope,idempotency_key,request_schema_version,'
+                'request_fingerprint,negative_stock_policy,negative_stock_warning,'
+                'resulting_stock_quantity,source_quantity,source_uom,conversion_factor,'
+                'base_uom_evidence,standard_unit_cost_evidence,cost_currency_evidence,'
+                'extended_standard_cost,evidence_status,goods_receipt_id,'
+                'goods_receipt_line_id) '
+                "VALUES (%s,%s,%s,%s,%s,'GOODS_RECEIPT',5,'Receipt',NULL,"
+                "CURRENT_TIMESTAMP,'EMPLOYEE',1,'GOODS_RECEIPT:1','LINE:1',1,"
+                "'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa',"
+                "'ALLOW',0,14.5,5,'UNIT',1,'UNIT',NULL,NULL,NULL,"
+                "'COST_NON_DERIVABLE',%s,%s)",
+                (
+                    tenant_id, organization_id, location_id, warehouse_id,
+                    item_id, receipt_id, receipt_line_id,
+                ),
+            )
+            accepted_movement_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    with pytest.raises(subprocess.CalledProcessError):
+        _run_alembic_downgrade(database_name, '0043_immutable_recipe_versions')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0044_supplier_direct_receiving'
+            cursor.execute(
+                'SELECT movement_type,goods_receipt_id,goods_receipt_line_id '
+                'FROM stock_movements WHERE id=%s', (accepted_movement_id,),
+            )
+            assert cursor.fetchone() == {
+                'movement_type': 'GOODS_RECEIPT',
+                'goods_receipt_id': receipt_id,
+                'goods_receipt_line_id': receipt_line_id,
             }
     finally:
         connection.close()

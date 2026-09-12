@@ -29,6 +29,8 @@ from app.models.identity import (
 )
 from app.models.intelligence import IntelligenceDerivation, RestaurantMessageIntent
 from app.models.inventory import (
+    GoodsReceipt,
+    GoodsReceiptLine,
     InventoryCostRevision,
     InventoryItem,
     ItemUomConversion,
@@ -38,6 +40,9 @@ from app.models.inventory import (
     ProductConsumptionVersionComponent,
     RestaurantOrderConsumption,
     StockMovement,
+    Supplier,
+    SupplierLocation,
+    SupplierOffering,
     Warehouse,
 )
 from app.models.menu import (
@@ -135,6 +140,8 @@ __all__ = [
     'Location',
     'IntelligenceDerivation',
     'InventoryItem',
+    'GoodsReceipt',
+    'GoodsReceiptLine',
     'InventoryCostRevision',
     'ItemUomConversion',
     'IssuerFiscalProfile',
@@ -210,5 +217,8 @@ __all__ = [
     'Warehouse',
     'TenantMembership',
     'StockMovement',
+    'Supplier',
+    'SupplierLocation',
+    'SupplierOffering',
     'User',
 ]
