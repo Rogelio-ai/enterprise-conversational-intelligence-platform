@@ -1,5 +1,5 @@
 export interface Workspace {
-  key: 'host' | 'waiter' | 'kitchen' | 'cashier' | 'manager';
+  key: 'host' | 'waiter' | 'kitchen' | 'cashier' | 'manager' | 'inventory';
   label: string;
   description: string;
   path: string;
@@ -34,6 +34,13 @@ export const workspaces: Workspace[] = [
     description: 'Cobro y cierre',
     path: '/cashier',
     permissions: ['resource.read', 'cash_management.read', 'restaurant_check.read', 'restaurant_payment.read'],
+  },
+  {
+    key: 'inventory',
+    label: 'Inventario',
+    description: 'Existencias, entradas, pérdidas y conteos',
+    path: '/inventory',
+    permissions: ['inventory.read'],
   },
   {
     key: 'manager',

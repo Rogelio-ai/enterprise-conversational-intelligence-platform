@@ -36,6 +36,13 @@ import type {
   PreparationTransitionResult,
   PreparationWork,
   Tenant,
+  GoodsReceipt,
+  InventoryIntelligence,
+  InventoryLoss,
+  InventoryOffering,
+  InventoryReconciliation,
+  InventorySupplier,
+  PhysicalCount,
 } from './contracts';
 import { readCredential } from '../session/storage';
 
@@ -115,6 +122,50 @@ export const staffApi = {
   },
   organization(organizationId: number): Promise<Organization> {
     return request(`/organizations/${organizationId}`);
+  },
+  inventoryIntelligence(locationId: number, warehouseId?: number): Promise<InventoryIntelligence> {
+    const query = new URLSearchParams({ location_id: String(locationId), limit: '100', offset: '0' });
+    if (warehouseId) query.set('warehouse_id', String(warehouseId));
+    return request(`/inventory/intelligence?${query.toString()}`);
+  },
+  inventorySuppliers(locationId: number): Promise<{ items: InventorySupplier[] }> {
+    return request(`/inventory/suppliers?location_id=${locationId}`);
+  },
+  inventoryOfferings(locationId: number, supplierId: number): Promise<{ items: InventoryOffering[] }> {
+    return request(`/inventory/suppliers/${supplierId}/offerings?location_id=${locationId}`);
+  },
+  createGoodsReceipt(payload: object): Promise<GoodsReceipt> {
+    return request('/inventory/goods-receipts', { method: 'POST', body: JSON.stringify(payload) });
+  },
+  acceptGoodsReceipt(receiptId: number, expectedVersion: number, key: string): Promise<GoodsReceipt> {
+    return request(`/inventory/goods-receipts/${receiptId}:accept`, { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ expected_version: expectedVersion }) });
+  },
+  inventoryLosses(locationId: number): Promise<{ items: InventoryLoss[] }> {
+    return request(`/inventory/losses?location_id=${locationId}`);
+  },
+  createInventoryLoss(payload: object): Promise<InventoryLoss> {
+    return request('/inventory/losses', { method: 'POST', body: JSON.stringify(payload) });
+  },
+  actOnInventoryLoss(lossId: number, action: 'post' | 'approve', expectedVersion: number, key: string): Promise<InventoryLoss> {
+    return request(`/inventory/losses/${lossId}:${action}`, { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ expected_version: expectedVersion }) });
+  },
+  physicalCounts(locationId: number): Promise<{ items: PhysicalCount[] }> {
+    return request(`/inventory/physical-counts?location_id=${locationId}`);
+  },
+  createPhysicalCount(payload: object): Promise<PhysicalCount> {
+    return request('/inventory/physical-counts', { method: 'POST', body: JSON.stringify(payload) });
+  },
+  putPhysicalCountLine(countId: number, itemId: number, payload: object): Promise<PhysicalCount> {
+    return request(`/inventory/physical-counts/${countId}/lines/${itemId}`, { method: 'PUT', body: JSON.stringify(payload) });
+  },
+  transitionPhysicalCount(countId: number, action: 'submit' | 'approve' | 'post', expectedVersion: number, key?: string): Promise<PhysicalCount> {
+    return request(`/inventory/physical-counts/${countId}:${action}`, { method: 'POST', headers: key ? { 'Idempotency-Key': key } : undefined, body: JSON.stringify({ expected_version: expectedVersion }) });
+  },
+  createInventoryReconciliation(lineId: number, periodStart: string): Promise<InventoryReconciliation> {
+    return request('/inventory/reconciliations', { method: 'POST', body: JSON.stringify({ physical_count_line_id: lineId, period_start: periodStart }) });
+  },
+  closeInventoryReconciliation(id: number, expectedVersion: number): Promise<InventoryReconciliation> {
+    return request(`/inventory/reconciliations/${id}:close`, { method: 'POST', body: JSON.stringify({ expected_version: expectedVersion }) });
   },
   tables(locationId: number): Promise<ResourceListResponse> {
     const query = new URLSearchParams({

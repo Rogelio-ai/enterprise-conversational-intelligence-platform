@@ -11,6 +11,7 @@ import { KitchenPage } from '../pages/KitchenPage';
 import { WaiterPage } from '../pages/WaiterPage';
 import { CashierPage } from '../pages/CashierPage';
 import { ManagerPage } from '../pages/ManagerPage';
+import { InventoryPage } from '../pages/InventoryPage';
 import { WorkspacePlaceholder } from '../pages/WorkspacePlaceholder';
 import { useAuth } from '../session/AuthContext';
 
@@ -57,11 +58,13 @@ export function AppRoutes() {
                 : workspace.key === 'waiter' ? <WaiterPage />
                   : workspace.key === 'kitchen' ? <KitchenPage />
                     : workspace.key === 'cashier' ? <CashierPage />
-                      : workspace.key === 'manager' ? <ManagerPage /> : undefined}
+                      : workspace.key === 'manager' ? <ManagerPage />
+                        : workspace.key === 'inventory' ? <InventoryPage /> : undefined}
             </WorkspaceBoundary>
           </ProtectedApp>
         } />
       ))}
+      <Route path="/inventory/:view" element={<ProtectedApp><WorkspaceBoundary workspace={workspaces.find((item) => item.key === 'inventory')!}><InventoryPage /></WorkspaceBoundary></ProtectedApp>} />
       <Route path="*" element={<Navigate to="/" replace />} />
     </Routes>
   );

@@ -23,6 +23,54 @@ export interface StaffIdentity {
   permissions: string[];
 }
 
+export interface InventoryWarehouse { id: number; code: string; name: string; negative_stock_policy: 'ALLOW' | 'WARN' | 'BLOCK'; is_default: boolean }
+export interface PurchaseCostProjection {
+  evidence_status: string; last_purchase_cost: string | null; recent_weighted_purchase_cost: string | null;
+  currency: string | null; selected_window_days: number | null; accepted_receipt_events: number;
+  last_vs_standard_absolute: string | null; last_vs_standard_percentage: string | null;
+  weighted_vs_standard_absolute: string | null; weighted_vs_standard_percentage: string | null; source: string;
+}
+export interface InventoryStockRow {
+  inventory_item_id: number; code: string; name: string; warehouse_id: number; warehouse_name: string;
+  base_uom: string; quantity: string; negative_stock_policy: string; attention: string[];
+  last_material_activity_at: string | null; standard_unit_cost: string | null; cost_currency: string | null;
+  inventory_value_at_standard_cost: string | null; purchase_cost: PurchaseCostProjection | null;
+  stock_source: string; valuation_source: string | null;
+}
+export interface InventoryActivity {
+  id: number; warehouse_id: number; inventory_item_id?: number | null; label: string; status: string;
+  occurred_at: string; quantity?: string | null; value?: string | null; currency?: string | null;
+  evidence_status?: string | null; source: string;
+}
+export interface InventoryReconciliation {
+  id: number; warehouse_id: number; inventory_item_id: number; physical_count_id: number; status: 'OPEN' | 'CLOSED'; version: number;
+  period_start: string; period_end: string; opening_quantity: string | null; receipts: string | null;
+  theoretical_consumption: string | null; registered_losses: string | null; other_adjustments: string | null;
+  physical_count: string | null; count_adjustment: string | null; closing_quantity: string | null;
+  unexplained_variance: string | null; variance_percentage: string | null; variance_value: string | null;
+  currency: string | null; evidence_status: string | null; source: string;
+}
+export interface InventoryIntelligence {
+  location_id: number; generated_at: string; cost_visible: boolean; active_warehouse_count: number;
+  active_inventory_item_count: number; stock_position_count: number; negative_stock_count: number;
+  counts_requiring_action: number; reconciliations_requiring_action: number; warehouses: InventoryWarehouse[];
+  stock: InventoryStockRow[]; recent_receipts: InventoryActivity[]; recent_losses: InventoryActivity[];
+  recent_counts: InventoryActivity[]; reconciliations: InventoryReconciliation[]; sources: Record<string, string>;
+  limit: number; offset: number;
+}
+export interface InventorySupplier { id: number; code: string; name: string; status: string; location_ids: number[] }
+export interface InventoryOffering { id: number; supplier_id: number; location_id: number; inventory_item_id: number; purchase_uom: string; status: string }
+export interface GoodsReceiptLine { id: number; inventory_item_id: number; accepted_quantity: string; rejected_quantity: string; received_quantity: string; source_uom: string; unit_cost: string; currency: string; evidence_status: string; stock_movement_id: number | null }
+export interface GoodsReceipt { id: number; location_id: number; warehouse_id: number; supplier_id: number; external_reference: string | null; status: 'DRAFT' | 'ACCEPTED' | 'CANCELLED'; version: number; accepted_at: string | null; lines: GoodsReceiptLine[] }
+export interface InventoryLoss {
+  id: number; warehouse_id: number; inventory_item_id: number; category: string; source_quantity: string; source_uom: string;
+  normalized_quantity: string | null; evidence_status: string; cost_visible: boolean; extended_loss_cost: string | null;
+  cost_currency_evidence: string | null; reason: string | null; occurred_at: string; status: 'DRAFT' | 'PENDING_APPROVAL' | 'POSTED' | 'CANCELLED' | 'REVERSED';
+  version: number; approval_required: boolean; approval_reason: string | null; stock_movement_id: number | null; reversal_stock_movement_id: number | null;
+}
+export interface PhysicalCountLine { id: number; inventory_item_id: number; expected_quantity_at_cursor: string; source_quantity: string; source_uom: string; normalized_counted_quantity: string; variance_quantity: string; variance_value: string | null; evidence_status: string; version: number; adjustment_stock_movement_id: number | null }
+export interface PhysicalCount { id: number; warehouse_id: number; count_scope: 'PARTIAL' | 'FULL'; status: 'DRAFT' | 'COUNTING' | 'SUBMITTED' | 'APPROVED' | 'POSTED' | 'CANCELLED'; opened_at: string; cursor_at: string; cursor_movement_id: number; reason: string | null; reference: string | null; version: number; lines: PhysicalCountLine[] }
+
 export type OperationalRequestStatus = 'PENDING' | 'ACKNOWLEDGED' | 'COMPLETED' | 'CANCELLED';
 export type OperationalRequestType =
   | 'HUMAN_ASSISTANCE'
