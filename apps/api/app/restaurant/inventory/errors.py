@@ -37,6 +37,30 @@ class InventoryItemVersionConflictError(InventoryError):
     code = 'INVENTORY_ITEM_VERSION_CONFLICT'
 
 
+class ItemUomConversionNotFoundError(InventoryError):
+    code = 'ITEM_UOM_CONVERSION_NOT_FOUND'
+
+
+class InvalidItemUomConversionError(InventoryError):
+    code = 'INVALID_ITEM_UOM_CONVERSION'
+
+
+class DuplicateItemUomConversionError(InventoryError):
+    code = 'DUPLICATE_ITEM_UOM_CONVERSION'
+
+
+class InventoryCostNotDerivableError(InventoryError):
+    code = 'INVENTORY_COST_NOT_DERIVABLE'
+
+
+class InvalidInventoryCostRevisionError(InventoryError):
+    code = 'INVALID_INVENTORY_COST_REVISION'
+
+
+class InventoryCostRevisionConflictError(InventoryError):
+    code = 'INVENTORY_COST_REVISION_CONFLICT'
+
+
 class ConsumptionDefinitionNotFoundError(InventoryError):
     code = 'CONSUMPTION_DEFINITION_NOT_FOUND'
 

@@ -1,10 +1,11 @@
 from __future__ import annotations
 
-from decimal import Decimal
+from decimal import Decimal, ROUND_HALF_UP
 from enum import StrEnum
 
 
 QUANTITY_UNIT = Decimal('0.000001')
+CONVERSION_FACTOR_UNIT = Decimal('0.000000000001')
 
 
 class UnitCode(StrEnum):
@@ -65,3 +66,22 @@ def convert_quantity(
         raise UnitConversionError(f'Cannot convert {source.value} to {target.value}')
     normalized = value * _TO_FAMILY_BASE[source] / _TO_FAMILY_BASE[target]
     return exact_quantity(normalized)
+
+
+def conversion_factor(value: Decimal) -> Decimal:
+    if isinstance(value, float) or not isinstance(value, Decimal) or not value.is_finite():
+        raise UnitConversionError('Conversion factor must be an exact Decimal')
+    if value <= 0:
+        raise UnitConversionError('Conversion factor must be greater than zero')
+    if value != value.quantize(CONVERSION_FACTOR_UNIT):
+        raise UnitConversionError('Conversion factor has more than twelve decimal places')
+    return value
+
+
+def convert_item_quantity(quantity: Decimal, *, factor_to_base: Decimal) -> Decimal:
+    value = exact_quantity(quantity)
+    factor = conversion_factor(factor_to_base)
+    normalized = (value * factor).quantize(QUANTITY_UNIT, rounding=ROUND_HALF_UP)
+    if value != 0 and normalized == 0:
+        raise UnitConversionError('Converted quantity rounds to zero')
+    return normalized

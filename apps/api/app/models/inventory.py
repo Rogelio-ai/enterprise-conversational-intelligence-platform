@@ -166,6 +166,113 @@ class InventoryItem(TimestampMixin, Base):
     )
 
 
+class ItemUomConversion(Base):
+    __tablename__ = 'item_uom_conversions'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['inventory_item_id', 'tenant_id', 'organization_id', 'location_id'],
+            [
+                'inventory_items.id', 'inventory_items.tenant_id',
+                'inventory_items.organization_id', 'inventory_items.location_id',
+            ],
+            name='fk_item_uom_conversions_item_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id',
+            'inventory_item_id', name='uq_item_uom_conversions_scope',
+        ),
+        UniqueConstraint(
+            'inventory_item_id', 'operational_uom', 'revision',
+            name='uq_item_uom_conversions_revision',
+        ),
+        CheckConstraint('factor_to_base > 0', name='ck_item_uom_conversions_factor'),
+        CheckConstraint('revision >= 1', name='ck_item_uom_conversions_revision'),
+        CheckConstraint(
+            "operational_uom REGEXP '^[A-Z][A-Z0-9_]{0,31}$'",
+            name='ck_item_uom_conversions_uom',
+        ),
+        Index(
+            'ix_item_uom_conversions_resolve', 'tenant_id', 'inventory_item_id',
+            'operational_uom', 'effective_at', 'revision',
+        ),
+        OPTIONS,
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    operational_uom: Mapped[str] = mapped_column(
+        String(32, collation='ascii_bin'), nullable=False
+    )
+    factor_to_base: Mapped[Decimal] = mapped_column(Numeric(25, 12), nullable=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    effective_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    actor_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    reference: Mapped[str | None] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.current_timestamp()
+    )
+
+
+class InventoryCostRevision(Base):
+    __tablename__ = 'inventory_cost_revisions'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['inventory_item_id', 'tenant_id', 'organization_id', 'location_id'],
+            [
+                'inventory_items.id', 'inventory_items.tenant_id',
+                'inventory_items.organization_id', 'inventory_items.location_id',
+            ],
+            name='fk_inventory_cost_revisions_item_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id',
+            'inventory_item_id', name='uq_inventory_cost_revisions_scope',
+        ),
+        UniqueConstraint(
+            'inventory_item_id', 'revision',
+            name='uq_inventory_cost_revisions_revision',
+        ),
+        CheckConstraint('standard_unit_cost >= 0', name='ck_cost_revisions_cost'),
+        CheckConstraint('revision >= 1', name='ck_cost_revisions_revision'),
+        CheckConstraint(
+            "currency REGEXP '^[A-Z][A-Z][A-Z]$'",
+            name='ck_cost_revisions_currency',
+        ),
+        Index(
+            'ix_inventory_cost_revisions_resolve', 'tenant_id', 'inventory_item_id',
+            'effective_at', 'revision',
+        ),
+        OPTIONS,
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    standard_unit_cost: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    currency: Mapped[str] = mapped_column(
+        String(3, collation='ascii_bin'), nullable=False
+    )
+    effective_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    source: Mapped[str] = mapped_column(
+        String(48, collation='ascii_bin'), nullable=False
+    )
+    actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reference: Mapped[str | None] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class ProductConsumptionDefinition(TimestampMixin, Base):
     __tablename__ = 'product_consumption_definitions'
     __table_args__ = (
@@ -340,6 +447,32 @@ class StockMovement(Base):
         ),
         ForeignKeyConstraint(
             [
+                'conversion_revision_id', 'tenant_id', 'organization_id',
+                'location_id', 'inventory_item_id',
+            ],
+            [
+                'item_uom_conversions.id', 'item_uom_conversions.tenant_id',
+                'item_uom_conversions.organization_id',
+                'item_uom_conversions.location_id',
+                'item_uom_conversions.inventory_item_id',
+            ],
+            name='fk_stock_movements_conversion_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            [
+                'standard_cost_revision_id', 'tenant_id', 'organization_id',
+                'location_id', 'inventory_item_id',
+            ],
+            [
+                'inventory_cost_revisions.id', 'inventory_cost_revisions.tenant_id',
+                'inventory_cost_revisions.organization_id',
+                'inventory_cost_revisions.location_id',
+                'inventory_cost_revisions.inventory_item_id',
+            ],
+            name='fk_stock_movements_cost_revision_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            [
                 'reversal_of_movement_id', 'tenant_id', 'organization_id',
                 'location_id', 'inventory_item_id', 'warehouse_id',
             ],
@@ -460,6 +593,35 @@ class StockMovement(Base):
             name='ck_stock_movements_negative_policy',
         ),
         CheckConstraint(
+            "evidence_status IN ('LEGACY_UNAVAILABLE','LEGACY_SNAPSHOT','RESOLVED',"
+            "'COST_NON_DERIVABLE')", name='ck_stock_movements_evidence_status',
+        ),
+        CheckConstraint(
+            '(conversion_factor IS NULL OR conversion_factor > 0) AND '
+            '(standard_unit_cost_evidence IS NULL OR standard_unit_cost_evidence >= 0)',
+            name='ck_stock_movements_operational_evidence_values',
+        ),
+        CheckConstraint(
+            "(evidence_status IN ('RESOLVED','COST_NON_DERIVABLE') AND "
+            'source_quantity IS NOT NULL AND source_uom IS NOT NULL AND '
+            'conversion_factor IS NOT NULL AND base_uom_evidence IS NOT NULL) OR '
+            "(evidence_status='LEGACY_SNAPSHOT' AND source_quantity IS NOT NULL AND "
+            'source_uom IS NOT NULL AND conversion_factor IS NOT NULL AND '
+            'base_uom_evidence IS NOT NULL) OR '
+            "evidence_status='LEGACY_UNAVAILABLE'",
+            name='ck_stock_movements_quantity_evidence',
+        ),
+        CheckConstraint(
+            "(evidence_status='RESOLVED' AND standard_cost_revision_id IS NOT NULL "
+            'AND standard_unit_cost_evidence IS NOT NULL AND '
+            'cost_currency_evidence IS NOT NULL AND extended_standard_cost IS NOT NULL) OR '
+            "(evidence_status='COST_NON_DERIVABLE' AND "
+            'standard_cost_revision_id IS NULL AND standard_unit_cost_evidence IS NULL '
+            'AND cost_currency_evidence IS NULL AND extended_standard_cost IS NULL) OR '
+            "evidence_status IN ('LEGACY_UNAVAILABLE','LEGACY_SNAPSHOT')",
+            name='ck_stock_movements_standard_cost_evidence',
+        ),
+        CheckConstraint(
             "(actor_type='EMPLOYEE' AND actor_id IS NOT NULL AND actor_reference IS NULL) OR "
             "(actor_type IN ('SYSTEM','AGENT','EXTERNAL_SYSTEM') AND actor_id IS NULL "
             "AND actor_reference IS NOT NULL)",
@@ -542,6 +704,31 @@ class StockMovement(Base):
     )
     resulting_stock_quantity: Mapped[Decimal | None] = mapped_column(
         Numeric(19, 6), nullable=True
+    )
+    source_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    source_uom: Mapped[str | None] = mapped_column(
+        String(32, collation='ascii_bin'), nullable=True
+    )
+    conversion_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversion_factor: Mapped[Decimal | None] = mapped_column(
+        Numeric(25, 12), nullable=True
+    )
+    base_uom_evidence: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    standard_cost_revision_id: Mapped[int | None] = mapped_column(
+        BigInteger, nullable=True
+    )
+    standard_unit_cost_evidence: Mapped[Decimal | None] = mapped_column(
+        Numeric(19, 6), nullable=True
+    )
+    cost_currency_evidence: Mapped[str | None] = mapped_column(
+        String(3, collation='ascii_bin'), nullable=True
+    )
+    extended_standard_cost: Mapped[Decimal | None] = mapped_column(
+        Numeric(31, 12), nullable=True
+    )
+    evidence_status: Mapped[str] = mapped_column(
+        String(24), nullable=False, default='LEGACY_UNAVAILABLE',
+        server_default=text("'LEGACY_UNAVAILABLE'"),
     )
     restaurant_order_consumption_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True

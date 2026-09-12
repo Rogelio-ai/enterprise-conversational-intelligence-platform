@@ -29,7 +29,9 @@ from app.models.identity import (
 )
 from app.models.intelligence import IntelligenceDerivation, RestaurantMessageIntent
 from app.models.inventory import (
+    InventoryCostRevision,
     InventoryItem,
+    ItemUomConversion,
     ProductConsumptionComponent,
     ProductConsumptionDefinition,
     RestaurantOrderConsumption,
@@ -131,6 +133,8 @@ __all__ = [
     'Location',
     'IntelligenceDerivation',
     'InventoryItem',
+    'InventoryCostRevision',
+    'ItemUomConversion',
     'IssuerFiscalProfile',
     'Organization',
     'OrderDraft',

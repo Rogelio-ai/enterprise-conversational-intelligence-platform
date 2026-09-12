@@ -44,7 +44,7 @@ def _inventory_item(
     connection, scope, name: str, *, cost: str = '2.000000',
     currency: str = 'MXN', uom: str = 'G',
 ) -> int:
-    return _execute(
+    item_id = _execute(
         connection,
         'INSERT INTO inventory_items '
         '(tenant_id,organization_id,location_id,code,name,base_uom,'
@@ -55,6 +55,18 @@ def _inventory_item(
             name.upper().replace(' ', '-'), name, uom, cost, currency,
         ),
     )
+    _execute(
+        connection,
+        'INSERT INTO inventory_cost_revisions '
+        '(tenant_id,organization_id,location_id,inventory_item_id,revision,'
+        'standard_unit_cost,currency,effective_at,source,actor_id,reference) '
+        "VALUES (%s,%s,%s,%s,1,%s,%s,CURRENT_TIMESTAMP,'TEST_INITIAL',NULL,NULL)",
+        (
+            scope.tenant_id, scope.organization_id, scope.location_id,
+            item_id, cost, currency,
+        ),
+    )
+    return item_id
 
 
 def _recipe(
@@ -123,6 +135,15 @@ def test_simple_acceptance_consumes_once_freezes_cost_and_allows_negative_stock(
     assert movement['consumed_quantity'] == '10.000000'
     assert movement['unit_cost'] == '2.000000'
     assert movement['extended_cost'] == '20.000000000000'
+    assert movement['source_quantity'] == '-10.000000'
+    assert movement['source_uom'] == 'G'
+    assert movement['conversion_revision_id'] is None
+    assert movement['conversion_factor'] == '1.000000000000'
+    assert movement['standard_cost_revision_id'] is not None
+    assert movement['standard_unit_cost_evidence'] == '2.000000'
+    assert movement['cost_currency_evidence'] == 'MXN'
+    assert movement['extended_standard_cost'] == '-20.000000000000'
+    assert movement['evidence_status'] == 'RESOLVED'
     assert movement['negative_stock_policy'] == 'ALLOW'
     assert movement['negative_stock_warning'] is False
     assert movement['resulting_stock_quantity'] == '-10.000000'
@@ -297,6 +318,83 @@ def test_complete_zero_sale_has_null_margin_percent(client, sql_connection) -> N
     assert projected['commercial_amount'] == '0.0000'
     assert projected['theoretical_gross_margin'] == '-2.000000000000'
     assert projected['theoretical_margin_percent'] is None
+
+
+def test_order_cost_uses_revision_as_of_acceptance_not_mutable_item_projection(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    _grant_inventory_read(connection, scope)
+    _, diner_headers = _open_and_join(client, scope)
+    product_id = _product(connection, scope, name='Scheduled cost', amount='50')
+    ingredient_id = _inventory_item(
+        connection, scope, 'Scheduled ingredient', cost='2.000000', currency='MXN',
+    )
+    _recipe(connection, scope, product_id, ((ingredient_id, '1.000000'),))
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'INSERT INTO inventory_cost_revisions '
+            '(tenant_id,organization_id,location_id,inventory_item_id,revision,'
+            'standard_unit_cost,currency,effective_at,source,actor_id,reference) '
+            "VALUES (%s,%s,%s,%s,2,9.000000,'USD',"
+            "DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 1 DAY),'TEST_SCHEDULED',NULL,NULL)",
+            (
+                scope.tenant_id, scope.organization_id, scope.location_id,
+                ingredient_id,
+            ),
+        )
+        cursor.execute(
+            "UPDATE inventory_items SET standard_unit_cost=9.000000,currency='USD' "
+            'WHERE id=%s',
+            (ingredient_id,),
+        )
+
+    preview = _preview(client, diner_headers, product_id)
+    accepted = _confirm(client, diner_headers, preview, 'scheduled-cost-as-of')
+    assert accepted.status_code == 201, accepted.text
+    projected = _projection(client, scope, accepted.json()['id'])
+    assert projected['coverage_status'] == 'COMPLETE'
+    movement = projected['items'][0]['movements'][0]
+    assert movement['unit_cost'] == '2.000000'
+    assert movement['currency'] == 'MXN'
+    assert movement['standard_unit_cost_evidence'] == '2.000000'
+    assert movement['cost_currency_evidence'] == 'MXN'
+
+
+def test_order_cost_before_first_revision_is_explicitly_non_derivable(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    _grant_inventory_read(connection, scope)
+    _, diner_headers = _open_and_join(client, scope)
+    product_id = _product(connection, scope, name='Future evidence', amount='50')
+    ingredient_id = _inventory_item(connection, scope, 'Future ingredient')
+    _recipe(connection, scope, product_id, ((ingredient_id, '1.000000'),))
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'UPDATE inventory_cost_revisions SET '
+            'effective_at=DATE_ADD(CURRENT_TIMESTAMP, INTERVAL 1 DAY) '
+            'WHERE inventory_item_id=%s',
+            (ingredient_id,),
+        )
+
+    preview = _preview(client, diner_headers, product_id)
+    accepted = _confirm(client, diner_headers, preview, 'future-cost-evidence')
+    assert accepted.status_code == 201, accepted.text
+    projected = _projection(client, scope, accepted.json()['id'])
+    assert projected['coverage_status'] == 'PARTIAL'
+    assert projected['historical_theoretical_cost'] is None
+    assert projected['unresolved_evidence'][0]['reason'] == (
+        'INVENTORY_COST_NON_DERIVABLE'
+    )
+    movement = projected['items'][0]['movements'][0]
+    assert movement['standard_cost_revision_id'] is None
+    assert movement['standard_unit_cost_evidence'] is None
+    assert movement['cost_currency_evidence'] is None
+    assert movement['extended_standard_cost'] is None
+    assert movement['evidence_status'] == 'COST_NON_DERIVABLE'
 
 
 def test_materialization_failure_rolls_back_the_acceptance_transaction(

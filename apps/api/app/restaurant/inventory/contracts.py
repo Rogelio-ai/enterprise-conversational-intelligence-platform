@@ -51,6 +51,44 @@ class StockMovementProjection:
     negative_stock_policy: str
     negative_stock_warning: bool
     resulting_stock_quantity: Decimal | None
+    source_quantity: Decimal | None
+    source_uom: str | None
+    conversion_revision_id: int | None
+    conversion_factor: Decimal | None
+    base_uom_evidence: str | None
+    standard_cost_revision_id: int | None
+    standard_unit_cost_evidence: Decimal | None
+    cost_currency_evidence: str | None
+    extended_standard_cost: Decimal | None
+    evidence_status: str
+
+
+@dataclass(frozen=True, slots=True)
+class ItemUomConversionProjection:
+    id: int
+    inventory_item_id: int
+    operational_uom: str
+    base_uom: str
+    factor_to_base: Decimal
+    revision: int
+    effective_at: datetime
+    actor_id: int
+    reference: str | None
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class InventoryCostRevisionProjection:
+    id: int
+    inventory_item_id: int
+    revision: int
+    standard_unit_cost: Decimal
+    currency: str
+    effective_at: datetime
+    source: str
+    actor_id: int | None
+    reference: str | None
+    created_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -119,6 +157,15 @@ class OrderConsumptionMovementProjection:
     unit_cost: Decimal
     currency: str
     extended_cost: Decimal
+    source_quantity: Decimal | None
+    source_uom: str | None
+    conversion_revision_id: int | None
+    conversion_factor: Decimal | None
+    standard_cost_revision_id: int | None
+    standard_unit_cost_evidence: Decimal | None
+    cost_currency_evidence: str | None
+    extended_standard_cost: Decimal | None
+    evidence_status: str
     negative_stock_policy: str
     negative_stock_warning: bool
     resulting_stock_quantity: Decimal | None

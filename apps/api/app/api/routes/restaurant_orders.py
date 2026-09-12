@@ -105,6 +105,15 @@ class OrderConsumptionMovementResponse(BaseModel):
     unit_cost: Decimal
     currency: str
     extended_cost: Decimal
+    source_quantity: Decimal | None
+    source_uom: str | None
+    conversion_revision_id: int | None
+    conversion_factor: Decimal | None
+    standard_cost_revision_id: int | None
+    standard_unit_cost_evidence: Decimal | None
+    cost_currency_evidence: str | None
+    extended_standard_cost: Decimal | None
+    evidence_status: str
     negative_stock_policy: str
     negative_stock_warning: bool
     resulting_stock_quantity: Decimal | None

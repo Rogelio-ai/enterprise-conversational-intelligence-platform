@@ -12,7 +12,9 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.execution import ActorType, ExecutionContext
 from app.models import (
+    InventoryCostRevision,
     InventoryItem,
+    ItemUomConversion,
     Location,
     Product,
     ProductConsumptionComponent,
@@ -26,6 +28,8 @@ from app.restaurant.inventory.contracts import (
     ConsumptionComponentProjection,
     ConsumptionDefinitionProjection,
     CostComponentProjection,
+    InventoryCostRevisionProjection,
+    ItemUomConversionProjection,
     ProductCostProjection,
     StockMovementProjection,
     StockProjection,
@@ -34,6 +38,8 @@ from app.restaurant.inventory.contracts import (
 from app.restaurant.inventory.units import (
     QUANTITY_UNIT,
     UnitConversionError,
+    conversion_factor,
+    convert_item_quantity,
     convert_quantity,
     exact_quantity,
     unit_code,
@@ -45,11 +51,20 @@ MANUAL_MOVEMENT_TYPES = frozenset(
     {'OPENING_BALANCE', 'MANUAL_IN', 'MANUAL_OUT', 'ADJUSTMENT', 'REVERSAL'}
 )
 _CURRENCY = re.compile(r'^[A-Z]{3}$')
+_OPERATIONAL_UOM = re.compile(r'^[A-Z][A-Z0-9_]{0,31}$')
 _ZERO = Decimal('0')
 
 
 def _now() -> datetime:
     return datetime.now(UTC).replace(tzinfo=None)
+
+
+async def _database_now(db: AsyncSession) -> datetime:
+    value = await db.scalar(select(func.current_timestamp(6)))
+    # The existing ledger uses MySQL/MariaDB DATETIME without fractional
+    # precision. Persist and resolve "now" at that same precision so the
+    # database cannot round an effective instant into the next second.
+    return (value if value is not None else _now()).replace(microsecond=0)
 
 
 def _currency(value: str) -> str:
@@ -267,9 +282,269 @@ async def warehouse_location(
     return location_id
 
 
+def _conversion_projection(
+    value: ItemUomConversion, base_uom: str,
+) -> ItemUomConversionProjection:
+    return ItemUomConversionProjection(
+        id=value.id, inventory_item_id=value.inventory_item_id,
+        operational_uom=value.operational_uom, base_uom=base_uom,
+        factor_to_base=value.factor_to_base, revision=value.revision,
+        effective_at=value.effective_at, actor_id=value.actor_id,
+        reference=value.reference, created_at=value.created_at,
+    )
+
+
+def _cost_projection(value: InventoryCostRevision) -> InventoryCostRevisionProjection:
+    return InventoryCostRevisionProjection(
+        id=value.id, inventory_item_id=value.inventory_item_id,
+        revision=value.revision, standard_unit_cost=value.standard_unit_cost,
+        currency=value.currency, effective_at=value.effective_at,
+        source=value.source, actor_id=value.actor_id, reference=value.reference,
+        created_at=value.created_at,
+    )
+
+
+def _operational_uom(value: str) -> str:
+    normalized = value.strip().upper()
+    if _OPERATIONAL_UOM.fullmatch(normalized) is None:
+        raise errors.InvalidItemUomConversionError('Unsupported operational UOM code')
+    return normalized
+
+
+async def append_item_uom_conversion(
+    db: AsyncSession, *, tenant_id: int, inventory_item_id: int,
+    operational_uom: str, factor_to_base: Decimal, effective_at: datetime | None,
+    actor_id: int, reference: str | None,
+) -> ItemUomConversionProjection:
+    item = await _item(
+        db, tenant_id=tenant_id, inventory_item_id=inventory_item_id,
+        for_update=True,
+    )
+    operational_uom = _operational_uom(operational_uom)
+    try:
+        built_in = unit_code(operational_uom)
+    except UnitConversionError:
+        built_in = None
+    if built_in is not None:
+        try:
+            convert_quantity(Decimal('1'), from_uom=built_in, to_uom=item.base_uom)
+        except UnitConversionError as exc:
+            raise errors.InvalidItemUomConversionError(str(exc)) from exc
+        raise errors.InvalidItemUomConversionError(
+            'Built-in UOM conversions cannot be overridden per item'
+        )
+    try:
+        factor_to_base = conversion_factor(factor_to_base)
+    except UnitConversionError as exc:
+        raise errors.InvalidItemUomConversionError(str(exc)) from exc
+    if effective_at is None:
+        effective_at = await _database_now(db)
+    latest = await db.scalar(
+        select(ItemUomConversion).where(
+            ItemUomConversion.tenant_id == tenant_id,
+            ItemUomConversion.inventory_item_id == item.id,
+            ItemUomConversion.operational_uom == operational_uom,
+        ).order_by(
+            ItemUomConversion.revision.desc()
+        ).limit(1).with_for_update()
+    )
+    if latest is not None and effective_at < latest.effective_at:
+        raise errors.InvalidItemUomConversionError(
+            'Conversion revisions cannot be backdated before the latest revision'
+        )
+    value = ItemUomConversion(
+        tenant_id=item.tenant_id, organization_id=item.organization_id,
+        location_id=item.location_id, inventory_item_id=item.id,
+        operational_uom=operational_uom, factor_to_base=factor_to_base,
+        revision=1 if latest is None else latest.revision + 1,
+        effective_at=effective_at, actor_id=actor_id,
+        reference=reference.strip() if reference and reference.strip() else None,
+    )
+    db.add(value)
+    try:
+        await db.commit()
+        await db.refresh(value)
+        return _conversion_projection(value, item.base_uom)
+    except IntegrityError as exc:
+        await db.rollback()
+        raise errors.DuplicateItemUomConversionError(
+            'Conversion revision was appended concurrently'
+        ) from exc
+
+
+async def list_item_uom_conversions(
+    db: AsyncSession, *, tenant_id: int, inventory_item_id: int,
+) -> tuple[ItemUomConversionProjection, ...]:
+    item = await _item(db, tenant_id=tenant_id, inventory_item_id=inventory_item_id)
+    values = (await db.scalars(
+        select(ItemUomConversion).where(
+            ItemUomConversion.tenant_id == tenant_id,
+            ItemUomConversion.inventory_item_id == item.id,
+        ).order_by(ItemUomConversion.operational_uom, ItemUomConversion.revision)
+    )).all()
+    return tuple(_conversion_projection(value, item.base_uom) for value in values)
+
+
+async def resolve_cost_as_of(
+    db: AsyncSession, *, tenant_id: int, inventory_item_id: int,
+    as_of: datetime,
+) -> InventoryCostRevision | None:
+    return await db.scalar(
+        select(InventoryCostRevision).where(
+            InventoryCostRevision.tenant_id == tenant_id,
+            InventoryCostRevision.inventory_item_id == inventory_item_id,
+            InventoryCostRevision.effective_at <= as_of,
+        ).order_by(
+            InventoryCostRevision.effective_at.desc(),
+            InventoryCostRevision.revision.desc(),
+        ).limit(1)
+    )
+
+
+async def get_cost_as_of(
+    db: AsyncSession, *, tenant_id: int, inventory_item_id: int,
+    as_of: datetime,
+) -> InventoryCostRevisionProjection:
+    await _item(db, tenant_id=tenant_id, inventory_item_id=inventory_item_id)
+    value = await resolve_cost_as_of(
+        db, tenant_id=tenant_id, inventory_item_id=inventory_item_id, as_of=as_of,
+    )
+    if value is None:
+        raise errors.InventoryCostNotDerivableError(
+            'No standard-cost revision applies at the requested time'
+        )
+    return _cost_projection(value)
+
+
+async def list_cost_revisions(
+    db: AsyncSession, *, tenant_id: int, inventory_item_id: int,
+) -> tuple[InventoryCostRevisionProjection, ...]:
+    await _item(db, tenant_id=tenant_id, inventory_item_id=inventory_item_id)
+    values = (await db.scalars(
+        select(InventoryCostRevision).where(
+            InventoryCostRevision.tenant_id == tenant_id,
+            InventoryCostRevision.inventory_item_id == inventory_item_id,
+        ).order_by(InventoryCostRevision.revision)
+    )).all()
+    return tuple(_cost_projection(value) for value in values)
+
+
+async def append_cost_revision(
+    db: AsyncSession, *, item: InventoryItem, standard_unit_cost: Decimal,
+    currency: str, effective_at: datetime, actor_id: int | None,
+    source: str, reference: str | None,
+) -> InventoryCostRevision:
+    latest = await db.scalar(
+        select(InventoryCostRevision).where(
+            InventoryCostRevision.tenant_id == item.tenant_id,
+            InventoryCostRevision.inventory_item_id == item.id,
+        ).order_by(InventoryCostRevision.revision.desc()).limit(1).with_for_update()
+    )
+    if latest is not None and effective_at < latest.effective_at:
+        if source == 'INVENTORY_ITEM_UPDATE':
+            # A normal item PATCH means "effective now". Clamp database /
+            # application clock skew to the latest instant; revision breaks
+            # ties deterministically when effective timestamps are equal.
+            effective_at = latest.effective_at
+        else:
+            raise errors.InvalidInventoryCostRevisionError(
+                'Cost revisions cannot be backdated before the latest revision'
+            )
+    value = InventoryCostRevision(
+        tenant_id=item.tenant_id, organization_id=item.organization_id,
+        location_id=item.location_id, inventory_item_id=item.id,
+        revision=1 if latest is None else latest.revision + 1,
+        standard_unit_cost=standard_unit_cost, currency=currency,
+        effective_at=effective_at, source=source, actor_id=actor_id,
+        reference=reference.strip() if reference and reference.strip() else None,
+    )
+    db.add(value)
+    return value
+
+
+async def create_cost_revision(
+    db: AsyncSession, *, tenant_id: int, inventory_item_id: int,
+    expected_version: int, standard_unit_cost: Decimal, currency: str,
+    effective_at: datetime | None, actor_id: int, reference: str | None,
+) -> InventoryCostRevisionProjection:
+    item = await _item(
+        db, tenant_id=tenant_id, inventory_item_id=inventory_item_id,
+        for_update=True,
+    )
+    if item.version != expected_version:
+        raise errors.InventoryItemVersionConflictError()
+    standard_unit_cost = _cost(standard_unit_cost)
+    currency = _currency(currency)
+    if effective_at is None:
+        effective_at = await _database_now(db)
+    value = await append_cost_revision(
+        db, item=item, standard_unit_cost=standard_unit_cost, currency=currency,
+        effective_at=effective_at, actor_id=actor_id,
+        source='STANDARD_COST_UPDATE', reference=reference,
+    )
+    item.standard_unit_cost = standard_unit_cost
+    item.currency = currency
+    item.version += 1
+    try:
+        await db.commit()
+        await db.refresh(value)
+        return _cost_projection(value)
+    except IntegrityError as exc:
+        await db.rollback()
+        raise errors.InventoryCostRevisionConflictError() from exc
+
+
+async def resolve_quantity_evidence(
+    db: AsyncSession, *, item: InventoryItem, quantity: Decimal,
+    source_uom: str | None, as_of: datetime,
+) -> tuple[Decimal, str, ItemUomConversion | None, Decimal]:
+    try:
+        quantity = exact_quantity(quantity)
+    except UnitConversionError as exc:
+        raise errors.InvalidStockMovementError(str(exc)) from exc
+    normalized_uom = item.base_uom if source_uom is None else _operational_uom(source_uom)
+    try:
+        built_in = unit_code(normalized_uom)
+    except UnitConversionError:
+        built_in = None
+    if built_in is not None:
+        try:
+            normalized = convert_quantity(
+                quantity, from_uom=built_in, to_uom=item.base_uom,
+            )
+            factor = convert_quantity(
+                Decimal('1'), from_uom=built_in, to_uom=item.base_uom,
+            )
+        except UnitConversionError as exc:
+            raise errors.InvalidStockMovementError(str(exc)) from exc
+        return normalized, normalized_uom, None, factor
+    conversion = await db.scalar(
+        select(ItemUomConversion).where(
+            ItemUomConversion.tenant_id == item.tenant_id,
+            ItemUomConversion.inventory_item_id == item.id,
+            ItemUomConversion.operational_uom == normalized_uom,
+            ItemUomConversion.effective_at <= as_of,
+        ).order_by(
+            ItemUomConversion.effective_at.desc(),
+            ItemUomConversion.revision.desc(),
+        ).limit(1)
+    )
+    if conversion is None:
+        raise errors.ItemUomConversionNotFoundError(
+            'No item conversion applies for the requested operational UOM'
+        )
+    try:
+        normalized = convert_item_quantity(
+            quantity, factor_to_base=conversion.factor_to_base,
+        )
+    except UnitConversionError as exc:
+        raise errors.InvalidStockMovementError(str(exc)) from exc
+    return normalized, normalized_uom, conversion, conversion.factor_to_base
+
+
 async def create_inventory_item(
     db: AsyncSession, *, tenant_id: int, location_id: int, code: str, name: str,
-    base_uom: str, standard_unit_cost: Decimal, currency: str,
+    base_uom: str, standard_unit_cost: Decimal, currency: str, actor_id: int,
 ) -> InventoryItem:
     location = await _location(
         db, tenant_id=tenant_id, location_id=location_id, for_update=True,
@@ -299,6 +574,12 @@ async def create_inventory_item(
     )
     db.add(value)
     try:
+        await db.flush()
+        await append_cost_revision(
+            db, item=value, standard_unit_cost=standard_unit_cost,
+            currency=currency, effective_at=await _database_now(db), actor_id=actor_id,
+            source='ITEM_CREATION', reference=None,
+        )
         await db.commit()
         await db.refresh(value)
         return value
@@ -320,7 +601,7 @@ async def update_inventory_item(
     db: AsyncSession, *, tenant_id: int, inventory_item_id: int,
     expected_version: int, name: str | None = None,
     standard_unit_cost: Decimal | None = None, currency: str | None = None,
-    status: str | None = None,
+    status: str | None = None, actor_id: int,
 ) -> InventoryItem:
     value = await _item(
         db, tenant_id=tenant_id, inventory_item_id=inventory_item_id,
@@ -334,10 +615,24 @@ async def update_inventory_item(
         )
     if name is not None:
         value.name = _text(name, field='Name', maximum=200)
-    if standard_unit_cost is not None:
-        value.standard_unit_cost = _cost(standard_unit_cost)
-    if currency is not None:
-        value.currency = _currency(currency)
+    resolved_cost = (
+        _cost(standard_unit_cost)
+        if standard_unit_cost is not None else value.standard_unit_cost
+    )
+    resolved_currency = _currency(currency) if currency is not None else value.currency
+    cost_changed = (
+        resolved_cost != value.standard_unit_cost
+        or resolved_currency != value.currency
+    )
+    if cost_changed:
+        await append_cost_revision(
+            db, item=value, standard_unit_cost=resolved_cost,
+            currency=resolved_currency, effective_at=await _database_now(db),
+            actor_id=actor_id,
+            source='INVENTORY_ITEM_UPDATE', reference=None,
+        )
+        value.standard_unit_cost = resolved_cost
+        value.currency = resolved_currency
     if status is not None:
         status = status.strip().upper()
         if status not in ('ACTIVE', 'INACTIVE'):
@@ -592,13 +887,24 @@ def _movement_projection(value: StockMovement, base_uom: str) -> StockMovementPr
         negative_stock_policy=value.negative_stock_policy,
         negative_stock_warning=value.negative_stock_warning,
         resulting_stock_quantity=value.resulting_stock_quantity,
+        source_quantity=value.source_quantity,
+        source_uom=value.source_uom,
+        conversion_revision_id=value.conversion_revision_id,
+        conversion_factor=value.conversion_factor,
+        base_uom_evidence=value.base_uom_evidence,
+        standard_cost_revision_id=value.standard_cost_revision_id,
+        standard_unit_cost_evidence=value.standard_unit_cost_evidence,
+        cost_currency_evidence=value.cost_currency_evidence,
+        extended_standard_cost=value.extended_standard_cost,
+        evidence_status=value.evidence_status,
     )
 
 
 async def create_stock_movement(
     db: AsyncSession, *, context: ExecutionContext, inventory_item_id: int,
     warehouse_id: int | None,
-    movement_type: str, quantity: Decimal | None, reversal_of_movement_id: int | None,
+    movement_type: str, quantity: Decimal | None, uom: str | None,
+    reversal_of_movement_id: int | None,
     reason: str | None, reference: str | None, idempotency_key: str,
 ) -> tuple[StockMovementProjection, bool]:
     if context.actor_type is not ActorType.EMPLOYEE:
@@ -615,9 +921,9 @@ async def create_stock_movement(
     if movement_type != 'OPENING_BALANCE' and reason is None:
         raise errors.InvalidStockMovementError('Reason is required for this movement type')
     if movement_type == 'REVERSAL':
-        if reversal_of_movement_id is None or quantity is not None:
+        if reversal_of_movement_id is None or quantity is not None or uom is not None:
             raise errors.InvalidStockMovementError(
-                'REVERSAL requires reversal_of_movement_id and derives its quantity'
+                'REVERSAL requires only reversal_of_movement_id and derives its evidence'
             )
     elif reversal_of_movement_id is not None or quantity is None:
         raise errors.InvalidStockMovementError(
@@ -635,6 +941,8 @@ async def create_stock_movement(
     }
     if warehouse_id is not None:
         fingerprint_payload['warehouse_id'] = warehouse_id
+    if uom is not None:
+        fingerprint_payload['uom'] = _operational_uom(uom)
     fingerprint = _fingerprint(fingerprint_payload)
     actor_scope = _actor_scope(context)
     replay = await db.scalar(
@@ -688,6 +996,7 @@ async def create_stock_movement(
             await db.commit()
             return _movement_projection(replay, item.base_uom), True
 
+        recorded_at = await _database_now(db)
         if movement_type == 'REVERSAL':
             original = await db.scalar(
                 select(StockMovement).where(
@@ -709,11 +1018,51 @@ async def create_stock_movement(
             if prior is not None:
                 raise errors.StockMovementAlreadyReversedError()
             normalized_quantity = -original.quantity
+            source_quantity = (
+                -original.source_quantity
+                if original.source_quantity is not None else None
+            )
+            source_uom = original.source_uom
+            conversion = None
+            conversion_revision_id = original.conversion_revision_id
+            resolved_factor = original.conversion_factor
+            cost_revision = None
+            cost_revision_id = original.standard_cost_revision_id
+            unit_cost_evidence = original.standard_unit_cost_evidence
+            cost_currency = original.cost_currency_evidence
+            extended_cost = (
+                -original.extended_standard_cost
+                if original.extended_standard_cost is not None else None
+            )
+            evidence_status = original.evidence_status
         else:
             try:
-                normalized_quantity = exact_quantity(quantity)  # type: ignore[arg-type]
+                source_quantity = exact_quantity(quantity)  # type: ignore[arg-type]
             except UnitConversionError as exc:
                 raise errors.InvalidStockMovementError(str(exc)) from exc
+            (
+                normalized_quantity, source_uom, conversion, resolved_factor,
+            ) = await resolve_quantity_evidence(
+                db, item=item, quantity=source_quantity,
+                source_uom=uom, as_of=recorded_at,
+            )
+            conversion_revision_id = conversion.id if conversion is not None else None
+            cost_revision = await resolve_cost_as_of(
+                db, tenant_id=item.tenant_id, inventory_item_id=item.id,
+                as_of=recorded_at,
+            )
+            cost_revision_id = cost_revision.id if cost_revision is not None else None
+            unit_cost_evidence = (
+                cost_revision.standard_unit_cost if cost_revision is not None else None
+            )
+            cost_currency = cost_revision.currency if cost_revision is not None else None
+            extended_cost = (
+                (normalized_quantity * unit_cost_evidence).quantize(
+                    Decimal('0.000000000001')
+                )
+                if unit_cost_evidence is not None else None
+            )
+            evidence_status = 'RESOLVED' if cost_revision is not None else 'COST_NON_DERIVABLE'
             valid_sign = (
                 movement_type in ('OPENING_BALANCE', 'MANUAL_IN')
                 and normalized_quantity > _ZERO
@@ -757,7 +1106,7 @@ async def create_stock_movement(
             reversal_of_movement_id=reversal_of_movement_id,
             reason=reason,
             reference=reference,
-            recorded_at=_now(),
+            recorded_at=recorded_at,
             actor_type=context.actor_type.value,
             actor_id=context.principal_id,
             actor_reference=context.principal_reference,
@@ -769,6 +1118,19 @@ async def create_stock_movement(
             negative_stock_policy=warehouse.negative_stock_policy,
             negative_stock_warning=warning,
             resulting_stock_quantity=resulting_quantity,
+            source_quantity=source_quantity,
+            source_uom=source_uom,
+            conversion_revision_id=conversion_revision_id,
+            conversion_factor=resolved_factor,
+            base_uom_evidence=(
+                original.base_uom_evidence
+                if movement_type == 'REVERSAL' else item.base_uom
+            ),
+            standard_cost_revision_id=cost_revision_id,
+            standard_unit_cost_evidence=unit_cost_evidence,
+            cost_currency_evidence=cost_currency,
+            extended_standard_cost=extended_cost,
+            evidence_status=evidence_status,
         )
         db.add(movement)
         await db.commit()
@@ -917,18 +1279,31 @@ async def resolve_current_product_cost(
             .order_by(ProductConsumptionComponent.inventory_item_id)
         )
     ).all()
+    as_of = await _database_now(db)
+    resolved_rows = []
+    for component, item in rows:
+        revision = await resolve_cost_as_of(
+            db, tenant_id=tenant_id, inventory_item_id=item.id, as_of=as_of,
+        )
+        if revision is None:
+            return ProductCostProjection(
+                product_id=product_id, location_id=location_id,
+                definition_version=definition.version,
+                tracking_mode=definition.tracking_mode,
+                cost_status='NON_DERIVABLE', currency=None, components=(),
+                total_theoretical_cost=None,
+            )
+        resolved_rows.append((component, item, revision))
     components = tuple(
         CostComponentProjection(
-            inventory_item_id=item.id,
-            inventory_item_code=item.code,
-            inventory_item_name=item.name,
-            quantity=component.quantity,
+            inventory_item_id=item.id, inventory_item_code=item.code,
+            inventory_item_name=item.name, quantity=component.quantity,
             base_uom=item.base_uom,
-            standard_unit_cost=item.standard_unit_cost,
-            currency=item.currency,
-            theoretical_cost=component.quantity * item.standard_unit_cost,
+            standard_unit_cost=revision.standard_unit_cost,
+            currency=revision.currency,
+            theoretical_cost=component.quantity * revision.standard_unit_cost,
         )
-        for component, item in rows
+        for component, item, revision in resolved_rows
     )
     currencies = {component.currency for component in components}
     if len(currencies) > 1:

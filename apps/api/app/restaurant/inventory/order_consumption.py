@@ -239,16 +239,41 @@ async def materialize_accepted_order(
                     'extended_cost': extended_cost,
                 }
             )
-            if item.currency != order.currency:
-                unresolved.append(
-                    {
-                        **source_evidence,
-                        'inventory_item_id': item.id,
-                        'currency': item.currency,
-                        'order_currency': order.currency,
-                        'reason': 'CURRENCY_MISMATCH',
-                    }
-                )
+    cost_revisions = {
+        item_id: await inventory_service.resolve_cost_as_of(
+            db, tenant_id=order.tenant_id, inventory_item_id=item_id,
+            as_of=order.accepted_at,
+        )
+        for item_id in sorted({value['item'].id for value in staged})
+    }
+    for value in staged:
+        item = value['item']
+        source = value['source']
+        assert isinstance(source, _Source)
+        revision = cost_revisions[item.id]
+        value['cost_revision'] = revision
+        source_evidence = {
+            'restaurant_order_item_id': source.order_item.id,
+            'restaurant_order_item_component_id': source.order_item_component_id,
+            'product_id': source.product_id,
+            'multiplier': _decimal(source.multiplier),
+            'inventory_item_id': item.id,
+        }
+        if revision is None:
+            unresolved.append({
+                **source_evidence, 'reason': 'INVENTORY_COST_NON_DERIVABLE',
+            })
+            continue
+        value['extended_cost'] = value['quantity'] * revision.standard_unit_cost
+        if revision.currency != order.currency:
+            unresolved.append(
+                {
+                    **source_evidence,
+                    'currency': revision.currency,
+                    'order_currency': order.currency,
+                    'reason': 'CURRENCY_MISMATCH',
+                }
+            )
 
     fingerprint = _fingerprint(
         {
@@ -277,8 +302,19 @@ async def materialize_accepted_order(
                     'quantity': _decimal(value['quantity']),
                     'definition_id': value['definition'].id,
                     'definition_version': value['definition'].version,
-                    'unit_cost': _decimal(value['item'].standard_unit_cost),
-                    'currency': value['item'].currency,
+                    'cost_revision_id': (
+                        value['cost_revision'].id
+                        if value['cost_revision'] is not None else None
+                    ),
+                    'unit_cost': _decimal(
+                        value['cost_revision'].standard_unit_cost
+                        if value['cost_revision'] is not None
+                        else value['item'].standard_unit_cost
+                    ),
+                    'currency': (
+                        value['cost_revision'].currency
+                        if value['cost_revision'] is not None else value['item'].currency
+                    ),
                     'extended_cost': _decimal(value['extended_cost']),
                 }
                 for value in staged
@@ -313,6 +349,14 @@ async def materialize_accepted_order(
         assert isinstance(source, _Source)
         assert isinstance(definition, ProductConsumptionDefinition)
         assert isinstance(item, InventoryItem)
+        cost_revision = value['cost_revision']
+        unit_cost = (
+            cost_revision.standard_unit_cost
+            if cost_revision is not None else item.standard_unit_cost
+        )
+        cost_currency = (
+            cost_revision.currency if cost_revision is not None else item.currency
+        )
         source_key = str(value['source_key'])
         movement_fingerprint = _fingerprint(
             {
@@ -320,8 +364,9 @@ async def materialize_accepted_order(
                 'source_key': source_key,
                 'warehouse_id': warehouse.id,
                 'quantity': _decimal(value['quantity']),
-                'unit_cost': _decimal(Decimal(item.standard_unit_cost)),
-                'currency': item.currency,
+                'cost_revision_id': cost_revision.id if cost_revision is not None else None,
+                'unit_cost': _decimal(Decimal(unit_cost)),
+                'currency': cost_currency,
             }
         )
         balances[item.id] = balances[item.id] - value['quantity']
@@ -353,6 +398,28 @@ async def materialize_accepted_order(
                 negative_stock_policy=warehouse.negative_stock_policy,
                 negative_stock_warning=negative_warning,
                 resulting_stock_quantity=balances[item.id],
+                source_quantity=-value['quantity'],
+                source_uom=item.base_uom,
+                conversion_revision_id=None,
+                conversion_factor=Decimal('1.000000000000'),
+                base_uom_evidence=item.base_uom,
+                standard_cost_revision_id=(
+                    cost_revision.id if cost_revision is not None else None
+                ),
+                standard_unit_cost_evidence=(
+                    unit_cost if cost_revision is not None else None
+                ),
+                cost_currency_evidence=(
+                    cost_currency if cost_revision is not None else None
+                ),
+                extended_standard_cost=(
+                    (-value['quantity'] * unit_cost).quantize(
+                        Decimal('0.000000000001')
+                    ) if cost_revision is not None else None
+                ),
+                evidence_status=(
+                    'RESOLVED' if cost_revision is not None else 'COST_NON_DERIVABLE'
+                ),
                 restaurant_order_consumption_id=header.id,
                 restaurant_order_id=order.id,
                 restaurant_order_item_id=source.order_item.id,
@@ -362,8 +429,8 @@ async def materialize_accepted_order(
                 consumption_definition_version=definition.version,
                 inventory_item_name_snapshot=item.name,
                 base_uom_snapshot=item.base_uom,
-                unit_cost_snapshot=item.standard_unit_cost,
-                currency_snapshot=item.currency,
+                unit_cost_snapshot=unit_cost,
+                currency_snapshot=cost_currency,
                 extended_cost_snapshot=value['extended_cost'],
                 consumption_source_key=source_key,
             )
@@ -478,6 +545,17 @@ async def get_order_consumption(
                         unit_cost=value.unit_cost_snapshot,
                         currency=value.currency_snapshot,
                         extended_cost=value.extended_cost_snapshot,
+                        source_quantity=value.source_quantity,
+                        source_uom=value.source_uom,
+                        conversion_revision_id=value.conversion_revision_id,
+                        conversion_factor=value.conversion_factor,
+                        standard_cost_revision_id=value.standard_cost_revision_id,
+                        standard_unit_cost_evidence=(
+                            value.standard_unit_cost_evidence
+                        ),
+                        cost_currency_evidence=value.cost_currency_evidence,
+                        extended_standard_cost=value.extended_standard_cost,
+                        evidence_status=value.evidence_status,
                         negative_stock_policy=value.negative_stock_policy,
                         negative_stock_warning=value.negative_stock_warning,
                         resulting_stock_quantity=value.resulting_stock_quantity,

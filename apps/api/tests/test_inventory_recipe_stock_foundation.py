@@ -9,7 +9,11 @@ from fastapi.testclient import TestClient
 
 from app.core.security import hash_password
 from app.main import create_app
-from app.restaurant.inventory.units import UnitConversionError, convert_quantity
+from app.restaurant.inventory.units import (
+    UnitConversionError,
+    convert_item_quantity,
+    convert_quantity,
+)
 
 
 PASSWORD = 'Test Password 123!'
@@ -158,6 +162,16 @@ def test_minimal_units_are_exact_and_reject_incompatible_families() -> None:
         convert_quantity(Decimal('1'), from_uom='UNIT', to_uom='PORTION')
     with pytest.raises(UnitConversionError):
         convert_quantity(1.0, from_uom='KG', to_uom='G')  # type: ignore[arg-type]
+    assert convert_item_quantity(
+        Decimal('1.000000'), factor_to_base=Decimal('0.333333500000'),
+    ) == Decimal('0.333334')
+    assert convert_item_quantity(
+        Decimal('1.000000'), factor_to_base=Decimal('0.333333499999'),
+    ) == Decimal('0.333333')
+    with pytest.raises(UnitConversionError):
+        convert_item_quantity(
+            Decimal('1.000000'), factor_to_base=Decimal('0.0000000000001'),
+        )
 
 
 def test_inventory_item_permissions_validation_and_optimistic_update(

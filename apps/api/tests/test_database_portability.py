@@ -2125,6 +2125,57 @@ def test_fresh_install_reaches_portable_database_contract(
         connection.close()
 
 
+def test_0042_fresh_install_reaches_uom_cost_evidence_contract(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, 'head')
+
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == (
+                '0042_inventory_operational_uom_cost_evidence'
+            )
+            cursor.execute(
+                'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION '
+                'FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() '
+                "AND TABLE_NAME IN ('item_uom_conversions',"
+                "'inventory_cost_revisions') ORDER BY TABLE_NAME"
+            )
+            assert cursor.fetchall() == [
+                {
+                    'TABLE_NAME': 'inventory_cost_revisions',
+                    'ENGINE': 'InnoDB',
+                    'TABLE_COLLATION': 'utf8mb4_unicode_ci',
+                },
+                {
+                    'TABLE_NAME': 'item_uom_conversions',
+                    'ENGINE': 'InnoDB',
+                    'TABLE_COLLATION': 'utf8mb4_unicode_ci',
+                },
+            ]
+            cursor.execute(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='stock_movements' "
+                "AND COLUMN_NAME IN ('source_quantity','source_uom',"
+                "'conversion_revision_id','conversion_factor','base_uom_evidence',"
+                "'standard_cost_revision_id','standard_unit_cost_evidence',"
+                "'cost_currency_evidence','extended_standard_cost','evidence_status')"
+            )
+            assert {row['COLUMN_NAME'] for row in cursor.fetchall()} == {
+                'source_quantity', 'source_uom', 'conversion_revision_id',
+                'conversion_factor', 'base_uom_evidence',
+                'standard_cost_revision_id', 'standard_unit_cost_evidence',
+                'cost_currency_evidence', 'extended_standard_cost',
+                'evidence_status',
+            }
+    finally:
+        connection.close()
+
+
 def test_0003_retry_replaces_partial_canonical_foreign_key_and_preserves_data(
     isolated_database,
     integration_settings: Settings,
@@ -3694,6 +3745,41 @@ def test_0041_inventory_warehouse_upgrade_preserves_history_and_balances(
                 'negative_stock_policy': 'ALLOW',
                 'negative_stock_warning': 0,
                 'resulting_stock_quantity': None,
+            }
+            cursor.execute(
+                'SELECT revision,standard_unit_cost,currency,effective_at,source,'
+                'actor_id,reference FROM inventory_cost_revisions '
+                'WHERE inventory_item_id=%s',
+                (item_id,),
+            )
+            legacy_cost = cursor.fetchone()
+            assert legacy_cost is not None
+            assert legacy_cost['revision'] == 1
+            assert legacy_cost['standard_unit_cost'] == Decimal('1.000000')
+            assert legacy_cost['currency'] == 'MXN'
+            assert legacy_cost['effective_at'] is not None
+            assert legacy_cost['source'] == 'LEGACY_STANDARD_COST_SNAPSHOT'
+            assert legacy_cost['actor_id'] is None
+            assert legacy_cost['reference'] == 'migration:0042'
+            cursor.execute(
+                'SELECT source_quantity,source_uom,conversion_revision_id,'
+                'conversion_factor,base_uom_evidence,standard_cost_revision_id,'
+                'standard_unit_cost_evidence,cost_currency_evidence,'
+                'extended_standard_cost,evidence_status '
+                'FROM stock_movements WHERE id=%s',
+                (movement_id,),
+            )
+            assert cursor.fetchone() == {
+                'source_quantity': None,
+                'source_uom': None,
+                'conversion_revision_id': None,
+                'conversion_factor': None,
+                'base_uom_evidence': None,
+                'standard_cost_revision_id': None,
+                'standard_unit_cost_evidence': None,
+                'cost_currency_evidence': None,
+                'extended_standard_cost': None,
+                'evidence_status': 'LEGACY_UNAVAILABLE',
             }
             cursor.execute(
                 'SELECT SUM(quantity) AS quantity FROM stock_movements '
