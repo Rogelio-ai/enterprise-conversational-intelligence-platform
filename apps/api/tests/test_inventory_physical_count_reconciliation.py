@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from datetime import UTC, datetime
+from decimal import Decimal
 
 import pytest
 from fastapi.testclient import TestClient
@@ -37,10 +38,10 @@ def client(integration_settings):
         yield value
 
 
-def _count(client, headers, warehouse_id, reference='COUNT-1'):
+def _count(client, headers, warehouse_id, reference='COUNT-1', count_scope='PARTIAL'):
     response = client.post('/inventory/physical-counts', headers=headers, json={
         'warehouse_id': warehouse_id, 'reason': 'Scheduled physical observation',
-        'reference': reference,
+        'reference': reference, 'count_scope': count_scope,
     })
     assert response.status_code == 201, response.text
     return response.json()
@@ -151,6 +152,114 @@ def test_count_lifecycle_partial_zero_cancel_and_immutability(client, sql_connec
     )
     assert cancelled.status_code == 200
     assert cancelled.json()['status'] == 'CANCELLED'
+
+
+def test_full_count_requires_every_active_location_item_without_treating_omission_as_zero(
+    client, sql_connection,
+):
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix, PERMISSIONS)
+    headers = _headers(client, scope)
+    approver_headers = _headers(
+        client, _second_actor(connection, scope, f'{prefix}-full-approver', PERMISSIONS),
+    )
+    warehouse = _warehouse(client, headers, scope.location_id)
+    counted = _item(client, headers, scope.location_id, 'FULL-COUNTED', uom='UNIT', cost='3')
+    omitted = _item(client, headers, scope.location_id, 'FULL-OMITTED', uom='UNIT', cost='2')
+    _opening(client, headers, warehouse['id'], counted['id'], '10')
+    _opening(client, headers, warehouse['id'], omitted['id'], '7')
+
+    other = _scope(connection, f'{prefix}-other-scope', PERMISSIONS)
+    other_headers = _headers(client, other)
+    other_item = _item(client, other_headers, other.location_id, 'OTHER-ACTIVE', uom='UNIT', cost='9')
+
+    count = _count(client, headers, warehouse['id'], 'FULL-INCOMPLETE', 'FULL')
+    assert count['count_scope'] == 'FULL'
+    count = _put_line(client, headers, count, counted['id'], '9')
+    assert client.put(
+        f"/inventory/physical-counts/{count['id']}/lines/{other_item['id']}",
+        headers=headers,
+        json={
+            'expected_count_version': count['version'], 'expected_line_version': 0,
+            'source_quantity': '0', 'source_uom': 'UNIT',
+        },
+    ).status_code == 404
+    approved = _submit_approve(client, headers, approver_headers, count)
+    failed = _post_count(client, approver_headers, approved, 'full-incomplete')
+    assert failed.status_code == 422
+    assert failed.json()['error']['code'] == 'INVALID_PHYSICAL_COUNT'
+    assert '1 active item(s) are not counted' in failed.json()['error']['message']
+    current = client.get(
+        f"/inventory/physical-counts/{count['id']}", headers=headers,
+    ).json()
+    assert current['status'] == 'APPROVED'
+    assert {line['inventory_item_id'] for line in current['lines']} == {counted['id']}
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT COUNT(*) AS movements FROM stock_movements WHERE physical_count_id=%s',
+            (count['id'],),
+        )
+        assert cursor.fetchone()['movements'] == 0
+    assert client.get('/inventory/stock', headers=headers, params={
+        'location_id': scope.location_id, 'warehouse_id': warehouse['id'],
+        'inventory_item_id': omitted['id'],
+    }).json()['items'][0]['quantity'] == '7.000000'
+
+
+def test_complete_full_count_explicit_zero_no_freeze_and_exactly_once_post(
+    client, sql_connection,
+):
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix, PERMISSIONS)
+    headers = _headers(client, scope)
+    approver_headers = _headers(
+        client, _second_actor(connection, scope, f'{prefix}-complete-approver', PERMISSIONS),
+    )
+    warehouse = _warehouse(client, headers, scope.location_id)
+    later_receipt_item = _item(client, headers, scope.location_id, 'FULL-LATER', uom='UNIT', cost='4')
+    zero_item = _item(client, headers, scope.location_id, 'FULL-ZERO', uom='UNIT', cost='5')
+    _opening(client, headers, warehouse['id'], later_receipt_item['id'], '100')
+    _opening(client, headers, warehouse['id'], zero_item['id'], '5')
+
+    count = _count(client, headers, warehouse['id'], 'FULL-COMPLETE', 'FULL')
+    count = _put_line(client, headers, count, later_receipt_item['id'], '95')
+    count = _put_line(client, headers, count, zero_item['id'], '0')
+    zero_line = next(
+        line for line in count['lines'] if line['inventory_item_id'] == zero_item['id']
+    )
+    assert zero_line['normalized_counted_quantity'] == '0.000000'
+    assert zero_line['variance_quantity'] == '-5.000000'
+    _movement(
+        client, headers, warehouse['id'], later_receipt_item['id'],
+        'MANUAL_IN', '20', 'full-later-receipt',
+    )
+
+    approved = _submit_approve(client, headers, approver_headers, count)
+    posted_response = _post_count(client, approver_headers, approved, 'full-complete-post')
+    assert posted_response.status_code == 200, posted_response.text
+    posted = posted_response.json()
+    assert posted['status'] == 'POSTED'
+    assert all(line['adjustment_stock_movement_id'] for line in posted['lines'])
+    assert client.get('/inventory/stock', headers=headers, params={
+        'location_id': scope.location_id, 'warehouse_id': warehouse['id'],
+        'inventory_item_id': later_receipt_item['id'],
+    }).json()['items'][0]['quantity'] == '115.000000'
+    assert client.get('/inventory/stock', headers=headers, params={
+        'location_id': scope.location_id, 'warehouse_id': warehouse['id'],
+        'inventory_item_id': zero_item['id'],
+    }).json()['items'][0]['quantity'] == '0.000000'
+
+    replay = _post_count(client, approver_headers, approved, 'full-complete-post')
+    assert replay.status_code == 200
+    assert replay.headers['Idempotent-Replay'] == 'true'
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT quantity FROM stock_movements WHERE physical_count_id=%s ORDER BY id',
+            (count['id'],),
+        )
+        assert [row['quantity'] for row in cursor.fetchall()] == [
+            Decimal('-5.000000'), Decimal('-5.000000'),
+        ]
 
 
 def test_no_freeze_later_movements_and_exactly_once_post(client, sql_connection):

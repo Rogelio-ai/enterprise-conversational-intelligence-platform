@@ -1207,7 +1207,9 @@ class PhysicalCount(TimestampMixin, Base):
             'tenant_id', 'post_actor_scope', 'post_idempotency_key',
             name='uq_physical_counts_post_idempotency',
         ),
-        CheckConstraint("count_scope='PARTIAL'", name='ck_physical_counts_scope'),
+        CheckConstraint(
+            "count_scope IN ('PARTIAL','FULL')", name='ck_physical_counts_scope',
+        ),
         CheckConstraint(
             "status IN ('DRAFT','COUNTING','SUBMITTED','APPROVED','POSTED','CANCELLED')",
             name='ck_physical_counts_status',

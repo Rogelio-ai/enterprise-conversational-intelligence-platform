@@ -27,6 +27,7 @@ IdempotencyKey = Annotated[str, Header(
 class CountCreateRequest(BaseModel):
     model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
     warehouse_id: int = Field(gt=0)
+    count_scope: Literal['PARTIAL', 'FULL'] = 'PARTIAL'
     reason: str | None = Field(default=None, max_length=500)
     reference: str | None = Field(default=None, max_length=200)
 
@@ -74,7 +75,7 @@ class CountResponse(BaseModel):
     organization_id: int
     location_id: int
     warehouse_id: int
-    count_scope: Literal['PARTIAL']
+    count_scope: Literal['PARTIAL', 'FULL']
     status: Literal['DRAFT', 'COUNTING', 'SUBMITTED', 'APPROVED', 'POSTED', 'CANCELLED']
     opened_at: datetime
     cursor_at: datetime

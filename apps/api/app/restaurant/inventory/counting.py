@@ -161,9 +161,13 @@ async def _projection(db: AsyncSession, value: PhysicalCount, include_cost: bool
 
 async def create_count(
     db: AsyncSession, *, context: ExecutionContext, warehouse_id: int,
-    reason: str | None, reference: str | None, include_cost: bool,
+    count_scope: str = 'PARTIAL', reason: str | None, reference: str | None,
+    include_cost: bool,
 ) -> dict:
     actor_id, _ = _actor(context)
+    count_scope = count_scope.strip().upper()
+    if count_scope not in ('PARTIAL', 'FULL'):
+        raise errors.InvalidPhysicalCountError('Count scope must be PARTIAL or FULL')
     try:
         warehouse = await db.scalar(select(Warehouse).where(
             Warehouse.id == warehouse_id, Warehouse.tenant_id == context.tenant_id,
@@ -180,7 +184,7 @@ async def create_count(
         value = PhysicalCount(
             tenant_id=warehouse.tenant_id, organization_id=warehouse.organization_id,
             location_id=warehouse.location_id, warehouse_id=warehouse.id,
-            count_scope='PARTIAL', status='DRAFT', opened_at=now, cursor_at=now,
+            count_scope=count_scope, status='DRAFT', opened_at=now, cursor_at=now,
             cursor_movement_id=int(cursor_id or 0), opened_by_actor_id=actor_id,
             reason=_text(reason, 500), reference=_text(reference, 200), version=1,
         )
@@ -369,6 +373,19 @@ async def post_count(
         if warehouse is None or warehouse.status != 'ACTIVE':
             raise errors.InvalidPhysicalCountError('Posting requires an active Warehouse')
         lines = await _lines(db, value, lock=True)
+        if value.count_scope == 'FULL':
+            required_item_ids = set((await db.scalars(select(InventoryItem.id).where(
+                InventoryItem.tenant_id == value.tenant_id,
+                InventoryItem.organization_id == value.organization_id,
+                InventoryItem.location_id == value.location_id,
+                InventoryItem.status == 'ACTIVE',
+            ).with_for_update())).all())
+            counted_item_ids = {line.inventory_item_id for line in lines}
+            missing_count = len(required_item_ids - counted_item_ids)
+            if missing_count:
+                raise errors.InvalidPhysicalCountError(
+                    f'FULL count is incomplete: {missing_count} active item(s) are not counted'
+                )
         now = await inventory_service._database_now(db)
         value.post_actor_scope = actor_scope
         value.post_idempotency_key = idempotency_key

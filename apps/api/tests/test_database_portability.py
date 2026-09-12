@@ -2161,6 +2161,110 @@ def test_fresh_install_reaches_portable_database_contract(
         connection.close()
 
 
+def test_0047_full_count_scope_fresh_populated_retry_and_downgrade_reupgrade(
+    isolated_database, integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0047_physical_count_full_scope'
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0046_physical_count_reconciliation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES ('B6R','b6r-migration','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) "
+                "VALUES (%s,'ORG','Org','ACTIVE')", (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO locations (tenant_id,organization_id,code,name,timezone,status) '
+                "VALUES (%s,%s,'LOC','Location','America/Mexico_City','ACTIVE')",
+                (tenant_id, organization_id),
+            )
+            location_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO warehouses (tenant_id,organization_id,location_id,code,name,'
+                'status,default_slot,negative_stock_policy,version) '
+                "VALUES (%s,%s,%s,'MAIN','Main','ACTIVE',1,'ALLOW',1)",
+                (tenant_id, organization_id, location_id),
+            )
+            warehouse_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO physical_counts (tenant_id,organization_id,location_id,'
+                'warehouse_id,count_scope,status,opened_at,cursor_at,cursor_movement_id,'
+                'opened_by_actor_id,version) VALUES '
+                "(%s,%s,%s,%s,'PARTIAL','DRAFT',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0,1,1)",
+                (tenant_id, organization_id, location_id, warehouse_id),
+            )
+            partial_id = int(cursor.lastrowid)
+            cursor.execute('SELECT COUNT(*) AS movements FROM stock_movements')
+            assert cursor.fetchone()['movements'] == 0
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT count_scope,status FROM physical_counts WHERE id=%s', (partial_id,))
+            assert cursor.fetchone() == {'count_scope': 'PARTIAL', 'status': 'DRAFT'}
+            cursor.execute(
+                'INSERT INTO physical_counts (tenant_id,organization_id,location_id,'
+                'warehouse_id,count_scope,status,opened_at,cursor_at,cursor_movement_id,'
+                'opened_by_actor_id,version) VALUES '
+                "(%s,%s,%s,%s,'FULL','DRAFT',CURRENT_TIMESTAMP,CURRENT_TIMESTAMP,0,1,1)",
+                (tenant_id, organization_id, location_id, warehouse_id),
+            )
+            full_id = int(cursor.lastrowid)
+            with pytest.raises(pymysql.MySQLError):
+                cursor.execute(
+                    'UPDATE physical_counts SET count_scope=\'UNKNOWN\' WHERE id=%s',
+                    (full_id,),
+                )
+            cursor.execute('DELETE FROM physical_counts WHERE id=%s', (full_id,))
+            cursor.execute('SELECT COUNT(*) AS movements FROM stock_movements')
+            assert cursor.fetchone()['movements'] == 0
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0046_physical_count_reconciliation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT count_scope FROM physical_counts WHERE id=%s', (partial_id,))
+            assert cursor.fetchone()['count_scope'] == 'PARTIAL'
+            with pytest.raises(pymysql.MySQLError):
+                cursor.execute(
+                    'UPDATE physical_counts SET count_scope=\'FULL\' WHERE id=%s',
+                    (partial_id,),
+                )
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT count_scope FROM physical_counts WHERE id=%s', (partial_id,))
+            assert cursor.fetchone()['count_scope'] == 'PARTIAL'
+            cursor.execute('SELECT COUNT(*) AS movements FROM stock_movements')
+            assert cursor.fetchone()['movements'] == 0
+    finally:
+        connection.close()
+
+
 def test_0042_fresh_install_reaches_uom_cost_evidence_contract(
     isolated_database,
     integration_settings: Settings,
@@ -2340,7 +2444,6 @@ def test_0043_backfills_recipe_v1_and_downgrade_reupgrade_preserves_legacy(
             component_id = int(cursor.lastrowid)
     finally:
         connection.close()
-
 
     _run_alembic(database_name, 'head')
     _run_alembic(database_name, 'head')
@@ -4392,6 +4495,7 @@ def test_0041_inventory_warehouse_upgrade_preserves_history_and_balances(
             movement_id = int(cursor.lastrowid)
     finally:
         connection.close()
+
 
     _run_alembic(database_name, 'head')
     _run_alembic(database_name, 'head')
