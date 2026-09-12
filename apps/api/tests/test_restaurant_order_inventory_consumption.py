@@ -96,6 +96,38 @@ def _recipe(
         )
         for inventory_item_id, quantity in components
     ]
+    version_id = _execute(
+        connection,
+        'INSERT INTO product_consumption_versions '
+        '(tenant_id,organization_id,location_id,definition_id,revision,status,'
+        'tracking_mode,publication_status,effective_from,effective_to,actor_id,'
+        "source,published_at) VALUES (%s,%s,%s,%s,1,'ACTIVE',%s,'PUBLISHED',"
+        "CURRENT_TIMESTAMP,NULL,NULL,'TEST_RECIPE',CURRENT_TIMESTAMP)",
+        (
+            scope.tenant_id, scope.organization_id, scope.location_id,
+            definition_id, tracking_mode,
+        ),
+    )
+    for inventory_item_id, quantity in components:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT base_uom FROM inventory_items WHERE id=%s',
+                (inventory_item_id,),
+            )
+            base_uom = cursor.fetchone()['base_uom']
+        _execute(
+            connection,
+            'INSERT INTO product_consumption_version_components '
+            '(tenant_id,organization_id,location_id,definition_id,version_id,'
+            'inventory_item_id,quantity,source_quantity,source_uom,'
+            'conversion_revision_id,conversion_factor,base_uom_evidence) '
+            'VALUES (%s,%s,%s,%s,%s,%s,%s,%s,%s,NULL,1.000000000000,%s)',
+            (
+                scope.tenant_id, scope.organization_id, scope.location_id,
+                definition_id, version_id, inventory_item_id, quantity, quantity,
+                base_uom, base_uom,
+            ),
+        )
     return definition_id, component_ids
 
 

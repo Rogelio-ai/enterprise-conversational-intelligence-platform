@@ -2136,9 +2136,7 @@ def test_0042_fresh_install_reaches_uom_cost_evidence_contract(
     try:
         with connection.cursor() as cursor:
             cursor.execute('SELECT version_num FROM alembic_version')
-            assert cursor.fetchone()['version_num'] == (
-                '0042_inventory_operational_uom_cost_evidence'
-            )
+            assert cursor.fetchone()['version_num'] == '0043_immutable_recipe_versions'
             cursor.execute(
                 'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION '
                 'FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() '
@@ -2171,6 +2169,165 @@ def test_0042_fresh_install_reaches_uom_cost_evidence_contract(
                 'standard_cost_revision_id', 'standard_unit_cost_evidence',
                 'cost_currency_evidence', 'extended_standard_cost',
                 'evidence_status',
+            }
+            cursor.execute(
+                'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION '
+                'FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() '
+                "AND TABLE_NAME IN ('product_consumption_versions',"
+                "'product_consumption_version_components') ORDER BY TABLE_NAME"
+            )
+            recipe_tables = {
+                row['TABLE_NAME']: {
+                    'ENGINE': row['ENGINE'],
+                    'TABLE_COLLATION': row['TABLE_COLLATION'],
+                }
+                for row in cursor.fetchall()
+            }
+            assert recipe_tables == {
+                'product_consumption_version_components': {
+                    'ENGINE': 'InnoDB',
+                    'TABLE_COLLATION': 'utf8mb4_unicode_ci',
+                },
+                'product_consumption_versions': {
+                    'ENGINE': 'InnoDB',
+                    'TABLE_COLLATION': 'utf8mb4_unicode_ci',
+                },
+            }
+            cursor.execute(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='stock_movements' "
+                "AND COLUMN_NAME IN ('consumption_version_id',"
+                "'consumption_version_component_id')"
+            )
+            assert {row['COLUMN_NAME'] for row in cursor.fetchall()} == {
+                'consumption_version_id', 'consumption_version_component_id',
+            }
+    finally:
+        connection.close()
+
+
+def test_0043_backfills_recipe_v1_and_downgrade_reupgrade_preserves_legacy(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0042_inventory_operational_uom_cost_evidence')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES ('Recipe','recipe-0043','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) "
+                "VALUES (%s,'ORG','Organization','ACTIVE')", (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO locations (tenant_id,organization_id,code,name,timezone,status) '
+                "VALUES (%s,%s,'LOC','Location','UTC','ACTIVE')",
+                (tenant_id, organization_id),
+            )
+            location_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO products (tenant_id,organization_id,name,status,source) '
+                "VALUES (%s,%s,'Product','ACTIVE','PLATFORM')",
+                (tenant_id, organization_id),
+            )
+            product_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO inventory_items '
+                '(tenant_id,organization_id,location_id,code,name,base_uom,'
+                'standard_unit_cost,currency,status,version) '
+                "VALUES (%s,%s,%s,'ITEM','Item','G',1,'MXN','ACTIVE',1)",
+                (tenant_id, organization_id, location_id),
+            )
+            item_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO product_consumption_definitions '
+                '(tenant_id,organization_id,location_id,product_id,version,status,tracking_mode) '
+                "VALUES (%s,%s,%s,%s,4,'ACTIVE','DERIVABLE')",
+                (tenant_id, organization_id, location_id, product_id),
+            )
+            definition_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO product_consumption_components '
+                '(tenant_id,organization_id,location_id,definition_id,inventory_item_id,quantity) '
+                'VALUES (%s,%s,%s,%s,%s,12.500000)',
+                (tenant_id, organization_id, location_id, definition_id, item_id),
+            )
+            component_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT id,revision,status,tracking_mode,effective_from,effective_to,'
+                'actor_id,source FROM product_consumption_versions '
+                'WHERE definition_id=%s', (definition_id,),
+            )
+            version = cursor.fetchone()
+            assert version is not None
+            assert version['revision'] == 1
+            assert version['status'] == 'ACTIVE'
+            assert version['tracking_mode'] == 'DERIVABLE'
+            assert version['effective_from'] is not None
+            assert version['effective_to'] is None
+            assert version['actor_id'] is None
+            assert version['source'] == 'LEGACY_RECIPE_SNAPSHOT'
+            cursor.execute(
+                'SELECT inventory_item_id,quantity,source_quantity,source_uom,'
+                'conversion_revision_id,conversion_factor,base_uom_evidence '
+                'FROM product_consumption_version_components WHERE version_id=%s',
+                (version['id'],),
+            )
+            assert cursor.fetchone() == {
+                'inventory_item_id': item_id,
+                'quantity': Decimal('12.500000'),
+                'source_quantity': Decimal('12.500000'),
+                'source_uom': 'G',
+                'conversion_revision_id': None,
+                'conversion_factor': Decimal('1.000000000000'),
+                'base_uom_evidence': 'G',
+            }
+            cursor.execute(
+                'SELECT id,version FROM product_consumption_definitions WHERE id=%s',
+                (definition_id,),
+            )
+            assert cursor.fetchone() == {'id': definition_id, 'version': 4}
+            cursor.execute(
+                'SELECT id,quantity FROM product_consumption_components WHERE id=%s',
+                (component_id,),
+            )
+            assert cursor.fetchone() == {
+                'id': component_id, 'quantity': Decimal('12.500000'),
+            }
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(
+        database_name, '0042_inventory_operational_uom_cost_evidence',
+    )
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT COUNT(*) AS count FROM product_consumption_versions '
+                'WHERE definition_id=%s', (definition_id,),
+            )
+            assert cursor.fetchone()['count'] == 1
+            cursor.execute(
+                'SELECT id,quantity FROM product_consumption_components WHERE id=%s',
+                (component_id,),
+            )
+            assert cursor.fetchone() == {
+                'id': component_id, 'quantity': Decimal('12.500000'),
             }
     finally:
         connection.close()
