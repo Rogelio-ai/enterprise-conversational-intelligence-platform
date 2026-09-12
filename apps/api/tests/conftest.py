@@ -289,6 +289,9 @@ def sql_connection(integration_settings: Settings):
             try:
                 for table in (
                     'stock_movements',
+                    'inventory_reconciliations',
+                    'physical_count_lines',
+                    'physical_counts',
                     'inventory_losses',
                     'inventory_loss_policies',
                     'goods_receipt_lines',

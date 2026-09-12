@@ -100,6 +100,42 @@ APPLICATION_TABLES = {
 }
 
 
+POST_0026_APPLICATION_TABLES = {
+    'billing_fiscal_artifacts',
+    'billing_fiscal_results',
+    'cash_counts',
+    'cash_movements',
+    'cash_sessions',
+    'diner_operational_requests',
+    'goods_receipt_lines',
+    'goods_receipts',
+    'inventory_cost_revisions',
+    'inventory_items',
+    'inventory_loss_policies',
+    'inventory_losses',
+    'inventory_reconciliations',
+    'item_uom_conversions',
+    'membership_location_grants',
+    'paid_check_dispatch_attempts',
+    'paid_check_dispatches',
+    'physical_count_lines',
+    'physical_counts',
+    'product_consumption_components',
+    'product_consumption_definitions',
+    'product_consumption_version_components',
+    'product_consumption_versions',
+    'product_fiscal_classifications',
+    'restaurant_order_consumptions',
+    'restaurant_order_item_fiscal_snapshots',
+    'stock_movements',
+    'supplier_locations',
+    'supplier_offerings',
+    'suppliers',
+    'warehouses',
+}
+MODEL_APPLICATION_TABLES = APPLICATION_TABLES | POST_0026_APPLICATION_TABLES
+
+
 APPLICATION_TABLES_0024 = APPLICATION_TABLES - {
     'billing_issuances',
     'billing_issuance_attempts',
@@ -1710,7 +1746,7 @@ def _connect_isolated_database(integration_settings: Settings, database_name: st
 
 
 def test_model_metadata_declares_portable_mysql_table_options() -> None:
-    assert set(Base.metadata.tables) == APPLICATION_TABLES
+    assert set(Base.metadata.tables) == MODEL_APPLICATION_TABLES
     for table in Base.metadata.sorted_tables:
         options = table.dialect_options['mysql']
         assert options['engine'] == 'InnoDB'
@@ -2136,7 +2172,7 @@ def test_0042_fresh_install_reaches_uom_cost_evidence_contract(
     try:
         with connection.cursor() as cursor:
             cursor.execute('SELECT version_num FROM alembic_version')
-            assert cursor.fetchone()['version_num'] == '0045_dedicated_inventory_loss'
+            assert cursor.fetchone()['version_num'] == '0046_physical_count_reconciliation'
             cursor.execute(
                 'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION '
                 'FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() '
@@ -2443,7 +2479,7 @@ def test_0044_upgrade_preserves_stock_and_downgrade_reupgrade_is_safe(
     try:
         with connection.cursor() as cursor:
             cursor.execute('SELECT version_num FROM alembic_version')
-            assert cursor.fetchone()['version_num'] == '0045_dedicated_inventory_loss'
+            assert cursor.fetchone()['version_num'] == '0046_physical_count_reconciliation'
             cursor.execute(
                 'SELECT quantity,goods_receipt_id,goods_receipt_line_id '
                 'FROM stock_movements WHERE id=%s', (movement_id,),
@@ -2642,7 +2678,7 @@ def test_0045_upgrade_preserves_legacy_stock_and_refuses_loss_history_downgrade(
     try:
         with connection.cursor() as cursor:
             cursor.execute('SELECT version_num FROM alembic_version')
-            assert cursor.fetchone()['version_num'] == '0045_dedicated_inventory_loss'
+            assert cursor.fetchone()['version_num'] == '0046_physical_count_reconciliation'
             cursor.execute(
                 'SELECT COALESCE(SUM(quantity),0) AS balance FROM stock_movements '
                 'WHERE tenant_id=%s AND warehouse_id=%s AND inventory_item_id=%s',
@@ -2711,6 +2747,110 @@ def test_0045_upgrade_preserves_legacy_stock_and_refuses_loss_history_downgrade(
                 'movement_type': 'WASTE', 'inventory_loss_id': loss_id,
                 'loss_movement_role': 'ORIGINAL',
             }
+    finally:
+        connection.close()
+
+
+def test_0046_fresh_install_creates_portable_empty_count_authority(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0046_physical_count_reconciliation'
+            cursor.execute(
+                'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION '
+                'FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() '
+                "AND TABLE_NAME IN ('physical_counts','physical_count_lines',"
+                "'inventory_reconciliations')"
+            )
+            tables = {row['TABLE_NAME']: row for row in cursor.fetchall()}
+            assert set(tables) == {
+                'physical_counts', 'physical_count_lines', 'inventory_reconciliations',
+            }
+            assert {row['ENGINE'] for row in tables.values()} == {'InnoDB'}
+            assert {row['TABLE_COLLATION'] for row in tables.values()} == {
+                'utf8mb4_unicode_ci'
+            }
+            cursor.execute(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='stock_movements' "
+                "AND COLUMN_NAME IN ('physical_count_id','physical_count_line_id')"
+            )
+            assert {row['COLUMN_NAME'] for row in cursor.fetchall()} == {
+                'physical_count_id', 'physical_count_line_id',
+            }
+            for table in (
+                'physical_counts', 'physical_count_lines', 'inventory_reconciliations'
+            ):
+                cursor.execute(f'SELECT COUNT(*) count FROM {table}')
+                assert cursor.fetchone()['count'] == 0
+    finally:
+        connection.close()
+
+
+def test_0046_upgrade_preserves_0045_stock_and_is_retry_safe(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0045_dedicated_inventory_loss')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("INSERT INTO tenants (name,slug,status) VALUES ('Count','count-0046','ACTIVE')")
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO organizations (tenant_id,code,name,status) VALUES (%s,'ORG','Organization','ACTIVE')", (tenant_id,))
+            organization_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO locations (tenant_id,organization_id,code,name,timezone,status) VALUES (%s,%s,'LOC','Location','UTC','ACTIVE')", (tenant_id, organization_id))
+            location_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO warehouses (tenant_id,organization_id,location_id,code,name,status,default_slot,negative_stock_policy,version) VALUES (%s,%s,%s,'DEFAULT','Default','ACTIVE',1,'ALLOW',1)", (tenant_id, organization_id, location_id))
+            warehouse_id = int(cursor.lastrowid)
+            cursor.execute("INSERT INTO inventory_items (tenant_id,organization_id,location_id,code,name,base_uom,standard_unit_cost,currency,status,version) VALUES (%s,%s,%s,'ITEM','Item','UNIT',2,'MXN','ACTIVE',1)", (tenant_id, organization_id, location_id))
+            item_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO stock_movements (tenant_id,organization_id,location_id,warehouse_id,inventory_item_id,movement_type,quantity,recorded_at,actor_type,actor_id,idempotency_actor_scope,idempotency_key,request_schema_version,request_fingerprint,negative_stock_policy,negative_stock_warning,resulting_stock_quantity,evidence_status,opening_balance_slot) VALUES (%s,%s,%s,%s,%s,'OPENING_BALANCE',8,CURRENT_TIMESTAMP,'EMPLOYEE',1,'EMPLOYEE:1','pre-b6',1,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','ALLOW',0,8,'LEGACY_UNAVAILABLE',1)",
+                (tenant_id, organization_id, location_id, warehouse_id, item_id),
+            )
+            cursor.execute('SELECT SUM(quantity) balance FROM stock_movements')
+            balance_before = cursor.fetchone()['balance']
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, 'head')
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == '0046_physical_count_reconciliation'
+            cursor.execute("SELECT TABLE_NAME FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('physical_counts','physical_count_lines','inventory_reconciliations')")
+            assert {row['TABLE_NAME'] for row in cursor.fetchall()} == {
+                'physical_counts', 'physical_count_lines', 'inventory_reconciliations',
+            }
+            cursor.execute("SELECT COLUMN_NAME FROM information_schema.COLUMNS WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='stock_movements' AND COLUMN_NAME IN ('physical_count_id','physical_count_line_id')")
+            assert {row['COLUMN_NAME'] for row in cursor.fetchall()} == {
+                'physical_count_id', 'physical_count_line_id',
+            }
+            cursor.execute('SELECT SUM(quantity) balance FROM stock_movements')
+            assert cursor.fetchone()['balance'] == balance_before
+            for table in ('physical_counts', 'physical_count_lines', 'inventory_reconciliations'):
+                cursor.execute(f'SELECT COUNT(*) count FROM {table}')
+                assert cursor.fetchone()['count'] == 0
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0045_dedicated_inventory_loss')
+    _run_alembic(database_name, 'head')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT SUM(quantity) balance FROM stock_movements')
+            assert cursor.fetchone()['balance'] == balance_before
     finally:
         connection.close()
 

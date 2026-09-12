@@ -159,3 +159,23 @@ class InventoryLossPolicyNotFoundError(InventoryError):
 
 class InventoryLossPolicyConflictError(InventoryError):
     code = 'INVENTORY_LOSS_POLICY_CONFLICT'
+
+
+class PhysicalCountNotFoundError(InventoryError):
+    code = 'PHYSICAL_COUNT_NOT_FOUND'
+
+
+class PhysicalCountConflictError(InventoryError):
+    code = 'PHYSICAL_COUNT_CONFLICT'
+
+
+class InvalidPhysicalCountError(InventoryError):
+    code = 'INVALID_PHYSICAL_COUNT'
+
+
+class InventoryReconciliationNotFoundError(InventoryError):
+    code = 'INVENTORY_RECONCILIATION_NOT_FOUND'
+
+
+class InventoryReconciliationConflictError(InventoryError):
+    code = 'INVENTORY_RECONCILIATION_CONFLICT'

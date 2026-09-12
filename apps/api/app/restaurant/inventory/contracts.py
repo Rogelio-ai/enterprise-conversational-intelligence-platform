@@ -74,6 +74,8 @@ class StockMovementProjection:
     goods_receipt_line_id: int | None
     inventory_loss_id: int | None
     loss_movement_role: str | None
+    physical_count_id: int | None
+    physical_count_line_id: int | None
 
 
 @dataclass(frozen=True, slots=True)

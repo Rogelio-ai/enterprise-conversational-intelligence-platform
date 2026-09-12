@@ -1190,6 +1190,236 @@ class InventoryLoss(TimestampMixin, Base):
     )
 
 
+class PhysicalCount(TimestampMixin, Base):
+    __tablename__ = 'physical_counts'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['warehouse_id', 'tenant_id', 'organization_id', 'location_id'],
+            ['warehouses.id', 'warehouses.tenant_id', 'warehouses.organization_id',
+             'warehouses.location_id'],
+            name='fk_physical_counts_warehouse_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id', 'warehouse_id',
+            name='uq_physical_counts_scope',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'post_actor_scope', 'post_idempotency_key',
+            name='uq_physical_counts_post_idempotency',
+        ),
+        CheckConstraint("count_scope='PARTIAL'", name='ck_physical_counts_scope'),
+        CheckConstraint(
+            "status IN ('DRAFT','COUNTING','SUBMITTED','APPROVED','POSTED','CANCELLED')",
+            name='ck_physical_counts_status',
+        ),
+        CheckConstraint('version >= 1', name='ck_physical_counts_version'),
+        Index(
+            'ix_physical_counts_location_status', 'tenant_id', 'location_id',
+            'status', 'id',
+        ),
+        OPTIONS,
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    count_scope: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='PARTIAL', server_default=text("'PARTIAL'")
+    )
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='DRAFT', server_default=text("'DRAFT'")
+    )
+    opened_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    cursor_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    cursor_movement_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    opened_by_actor_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    submitted_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    approved_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    approved_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    posted_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    cancelled_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    reason: Mapped[str | None] = mapped_column(String(500), nullable=True)
+    reference: Mapped[str | None] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=True
+    )
+    version: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default=text('1')
+    )
+    post_actor_scope: Mapped[str | None] = mapped_column(
+        String(200, collation='ascii_bin'), nullable=True
+    )
+    post_idempotency_key: Mapped[str | None] = mapped_column(
+        String(128, collation='ascii_bin'), nullable=True
+    )
+    post_fingerprint: Mapped[str | None] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=True
+    )
+
+
+class PhysicalCountLine(Base):
+    __tablename__ = 'physical_count_lines'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['physical_count_id', 'tenant_id', 'organization_id', 'location_id',
+             'warehouse_id'],
+            ['physical_counts.id', 'physical_counts.tenant_id',
+             'physical_counts.organization_id', 'physical_counts.location_id',
+             'physical_counts.warehouse_id'],
+            name='fk_physical_count_lines_count_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['inventory_item_id', 'tenant_id', 'organization_id', 'location_id'],
+            ['inventory_items.id', 'inventory_items.tenant_id',
+             'inventory_items.organization_id', 'inventory_items.location_id'],
+            name='fk_physical_count_lines_item_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['conversion_revision_id', 'tenant_id', 'organization_id', 'location_id',
+             'inventory_item_id'],
+            ['item_uom_conversions.id', 'item_uom_conversions.tenant_id',
+             'item_uom_conversions.organization_id',
+             'item_uom_conversions.location_id',
+             'item_uom_conversions.inventory_item_id'],
+            name='fk_physical_count_lines_conversion_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['standard_cost_revision_id', 'tenant_id', 'organization_id',
+             'location_id', 'inventory_item_id'],
+            ['inventory_cost_revisions.id', 'inventory_cost_revisions.tenant_id',
+             'inventory_cost_revisions.organization_id',
+             'inventory_cost_revisions.location_id',
+             'inventory_cost_revisions.inventory_item_id'],
+            name='fk_physical_count_lines_cost_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'id', 'tenant_id', 'organization_id', 'location_id', 'warehouse_id',
+            'physical_count_id', 'inventory_item_id',
+            name='uq_physical_count_lines_scope',
+        ),
+        UniqueConstraint(
+            'physical_count_id', 'inventory_item_id',
+            name='uq_physical_count_lines_item',
+        ),
+        CheckConstraint('source_quantity >= 0', name='ck_physical_count_lines_source'),
+        CheckConstraint('conversion_factor > 0', name='ck_physical_count_lines_factor'),
+        CheckConstraint(
+            "evidence_status IN ('RESOLVED','COST_NON_DERIVABLE')",
+            name='ck_physical_count_lines_evidence_status',
+        ),
+        CheckConstraint('version >= 1', name='ck_physical_count_lines_version'),
+        OPTIONS,
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    physical_count_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    expected_quantity_at_cursor: Mapped[Decimal] = mapped_column(
+        Numeric(19, 6), nullable=False
+    )
+    source_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    source_uom: Mapped[str] = mapped_column(
+        String(32, collation='ascii_bin'), nullable=False
+    )
+    conversion_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(25, 12), nullable=False)
+    base_uom_evidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    normalized_counted_quantity: Mapped[Decimal] = mapped_column(
+        Numeric(19, 6), nullable=False
+    )
+    variance_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    standard_cost_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    standard_unit_cost_evidence: Mapped[Decimal | None] = mapped_column(
+        Numeric(19, 6), nullable=True
+    )
+    cost_currency_evidence: Mapped[str | None] = mapped_column(
+        String(3, collation='ascii_bin'), nullable=True
+    )
+    variance_value: Mapped[Decimal | None] = mapped_column(Numeric(31, 12), nullable=True)
+    evidence_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    version: Mapped[int] = mapped_column(
+        BigInteger, nullable=False, default=1, server_default=text('1')
+    )
+    counted_by_actor_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    counted_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.current_timestamp()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.current_timestamp(),
+        onupdate=func.current_timestamp(),
+    )
+
+
+class InventoryReconciliation(TimestampMixin, Base):
+    __tablename__ = 'inventory_reconciliations'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['physical_count_line_id', 'tenant_id', 'organization_id', 'location_id',
+             'warehouse_id', 'physical_count_id', 'inventory_item_id'],
+            ['physical_count_lines.id', 'physical_count_lines.tenant_id',
+             'physical_count_lines.organization_id',
+             'physical_count_lines.location_id', 'physical_count_lines.warehouse_id',
+             'physical_count_lines.physical_count_id',
+             'physical_count_lines.inventory_item_id'],
+            name='fk_inventory_reconciliations_line_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'physical_count_line_id', name='uq_inventory_reconciliations_count_line'
+        ),
+        CheckConstraint("status IN ('OPEN','CLOSED')", name='ck_inventory_reconciliations_status'),
+        CheckConstraint('period_start < period_end', name='ck_inventory_reconciliations_period'),
+        CheckConstraint('version >= 1', name='ck_inventory_reconciliations_version'),
+        Index(
+            'ix_inventory_reconciliations_location_status', 'tenant_id',
+            'location_id', 'status', 'id',
+        ),
+        OPTIONS,
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    physical_count_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    physical_count_line_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    period_start: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    period_end: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='OPEN', server_default=text("'OPEN'")
+    )
+    opening_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    receiving_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    theoretical_consumption_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    dedicated_loss_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    other_adjustment_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    physical_count_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    count_adjustment_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    theoretical_closing_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    closing_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    variance_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    variance_percentage: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    standard_cost_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    standard_unit_cost_evidence: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    cost_currency_evidence: Mapped[str | None] = mapped_column(String(3, collation='ascii_bin'), nullable=True)
+    variance_value: Mapped[Decimal | None] = mapped_column(Numeric(31, 12), nullable=True)
+    evidence_status: Mapped[str | None] = mapped_column(String(24), nullable=True)
+    created_by_actor_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    closed_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1, server_default=text('1'))
+
+
 class StockMovement(Base):
     __tablename__ = 'stock_movements'
     __table_args__ = (
@@ -1335,6 +1565,16 @@ class StockMovement(Base):
             name='fk_stock_movements_loss_scope', ondelete='RESTRICT',
         ),
         ForeignKeyConstraint(
+            ['physical_count_line_id', 'tenant_id', 'organization_id', 'location_id',
+             'warehouse_id', 'physical_count_id', 'inventory_item_id'],
+            ['physical_count_lines.id', 'physical_count_lines.tenant_id',
+             'physical_count_lines.organization_id',
+             'physical_count_lines.location_id', 'physical_count_lines.warehouse_id',
+             'physical_count_lines.physical_count_id',
+             'physical_count_lines.inventory_item_id'],
+            name='fk_stock_movements_count_line_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
             ['source_product_id', 'tenant_id', 'organization_id'],
             ['products.id', 'products.tenant_id', 'products.organization_id'],
             name='fk_stock_movements_source_product_scope', ondelete='RESTRICT',
@@ -1382,6 +1622,9 @@ class StockMovement(Base):
         UniqueConstraint(
             'inventory_loss_id', 'loss_movement_role',
             name='uq_stock_movements_loss_role',
+        ),
+        UniqueConstraint(
+            'physical_count_line_id', name='uq_stock_movements_count_line',
         ),
         CheckConstraint(
             "movement_type IN ('OPENING_BALANCE','MANUAL_IN','MANUAL_OUT',"
@@ -1488,6 +1731,13 @@ class StockMovement(Base):
             name='ck_stock_movements_loss_evidence',
         ),
         CheckConstraint(
+            "(movement_type='ADJUSTMENT' AND ((physical_count_id IS NULL AND "
+            "physical_count_line_id IS NULL) OR (physical_count_id IS NOT NULL AND "
+            "physical_count_line_id IS NOT NULL))) OR (movement_type<>'ADJUSTMENT' AND "
+            "physical_count_id IS NULL AND physical_count_line_id IS NULL)",
+            name='ck_stock_movements_count_evidence',
+        ),
+        CheckConstraint(
             '(unit_cost_snapshot IS NULL OR unit_cost_snapshot >= 0) AND '
             '(extended_cost_snapshot IS NULL OR extended_cost_snapshot >= 0)',
             name='ck_stock_movements_consumption_cost',
@@ -1511,6 +1761,10 @@ class StockMovement(Base):
         Index(
             'ix_stock_movements_loss', 'tenant_id', 'inventory_loss_id',
             'loss_movement_role',
+        ),
+        Index(
+            'ix_stock_movements_count', 'tenant_id', 'physical_count_id',
+            'physical_count_line_id',
         ),
         OPTIONS,
     )
@@ -1583,6 +1837,8 @@ class StockMovement(Base):
     goods_receipt_line_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     inventory_loss_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     loss_movement_role: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    physical_count_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    physical_count_line_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     restaurant_order_consumption_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True
     )

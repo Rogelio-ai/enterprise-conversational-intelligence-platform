@@ -1001,6 +1001,8 @@ def _movement_projection(value: StockMovement, base_uom: str) -> StockMovementPr
         goods_receipt_line_id=value.goods_receipt_line_id,
         inventory_loss_id=value.inventory_loss_id,
         loss_movement_role=value.loss_movement_role,
+        physical_count_id=value.physical_count_id,
+        physical_count_line_id=value.physical_count_line_id,
     )
 
 
