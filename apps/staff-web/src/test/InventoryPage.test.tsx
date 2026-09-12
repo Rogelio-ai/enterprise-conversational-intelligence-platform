@@ -35,7 +35,7 @@ const intelligence: InventoryIntelligence = {
 
 function json(body: unknown, status = 200) { return Promise.resolve(new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json' } })); }
 
-function mockApi(currentIdentity = identity, acceptConflict = false) {
+function mockApi(currentIdentity = identity, acceptConflict = false, inventoryData = intelligence) {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   let receiptLines: Array<Record<string, unknown>> = [];
   let count: Record<string, any> = { id: 81, warehouse_id: 41, count_scope: 'PARTIAL', status: 'DRAFT', opened_at: '2026-09-12T12:00:00Z', cursor_at: '2026-09-12T12:00:00Z', cursor_movement_id: 70, reason: 'Conteo', reference: null, version: 1, lines: [] };
@@ -43,7 +43,7 @@ function mockApi(currentIdentity = identity, acceptConflict = false) {
     const url = String(input); calls.push({ url, init });
     if (url.endsWith('/auth/me')) return json(currentIdentity);
     if (url.includes('/locations?')) return json({ items: [location], limit: 100, offset: 0 });
-    if (url.includes('/inventory/intelligence?')) return json(intelligence);
+    if (url.includes('/inventory/intelligence?')) return json(inventoryData);
     if (url.includes('/inventory/suppliers?')) return json({ items: [{ id: 71, code: 'NORTE', name: 'Proveedor Norte', status: 'ACTIVE', location_ids: [21] }] });
     if (url.includes('/inventory/suppliers/71/offerings?')) return json({ items: [
       { id: 72, supplier_id: 71, location_id: 21, inventory_item_id: 51, purchase_uom: 'KG', status: 'ACTIVE' },
@@ -108,6 +108,15 @@ describe('Inventory Staff Web', () => {
     expect(api.calls.some(({ url }) => url.includes('location_id=21'))).toBe(true);
   });
 
+  it('shows a deliberate no-warehouse state without exposing unusable workflows', async () => {
+    mockApi(identity, false, { ...intelligence, active_warehouse_count: 0, stock_position_count: 0, warehouses: [], stock: [] });
+    const { container } = renderInventory('/inventory/receiving');
+    expect(await screen.findByText('No hay almacenes activos.')).toBeVisible();
+    expect(screen.getByText(/Habilita un almacén/)).toBeVisible();
+    expect(screen.queryByRole('heading', { name: 'Nueva recepción directa' })).not.toBeInTheDocument();
+    expect(container.querySelector('.inventory-page')).not.toHaveTextContent('000000');
+  });
+
   it('composes, edits, removes, and accepts one authoritative multi-line receipt', async () => {
     const api = mockApi(); const user = userEvent.setup(); renderInventory('/inventory/receiving');
     await screen.findByRole('heading', { name: 'Nueva recepción directa' });
@@ -169,7 +178,7 @@ describe('Inventory Staff Web', () => {
     await user.click(screen.getByRole('button', { name: 'Enviar' }));
     await user.click(await screen.findByRole('button', { name: 'Aprobar' }));
     await user.click(await screen.findByRole('button', { name: 'Publicar ajustes' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('FULL count is incomplete');
+    expect(await screen.findByRole('alert')).toHaveTextContent('El conteo FULL está incompleto');
     await user.click(screen.getByRole('button', { name: 'Publicar ajustes' }));
     await waitFor(() => expect(api.calls.filter(({ url }) => url.endsWith(':post'))).toHaveLength(2));
     const failedPosts = api.calls.filter(({ url }) => url.endsWith(':post'));
@@ -202,11 +211,11 @@ describe('Inventory Staff Web', () => {
     await user.click(screen.getByRole('button', { name: 'Crear DRAFT' }));
     creations = api.calls.filter(({ url, init }) => url.endsWith('/inventory/losses') && init?.method === 'POST');
     expect(JSON.parse(String(creations[1].init?.body)).occurred_at).toBe(new Date('2026-09-10T08:30').toISOString());
-    expect(await screen.findByText(/Ocurrencia autoritativa/)).toBeVisible();
+    expect(await screen.findByText(/Ocurrencia confirmada/)).toBeVisible();
     await user.clear(screen.getByLabelText('Fecha/hora de ocurrencia (opcional)'));
     await user.type(screen.getByLabelText('Fecha/hora de ocurrencia (opcional)'), '2035-01-01T08:30');
     await user.click(screen.getByRole('button', { name: 'Crear DRAFT' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('Occurrence time cannot be in the future');
+    expect(await screen.findByRole('alert')).toHaveTextContent('La fecha de ocurrencia no puede estar en el futuro');
     await user.click(screen.getByRole('button', { name: 'Enviar / publicar' }));
     await user.click(await screen.findByRole('button', { name: 'Aprobar y publicar' }));
     expect(await screen.findByText(/Historial publicado inmutable/)).toBeVisible();
@@ -231,7 +240,7 @@ describe('Inventory Staff Web', () => {
     await screen.findByRole('heading', { name: 'Registrar pérdida dedicada' }); await user.selectOptions(screen.getByLabelText('Artículo'), '51');
     await user.type(screen.getByLabelText('Cantidad'), '1'); await user.type(screen.getByLabelText(/Razón/), 'Daño'); await user.click(screen.getByRole('button', { name: 'Crear DRAFT' }));
     await user.click(await screen.findByRole('button', { name: 'Enviar / publicar' }));
-    expect(await screen.findByText(/APROBACIÓN OBLIGATORIA/)).toBeVisible(); expect(screen.getByText(/Movimiento: NO PUBLICADO/)).toBeVisible();
+    expect(await screen.findByText(/APROBACIÓN OBLIGATORIA/)).toBeVisible(); expect(screen.getByText(/Movimiento de pérdida: NO PUBLICADO/)).toBeVisible();
     cleanup(); mockApi(); renderInventory('/inventory/reconciliation');
     expect(await screen.findByText('Varianza sin explicar')).toBeVisible();
     expect(screen.getByText(/no se etiqueta como merma, robo o consumo sin evidencia/)).toBeVisible();
