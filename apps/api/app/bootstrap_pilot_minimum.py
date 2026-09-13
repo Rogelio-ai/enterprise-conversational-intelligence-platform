@@ -47,39 +47,55 @@ from app.models import (
 )
 
 
-TENANT_NAME = 'Carnitas Muñoz y Cortes'
-TENANT_SLUG = 'carnitas-munoz-y-cortes'
-ORGANIZATION_CODE = 'CMC'
-LOCATION_CODE = 'SLP-CARNITAS-MUNOZ'
-LOCATION_NAME = 'Carnitas Muñoz'
+DEMO_MODE = os.environ.get('DEMO_ENV') == 'demo'
+TENANT_NAME = 'Restaurant Intelligence Demo' if DEMO_MODE else 'Carnitas Muñoz y Cortes'
+TENANT_SLUG = 'restaurant-intelligence-demo' if DEMO_MODE else 'carnitas-munoz-y-cortes'
+ORGANIZATION_CODE = 'DEMO-GROUP' if DEMO_MODE else 'CMC'
+LOCATION_CODE = 'CENTRO-DEMO' if DEMO_MODE else 'SLP-CARNITAS-MUNOZ'
+LOCATION_NAME = 'Centro Demo' if DEMO_MODE else 'Carnitas Muñoz'
 LOCATION_TIMEZONE = 'America/Mexico_City'
-ADMIN_EMAIL = 'usopublico001@gmail.com'
-ADMIN_DISPLAY_NAME = 'Rogelio'
-LOCAL_TARGET_KEY = 'workstation_hp_p1005'
-CONEKTA_CREDENTIAL_BINDING = 'pilot-location-conekta-test'
+ADMIN_EMAIL = 'manager@restaurant.demo' if DEMO_MODE else 'usopublico001@gmail.com'
+ADMIN_DISPLAY_NAME = 'Gerente Demo' if DEMO_MODE else 'Rogelio'
+LOCAL_TARGET_KEY = 'demo-disabled-printer' if DEMO_MODE else 'workstation_hp_p1005'
+CONEKTA_CREDENTIAL_BINDING = 'demo-disabled-conekta' if DEMO_MODE else 'pilot-location-conekta-test'
 FISCAL_JURISDICTION_CODE = 'MX'
-TAX_CLASSIFICATION_CODE = 'PREPILOT-IVA-16'
+TAX_CLASSIFICATION_CODE = 'DEMO-IVA-16' if DEMO_MODE else 'PREPILOT-IVA-16'
+
+MENU_LABEL = 'Menú Demo' if DEMO_MODE else 'Menú Pre-Pilot'
+MENU_NAME = 'Menú Restaurant Intelligence Demo' if DEMO_MODE else 'Menú Local Pre-Pilot'
+MENU_SECTION = 'Especialidades Demo' if DEMO_MODE else 'Platillos Pre-Pilot'
+DATA_DESCRIPTION = ('Producto ficticio para recorrido local DEMO.' if DEMO_MODE
+                    else 'Producto sintético para certificación local pre-pilot.')
+FISCAL_PREFIX = 'DEMO' if DEMO_MODE else 'PREPILOT'
 
 
 STAFF = (
     (
-        'WAITER', 'waiter.prepilot@carnitas-munoz.invalid', 'Mesero Pre-Pilot',
+        'WAITER', ('waiter@restaurant.demo' if DEMO_MODE else 'waiter.prepilot@carnitas-munoz.invalid'), ('Mesero Demo' if DEMO_MODE else 'Mesero Pre-Pilot'),
         ('order_draft.read', 'order_draft.manage', 'restaurant_service.read',
          'restaurant_service.manage', 'restaurant_order.read', 'restaurant_check.read'),
     ),
     (
-        'KITCHEN', 'kitchen.prepilot@carnitas-munoz.invalid', 'Cocina Pre-Pilot',
+        'KITCHEN', ('kitchen@restaurant.demo' if DEMO_MODE else 'kitchen.prepilot@carnitas-munoz.invalid'), ('Cocina Demo' if DEMO_MODE else 'Cocina Pre-Pilot'),
         ('preparation.read', 'preparation.execute', 'preparation.dispatch',
          'restaurant_order.read'),
     ),
     (
-        'CASHIER', 'cashier.prepilot@carnitas-munoz.invalid', 'Caja Pre-Pilot',
+        'CASHIER', ('cashier@restaurant.demo' if DEMO_MODE else 'cashier.prepilot@carnitas-munoz.invalid'), ('Caja Demo' if DEMO_MODE else 'Caja Pre-Pilot'),
         ('restaurant_check.read', 'restaurant_check.manage',
          'restaurant_payment.read', 'restaurant_payment.manage',
          'restaurant_payment.recover', 'cash_management.read',
          'cash_session.manage', 'cash_movement.manage'),
     ),
 )
+if DEMO_MODE:
+    STAFF += (
+        (
+            'INVENTORY_MANAGER', 'inventory@restaurant.demo',
+            'Responsable de Inventario Demo',
+            ('inventory.count.read', 'inventory.count.approve', 'inventory.count.post'),
+        ),
+    )
 
 
 T = TypeVar('T')
@@ -109,6 +125,16 @@ class PilotResult:
 
 
 def _secret(path_variable: str) -> str:
+    if DEMO_MODE:
+        variable = (
+            'DEMO_ADMIN_PASSWORD'
+            if path_variable == 'PILOT_ADMIN_PASSWORD_FILE'
+            else 'DEMO_STAFF_PASSWORD'
+        )
+        value = os.environ.get(variable, '').strip()
+        if not value:
+            raise ValueError(f'{variable} is required in DEMO mode')
+        return value
     raw_path = os.environ.get(path_variable, '').strip()
     if not raw_path:
         raise ValueError(f'{path_variable} is required')
@@ -187,7 +213,7 @@ async def _staff(
     else:
         _match(membership, f'{role_code} membership', status='ACTIVE')
 
-    role_name = f'PREPILOT_{role_code}'
+    role_name = f'{"DEMO" if DEMO_MODE else "PREPILOT"}_{role_code}'
     role = await _one(session, select(Role).where(
         Role.tenant_id == tenant_id, Role.name == role_name,
     ), f'{role_code} role')
@@ -327,10 +353,16 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                     staff_memberships[role_code] = membership.id
 
                 resources: dict[str, Resource] = {}
-                for code, name, kind in (
-                    ('MESA-01', 'Mesa 01 Pre-Pilot', 'TABLE'),
-                    ('CAJA-01', 'Caja 01 Pre-Pilot', 'CASH_REGISTER'),
-                ):
+                resource_specs = (
+                    ('MESA-01', 'Mesa 01 Demo' if DEMO_MODE else 'Mesa 01 Pre-Pilot', 'TABLE'),
+                    ('CAJA-01', 'Caja 01 Demo' if DEMO_MODE else 'Caja 01 Pre-Pilot', 'CASH_REGISTER'),
+                )
+                if DEMO_MODE:
+                    resource_specs += tuple(
+                        (f'MESA-{number:02d}', f'Mesa {number:02d} Demo', 'TABLE')
+                        for number in range(2, 9)
+                    )
+                for code, name, kind in resource_specs:
                     resource = await _one(session, select(Resource).where(
                         Resource.tenant_id == core.tenant_id,
                         Resource.location_id == location.id,
@@ -389,12 +421,12 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                 category = await _one(session, select(ProductCategory).where(
                     ProductCategory.tenant_id == core.tenant_id,
                     ProductCategory.organization_id == organization.id,
-                    ProductCategory.name == 'Menú Pre-Pilot',
+                    ProductCategory.name == MENU_LABEL,
                 ), 'Product Category')
                 if category is None:
                     category = ProductCategory(
                         tenant_id=core.tenant_id, organization_id=organization.id,
-                        parent_id=None, name='Menú Pre-Pilot', display_order=0,
+                        parent_id=None, name=MENU_LABEL, display_order=0,
                         status='ACTIVE',
                     )
                     session.add(category)
@@ -410,6 +442,17 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                     ('QUESADILLA', 'Quesadilla', Decimal('45.0000'), 'AREA'),
                     ('REFRESCO', 'Refresco', Decimal('30.0000'), 'NO_PREPARATION'),
                 )
+                if DEMO_MODE:
+                    product_specs = (
+                        ('TACO-DEMO', 'Taco de la casa', Decimal('32.0000'), 'AREA'),
+                        ('QUESADILLA-DEMO', 'Quesadilla de temporada', Decimal('58.0000'), 'AREA'),
+                        ('TORTA-DEMO', 'Torta Centro', Decimal('92.0000'), 'AREA'),
+                        ('ORDEN-DEMO', 'Orden familiar', Decimal('185.0000'), 'AREA'),
+                        ('SALSA-DEMO', 'Salsa preparada', Decimal('18.0000'), 'NO_PREPARATION'),
+                        ('AGUA-DEMO', 'Agua mineral', Decimal('28.0000'), 'NO_PREPARATION'),
+                        ('REFRESCO-DEMO', 'Refresco artesanal', Decimal('42.0000'), 'NO_PREPARATION'),
+                        ('POSTRE-DEMO', 'Flan de vainilla', Decimal('55.0000'), 'NO_PREPARATION'),
+                    )
                 for stable_key, name, amount, policy in product_specs:
                     product = await _one(session, select(Product).where(
                         Product.tenant_id == core.tenant_id,
@@ -420,7 +463,7 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                         product = Product(
                             tenant_id=core.tenant_id, organization_id=organization.id,
                             category_id=category.id, name=name,
-                            description='Producto sintético para certificación local pre-pilot.',
+                            description=DATA_DESCRIPTION,
                             tax_classification_code=TAX_CLASSIFICATION_CODE,
                             status='ACTIVE', source='PLATFORM',
                         )
@@ -455,9 +498,9 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                         f'Fiscal Product Classification {stable_key}',
                     )
                     fiscal_values = {
-                        'product_classification_scheme': 'PREPILOT-PRODUCT-SCHEME',
-                        'product_classification_code': f'PREPILOT-{stable_key}',
-                        'unit_classification_scheme': 'PREPILOT-UNIT-SCHEME',
+                        'product_classification_scheme': f'{FISCAL_PREFIX}-PRODUCT-SCHEME',
+                        'product_classification_code': f'{FISCAL_PREFIX}-{stable_key}',
+                        'unit_classification_scheme': f'{FISCAL_PREFIX}-UNIT-SCHEME',
                         'unit_classification_code': 'EACH',
                     }
                     if fiscal_classification is None:
@@ -534,7 +577,7 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                     RestaurantTaxRule.effective_to.is_(None),
                 ), 'Restaurant Tax Rule')
                 tax_values = {
-                    'jurisdiction_code': 'MX-PREPILOT',
+                    'jurisdiction_code': f'MX-{FISCAL_PREFIX}',
                     'tax_category': 'IVA',
                     'tax_treatment': 'TAXABLE',
                     'tax_effect': 'TRANSFERRED',
@@ -561,12 +604,12 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                 menu = await _one(session, select(Menu).where(
                     Menu.tenant_id == core.tenant_id,
                     Menu.organization_id == organization.id,
-                    Menu.name == 'Menú Local Pre-Pilot',
+                    Menu.name == MENU_NAME,
                 ), 'Menu')
                 if menu is None:
                     menu = Menu(
                         tenant_id=core.tenant_id, organization_id=organization.id,
-                        name='Menú Local Pre-Pilot', status='ACTIVE',
+                        name=MENU_NAME, status='ACTIVE',
                     )
                     session.add(menu)
                     await session.flush()
@@ -591,12 +634,12 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                 section = await _one(session, select(MenuSection).where(
                     MenuSection.tenant_id == core.tenant_id,
                     MenuSection.menu_id == menu.id,
-                    MenuSection.name == 'Platillos Pre-Pilot',
+                    MenuSection.name == MENU_SECTION,
                 ), 'Menu Section')
                 if section is None:
                     section = MenuSection(
                         tenant_id=core.tenant_id, organization_id=organization.id,
-                        menu_id=menu.id, name='Platillos Pre-Pilot',
+                        menu_id=menu.id, name=MENU_SECTION,
                         display_order=0, status='ACTIVE',
                     )
                     session.add(section)
@@ -633,7 +676,7 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                     connector = PreparationDeliveryConnector(
                         tenant_id=core.tenant_id, organization_id=organization.id,
                         location_id=location.id, code='WS-HP-P1005',
-                        name='HP P1005 Local Pre-Pilot',
+                        name='Impresora no conectada DEMO' if DEMO_MODE else 'HP P1005 Local Pre-Pilot',
                         auth_subject='preparation-connector:prepilot-workstation-hp-p1005',
                         status='ACTIVE',
                     )
@@ -654,7 +697,7 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                         tenant_id=core.tenant_id, organization_id=organization.id,
                         location_id=location.id, preparation_area_id=area.id,
                         connector_id=connector.id, code='COCINA-HP-P1005',
-                        name='Cocina HP P1005 Local Pre-Pilot', channel='PRINTER',
+                        name=('Destino no conectado DEMO' if DEMO_MODE else 'Cocina HP P1005 Local Pre-Pilot'), channel='PRINTER',
                         local_target_key=LOCAL_TARGET_KEY, status='ACTIVE', active_slot=1,
                     )
                     session.add(destination)

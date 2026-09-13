@@ -13,6 +13,7 @@ export function StaffShell({ children }: PropsWithChildren) {
     <div className="staff-app">
       <header className="shell-header">
         <Link className="wordmark" to="/" aria-label="ECIP Staff, inicio"><span>E</span>ECIP <b>Staff</b></Link>
+        {import.meta.env.VITE_DEMO_MODE === 'true' ? <strong className="demo-indicator">DEMO · datos ficticios</strong> : null}
         <div className="context-strip" aria-label="Contexto operativo actual">
           <div><small>Tenant</small><strong>{tenant?.name ?? `#${identity?.tenant_id}`}</strong></div>
           <span className="context-divider" aria-hidden="true"></span>

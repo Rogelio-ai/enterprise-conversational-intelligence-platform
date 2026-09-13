@@ -1,0 +1,103 @@
+name: pryecip-demo
+
+x-api-environment: &api-environment
+  APP_NAME: ECIP API Local Demo
+  APP_ENV: development
+  DEMO_ENV: demo
+  API_HOST: 0.0.0.0
+  API_PORT: 8000
+  PUBLIC_ORIGIN: http://127.0.0.1:18082
+  TRUSTED_HOSTS: 127.0.0.1,localhost,api
+  DOCS_ENABLED: "true"
+  MYSQL_HOST: mysql-demo
+  MYSQL_PORT: 3306
+  MYSQL_DATABASE: pryecip_demo
+  MYSQL_USER: pryecip_demo
+  MYSQL_PASSWORD: demo-database-password-only
+  AUTH_JWT_SECRET: demo-jwt-secret-not-for-real-use-000000000000000000
+  RESTAURANT_ACCESS_CODE_SECRET: demo-diner-secret-not-for-real-use-000000000000
+  PASSWORD_MIN_LENGTH: 8
+  DEMO_ADMIN_PASSWORD: DemoManager123!
+  DEMO_STAFF_PASSWORD: DemoStaff123!
+  ELECTRONIC_PAYMENTS_ENABLED: "false"
+  CONEKTA_ENVIRONMENT: disabled
+  CFDI_ISSUANCE_ENABLED: "false"
+  CONNECTOR_DELIVERY_ENABLED: "false"
+  EXTERNAL_POS_ENABLED: "false"
+
+services:
+  mysql-demo:
+    image: mysql:8.4@sha256:a2d126916bc2ba79a890a4bf62d305eb8b68fcbdd35c6e582d529df18faf5ebb
+    restart: unless-stopped
+    environment:
+      MYSQL_DATABASE: pryecip_demo
+      MYSQL_USER: pryecip_demo
+      MYSQL_PASSWORD: demo-database-password-only
+      MYSQL_ROOT_PASSWORD: demo-root-password-only
+    healthcheck:
+      test: [CMD-SHELL, 'mysqladmin ping --silent -h 127.0.0.1 -upryecip_demo -p"demo-database-password-only"']
+      interval: 3s
+      timeout: 5s
+      retries: 30
+      start_period: 10s
+    volumes: [demo-mysql-data:/var/lib/mysql]
+    networks: [database]
+
+  migrate-demo:
+    build: {context: ./apps/api, target: runtime}
+    restart: "no"
+    environment: *api-environment
+    command: [alembic, upgrade, head]
+    depends_on:
+      mysql-demo: {condition: service_healthy}
+    networks: [database]
+
+  bootstrap-demo:
+    build: {context: ./apps/api, target: runtime}
+    restart: "no"
+    environment: *api-environment
+    command: [python, -m, app.bootstrap_demo]
+    depends_on:
+      migrate-demo: {condition: service_completed_successfully}
+    networks: [app, database]
+
+  api:
+    build: {context: ./apps/api, target: runtime}
+    restart: unless-stopped
+    environment: *api-environment
+    command: [uvicorn, app.main:create_app, --factory, --host, 0.0.0.0, --port, "8000"]
+    depends_on:
+      bootstrap-demo: {condition: service_completed_successfully}
+    healthcheck:
+      test: [CMD, python, -c, "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/ready', timeout=3).read()"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+      start_period: 5s
+    ports: ["127.0.0.1:18083:8000"]
+    networks: [app, database]
+
+  staff-web:
+    build:
+      context: ./apps/staff-web
+      args: {VITE_DEMO_MODE: "true"}
+    restart: unless-stopped
+    volumes:
+      - ./deploy/demo/staff-web.nginx.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      api: {condition: service_healthy}
+    healthcheck:
+      test: [CMD, wget, -qO-, http://127.0.0.1:8080/healthz]
+      interval: 5s
+      timeout: 3s
+      retries: 12
+    ports: ["127.0.0.1:18082:8080"]
+    networks: [app]
+
+networks:
+  app: {}
+  database: {internal: true}
+
+volumes:
+  demo-mysql-data:
+    name: pryecip_demo_mysql_data
