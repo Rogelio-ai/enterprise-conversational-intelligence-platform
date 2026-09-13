@@ -18,6 +18,7 @@ from app.models.inventory import (
     InventoryLot,
     InventoryValuationSnapshot,
     InventoryValuationSnapshotLine,
+    InventoryValuationSnapshotFifoLayer,
     PurchaseOrder,
     PurchaseOrderLine,
     ReplenishmentPolicy,
@@ -304,10 +305,14 @@ async def project_snapshot(db: AsyncSession, value: InventoryValuationSnapshot, 
     lines = (await db.scalars(select(InventoryValuationSnapshotLine).where(
         InventoryValuationSnapshotLine.snapshot_id == value.id,
     ).order_by(InventoryValuationSnapshotLine.inventory_item_id))).all()
+    fifo_rows = (await db.scalars(select(InventoryValuationSnapshotFifoLayer).where(
+        InventoryValuationSnapshotFifoLayer.snapshot_id == value.id,
+    ).order_by(InventoryValuationSnapshotFifoLayer.inventory_item_id, InventoryValuationSnapshotFifoLayer.cost_layer_id))).all()
     return {
         'id': value.id, 'location_id': value.location_id, 'warehouse_id': value.warehouse_id,
         'status': value.status, 'valuation_method': value.valuation_method,
         'as_of': value.as_of, 'movement_cursor': value.movement_cursor,
+        'layer_cursor': value.layer_cursor,
         'currency': value.currency if cost_visible else None,
         'derivable_total_value': _decimal(value.derivable_total_value) if cost_visible else None,
         'non_derivable_line_count': value.non_derivable_line_count,
@@ -319,7 +324,15 @@ async def project_snapshot(db: AsyncSession, value: InventoryValuationSnapshot, 
             'unit_cost_evidence': _decimal(row.unit_cost_evidence) if cost_visible else None,
             'cost_currency_evidence': row.cost_currency_evidence if cost_visible else None,
             'line_value': _decimal(row.line_value) if cost_visible else None,
-        } for row in lines],
+        } for row in lines] + [{
+            'id': row.id, 'inventory_item_id': row.inventory_item_id,
+            'cost_layer_id': row.cost_layer_id,
+            'quantity_as_of': _decimal(row.quantity_as_of), 'evidence_status': row.evidence_status,
+            'cost_revision_id': None,
+            'unit_cost_evidence': _decimal(row.unit_cost_evidence) if cost_visible else None,
+            'cost_currency_evidence': row.cost_currency_evidence if cost_visible else None,
+            'line_value': _decimal(row.line_value) if cost_visible else None,
+        } for row in fifo_rows],
     }
 
 
@@ -367,6 +380,7 @@ async def create_snapshot(
         location_id=warehouse.location_id, warehouse_id=warehouse.id,
         status='FINALIZED', valuation_method='STANDARD_COST', as_of=as_of,
         movement_cursor=cursor, currency=currency, derivable_total_value=ZERO,
+        layer_cursor=0,
         non_derivable_line_count=0, created_by_actor_id=actor,
         idempotency_actor_scope=actor_scope, idempotency_key=idempotency_key,
         request_fingerprint=fingerprint,

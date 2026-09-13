@@ -27,6 +27,7 @@ from app.models import (
 from app.restaurant.inventory import errors
 from app.restaurant.inventory import service as inventory_service
 from app.restaurant.inventory import replenishment_lots_valuation as b10
+from app.restaurant.inventory import fifo_transfers as b11
 from app.restaurant.inventory.units import QUANTITY_UNIT, UnitConversionError, exact_quantity
 
 
@@ -807,6 +808,12 @@ async def accept_receipt(
             )
             db.add(movement)
             await db.flush()
+            await b11.create_layer(
+                db, warehouse=warehouse, item=item, origin_type='GOODS_RECEIPT',
+                origin_id=line.id, origin_at=accepted_at, quantity=normalized,
+                unit_cost=(line.extended_cost / normalized).quantize(Decimal('0.000000000001')),
+                currency=line.currency, inventory_lot_id=lot.id if lot else None,
+            )
         receipt.status = 'ACCEPTED'
         receipt.version += 1
         receipt.accepted_at = accepted_at

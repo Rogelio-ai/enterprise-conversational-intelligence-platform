@@ -453,6 +453,12 @@ async def materialize_accepted_order(
         )
     try:
         await db.flush()
+        from app.restaurant.inventory import fifo_transfers as b11
+        fifo_movements=(await db.scalars(select(StockMovement).where(
+            StockMovement.restaurant_order_consumption_id==header.id,
+        ).order_by(StockMovement.inventory_item_id,StockMovement.id))).all()
+        for movement in fifo_movements:
+            await b11.allocate_fifo(db,movement=movement,quantity=-movement.quantity)
     except IntegrityError as exc:
         raise errors.OrderConsumptionConflictError(
             'Restaurant Order consumption was materialized concurrently'

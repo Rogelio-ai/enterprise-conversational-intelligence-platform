@@ -142,7 +142,7 @@ async def inventory_intelligence(
         Warehouse.location_id == location_id,
         Warehouse.status == 'ACTIVE',
         *([Warehouse.id == warehouse_id] if warehouse_id else []),
-    ).order_by(Warehouse.name, Warehouse.id))).all()
+    ).order_by(Warehouse.default_slot.desc(), Warehouse.name, Warehouse.id))).all()
     warehouse_ids = [value.id for value in warehouses]
     if warehouse_id and not warehouse_ids:
         raise HTTPException(status.HTTP_404_NOT_FOUND, 'Warehouse not found')

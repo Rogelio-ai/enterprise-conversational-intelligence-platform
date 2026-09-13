@@ -2408,7 +2408,7 @@ def test_0049_preparations_preserve_history_balances_retry_and_safe_roundtrip(
     finally: connection.close()
 
 
-def test_0050_fresh_install_is_single_additive_head(
+def test_0051_fresh_install_is_single_additive_head(
     isolated_database, integration_settings: Settings,
 ) -> None:
     database_name, _ = isolated_database
@@ -2417,16 +2417,16 @@ def test_0050_fresh_install_is_single_additive_head(
     try:
         with connection.cursor() as cursor:
             cursor.execute('SELECT version_num FROM alembic_version')
-            assert cursor.fetchone()['version_num'] == '0050_replenishment_lots_valuation'
-            cursor.execute("SELECT COUNT(*) count FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('replenishment_policies','inventory_lots','inventory_valuation_snapshots','inventory_valuation_snapshot_lines')")
-            assert cursor.fetchone()['count'] == 4
+            assert cursor.fetchone()['version_num'] == '0051_atomic_transfers_fifo'
+            cursor.execute("SELECT COUNT(*) count FROM information_schema.TABLES WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ('inventory_cost_layers','inventory_movement_cost_allocations','inventory_transfers','inventory_transfer_lines','inventory_transfer_receipts','inventory_valuation_snapshot_fifo_layers')")
+            assert cursor.fetchone()['count'] == 6
             cursor.execute("SELECT COUNT(*) count FROM stock_movements")
             assert cursor.fetchone()['count'] == 0
     finally:
         connection.close()
 
 
-def test_0050_populated_0049_preserves_balance_and_safe_roundtrip(
+def test_0051_populated_0049_preserves_balance_and_safe_roundtrip(
     isolated_database, integration_settings: Settings,
 ) -> None:
     database_name, _ = isolated_database
@@ -2449,6 +2449,7 @@ def test_0050_populated_0049_preserves_balance_and_safe_roundtrip(
             cursor.execute('SELECT quantity,inventory_lot_id FROM stock_movements WHERE id=%s',(movement_id,)); row=cursor.fetchone()
             assert row['quantity'] == Decimal('8.000000') and row['inventory_lot_id'] is None
             cursor.execute("SELECT COUNT(*) count FROM inventory_lots"); assert cursor.fetchone()['count'] == 0
+            cursor.execute("SELECT COUNT(*) count FROM inventory_cost_layers"); assert cursor.fetchone()['count'] == 0
     finally:
         connection.close()
     _run_alembic_downgrade(database_name, '0049_prepared_components_yield')

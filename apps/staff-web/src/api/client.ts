@@ -44,6 +44,7 @@ import type {
   InventorySupplier,
   PhysicalCount,
   PurchaseOrder,
+  InventoryTransfer,
 } from './contracts';
 import { readCredential } from '../session/storage';
 
@@ -151,6 +152,10 @@ export const staffApi = {
   inventoryLots(locationId:number): Promise<{items:import('./contracts').InventoryLot[]}> { return request(`/inventory/lots?location_id=${locationId}`); },
   valuationSnapshots(locationId:number): Promise<{items:import('./contracts').InventoryValuationSnapshot[]}> { return request(`/inventory/valuation-snapshots?location_id=${locationId}`); },
   createValuationSnapshot(payload:object,key:string): Promise<import('./contracts').InventoryValuationSnapshot> { return request('/inventory/valuation-snapshots',{method:'POST',headers:{'Idempotency-Key':key},body:JSON.stringify(payload)}); },
+  fifoLayers(locationId:number):Promise<{items:import('./contracts').InventoryCostLayer[]}>{return request(`/inventory/fifo-layers?location_id=${locationId}`);},
+  inventoryTransfers(locationId:number):Promise<{items:InventoryTransfer[]}>{return request(`/inventory/transfers?location_id=${locationId}`);},
+  createInventoryTransfer(payload:object):Promise<InventoryTransfer>{return request('/inventory/transfers',{method:'POST',body:JSON.stringify(payload)});},
+  actOnInventoryTransfer(id:number,action:'submit'|'ship'|'receive'|'cancel',expectedVersion:number,key:string,receipts?:Array<{line_id:number;quantity:string}>):Promise<InventoryTransfer>{return request(`/inventory/transfers/${id}:${action}`,{method:'POST',headers:{'Idempotency-Key':key},body:JSON.stringify({expected_version:expectedVersion,receipts:receipts??null})});},
   preparationRecipes(locationId: number): Promise<{items: import('./contracts').PreparationRecipeVersion[]}> { return request(`/inventory/preparation-recipes?location_id=${locationId}`); },
   publishPreparationRecipe(payload: object): Promise<import('./contracts').PreparationRecipeVersion> { return request('/inventory/preparation-recipes', { method:'POST', body:JSON.stringify(payload) }); },
   preparationBatches(locationId: number): Promise<{items: import('./contracts').PreparationBatch[]}> { return request(`/inventory/preparation-batches?location_id=${locationId}`); },

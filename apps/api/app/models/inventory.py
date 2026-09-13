@@ -9,6 +9,7 @@ from sqlalchemy import (
     CheckConstraint,
     DateTime,
     Date,
+    ForeignKey,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -1797,8 +1798,8 @@ class InventoryValuationSnapshot(Base):
         ForeignKeyConstraint(['warehouse_id', 'tenant_id', 'organization_id', 'location_id'], ['warehouses.id', 'warehouses.tenant_id', 'warehouses.organization_id', 'warehouses.location_id'], name='fk_inventory_valuation_snapshots_warehouse_scope', ondelete='RESTRICT'),
         UniqueConstraint('id', 'tenant_id', 'organization_id', 'location_id', 'warehouse_id', name='uq_inventory_valuation_snapshots_scope'),
         UniqueConstraint('tenant_id', 'idempotency_actor_scope', 'idempotency_key', name='uq_inventory_valuation_snapshots_idempotency'),
-        CheckConstraint("status='FINALIZED' AND valuation_method='STANDARD_COST'", name='ck_inventory_valuation_snapshots_authority'),
-        CheckConstraint('movement_cursor >= 0 AND non_derivable_line_count >= 0', name='ck_inventory_valuation_snapshots_values'),
+        CheckConstraint("status='FINALIZED' AND valuation_method IN ('STANDARD_COST','FIFO')", name='ck_inventory_valuation_snapshots_authority'),
+        CheckConstraint('movement_cursor >= 0 AND layer_cursor >= 0 AND non_derivable_line_count >= 0', name='ck_inventory_valuation_snapshots_values'),
         CheckConstraint("currency REGEXP '^[A-Z][A-Z][A-Z]$'", name='ck_inventory_valuation_snapshots_currency'),
         Index('ix_inventory_valuation_snapshots_location', 'tenant_id', 'location_id', 'as_of', 'id'), OPTIONS,
     )
@@ -1811,6 +1812,7 @@ class InventoryValuationSnapshot(Base):
     valuation_method: Mapped[str] = mapped_column(String(24), nullable=False, default='STANDARD_COST', server_default=text("'STANDARD_COST'"))
     as_of: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
     movement_cursor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    layer_cursor: Mapped[int] = mapped_column(BigInteger, nullable=False, default=0, server_default=text('0'))
     currency: Mapped[str] = mapped_column(String(3, collation='ascii_bin'), nullable=False)
     derivable_total_value: Mapped[Decimal] = mapped_column(Numeric(31, 12), nullable=False)
     non_derivable_line_count: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -1845,6 +1847,159 @@ class InventoryValuationSnapshotLine(Base):
     cost_currency_evidence: Mapped[str | None] = mapped_column(String(3, collation='ascii_bin'), nullable=True)
     line_value: Mapped[Decimal | None] = mapped_column(Numeric(31, 12), nullable=True)
     evidence_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
+
+
+class InventoryValuationSnapshotFifoLayer(Base):
+    __tablename__ = 'inventory_valuation_snapshot_fifo_layers'
+    __table_args__ = (
+        ForeignKeyConstraint(['snapshot_id'], ['inventory_valuation_snapshots.id'], name='fk_fifo_snapshot_layers_snapshot', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['cost_layer_id'], ['inventory_cost_layers.id'], name='fk_fifo_snapshot_layers_layer', ondelete='RESTRICT'),
+        UniqueConstraint('snapshot_id','cost_layer_id', name='uq_fifo_snapshot_layers_layer'),
+        CheckConstraint("evidence_status IN ('RESOLVED','FIFO_NON_DERIVABLE','CURRENCY_MISMATCH')", name='ck_fifo_snapshot_layers_status'),
+        CheckConstraint('quantity_as_of >= 0', name='ck_fifo_snapshot_layers_quantity'), OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    snapshot_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    cost_layer_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    quantity_as_of: Mapped[Decimal] = mapped_column(Numeric(19,6), nullable=False)
+    unit_cost_evidence: Mapped[Decimal | None] = mapped_column(Numeric(31,12))
+    cost_currency_evidence: Mapped[str | None] = mapped_column(String(3, collation='ascii_bin'))
+    line_value: Mapped[Decimal | None] = mapped_column(Numeric(31,12))
+    evidence_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
+
+
+class InventoryCostLayer(Base):
+    __tablename__ = 'inventory_cost_layers'
+    __table_args__ = (
+        ForeignKeyConstraint(['warehouse_id','tenant_id','organization_id','location_id'], ['warehouses.id','warehouses.tenant_id','warehouses.organization_id','warehouses.location_id'], name='fk_cost_layers_warehouse_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['inventory_item_id','tenant_id','organization_id','location_id'], ['inventory_items.id','inventory_items.tenant_id','inventory_items.organization_id','inventory_items.location_id'], name='fk_cost_layers_item_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['inventory_lot_id','tenant_id','organization_id','location_id','warehouse_id','inventory_item_id'], ['inventory_lots.id','inventory_lots.tenant_id','inventory_lots.organization_id','inventory_lots.location_id','inventory_lots.warehouse_id','inventory_lots.inventory_item_id'], name='fk_cost_layers_lot_scope', ondelete='RESTRICT'),
+        UniqueConstraint('id','tenant_id','organization_id','location_id','warehouse_id','inventory_item_id', name='uq_cost_layers_scope'),
+        UniqueConstraint('origin_type','origin_id','origin_layer_id', name='uq_cost_layers_origin'),
+        CheckConstraint("origin_type IN ('GOODS_RECEIPT','PREPARATION_OUTPUT','TRANSFER')", name='ck_cost_layers_origin'),
+        CheckConstraint("status IN ('ACTIVE','DEPLETED')", name='ck_cost_layers_status'),
+        CheckConstraint('original_quantity > 0 AND remaining_quantity >= 0 AND remaining_quantity <= original_quantity AND unit_cost >= 0', name='ck_cost_layers_values'),
+        CheckConstraint("currency REGEXP '^[A-Z][A-Z][A-Z]$'", name='ck_cost_layers_currency'),
+        Index('ix_cost_layers_fifo','tenant_id','warehouse_id','inventory_item_id','status','origin_at','id'), OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_lot_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    source_inventory_lot_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('inventory_lots.id', ondelete='RESTRICT'), nullable=True)
+    origin_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    origin_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    origin_layer_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    origin_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    original_quantity: Mapped[Decimal] = mapped_column(Numeric(19,6), nullable=False)
+    remaining_quantity: Mapped[Decimal] = mapped_column(Numeric(19,6), nullable=False)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(31,12), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3, collation='ascii_bin'), nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default='ACTIVE', server_default=text("'ACTIVE'"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
+    updated_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp(), onupdate=func.current_timestamp())
+
+
+class InventoryMovementCostAllocation(Base):
+    __tablename__ = 'inventory_movement_cost_allocations'
+    __table_args__ = (
+        ForeignKeyConstraint(['cost_layer_id'], ['inventory_cost_layers.id'], name='fk_fifo_allocations_layer', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['stock_movement_id'], ['stock_movements.id'], name='fk_fifo_allocations_movement', ondelete='RESTRICT'),
+        UniqueConstraint('stock_movement_id','allocation_order', name='uq_fifo_allocations_order'),
+        UniqueConstraint('stock_movement_id','cost_layer_id', name='uq_fifo_allocations_layer'),
+        CheckConstraint('quantity > 0 AND unit_cost >= 0 AND extended_cost >= 0 AND allocation_order >= 1', name='ck_fifo_allocations_values'),
+        OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    stock_movement_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    cost_layer_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(19,6), nullable=False)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(31,12), nullable=False)
+    extended_cost: Mapped[Decimal] = mapped_column(Numeric(31,12), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3, collation='ascii_bin'), nullable=False)
+    allocation_order: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
+
+
+class InventoryTransfer(TimestampMixin, Base):
+    __tablename__ = 'inventory_transfers'
+    __table_args__ = (
+        ForeignKeyConstraint(['source_warehouse_id','tenant_id','organization_id','location_id'], ['warehouses.id','warehouses.tenant_id','warehouses.organization_id','warehouses.location_id'], name='fk_transfers_source_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['destination_warehouse_id','tenant_id','organization_id','location_id'], ['warehouses.id','warehouses.tenant_id','warehouses.organization_id','warehouses.location_id'], name='fk_transfers_destination_scope', ondelete='RESTRICT'),
+        UniqueConstraint('id','tenant_id','organization_id','location_id', name='uq_transfers_scope'),
+        CheckConstraint("status IN ('DRAFT','SUBMITTED','IN_TRANSIT','RECEIVED','CANCELLED')", name='ck_transfers_status'),
+        CheckConstraint('source_warehouse_id <> destination_warehouse_id AND version >= 1', name='ck_transfers_values'),
+        OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    destination_warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default='DRAFT', server_default=text("'DRAFT'"))
+    reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1, server_default=text('1'))
+    created_by_actor_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    submitted_at: Mapped[datetime | None] = mapped_column(DateTime())
+    shipped_at: Mapped[datetime | None] = mapped_column(DateTime())
+    received_at: Mapped[datetime | None] = mapped_column(DateTime())
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime())
+    last_command_key: Mapped[str | None] = mapped_column(String(128, collation='ascii_bin'))
+    last_command_action: Mapped[str | None] = mapped_column(String(16, collation='ascii_bin'))
+
+
+class InventoryTransferLine(Base):
+    __tablename__ = 'inventory_transfer_lines'
+    __table_args__ = (
+        ForeignKeyConstraint(['transfer_id','tenant_id','organization_id','location_id'], ['inventory_transfers.id','inventory_transfers.tenant_id','inventory_transfers.organization_id','inventory_transfers.location_id'], name='fk_transfer_lines_transfer_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['inventory_item_id','tenant_id','organization_id','location_id'], ['inventory_items.id','inventory_items.tenant_id','inventory_items.organization_id','inventory_items.location_id'], name='fk_transfer_lines_item_scope', ondelete='RESTRICT'),
+        UniqueConstraint('transfer_id','line_number', name='uq_transfer_lines_number'),
+        UniqueConstraint('transfer_id','inventory_item_id', name='uq_transfer_lines_item'),
+        CheckConstraint('line_number >= 1 AND sent_quantity > 0 AND received_quantity >= 0 AND received_quantity <= sent_quantity', name='ck_transfer_lines_values'), OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    transfer_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    sent_quantity: Mapped[Decimal] = mapped_column(Numeric(19,6), nullable=False)
+    received_quantity: Mapped[Decimal] = mapped_column(Numeric(19,6), nullable=False, default=Decimal('0'), server_default=text('0'))
+    source_movement_id: Mapped[int | None] = mapped_column(BigInteger, ForeignKey('stock_movements.id', ondelete='RESTRICT'))
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
+
+
+class InventoryTransferReceipt(Base):
+    __tablename__ = 'inventory_transfer_receipts'
+    __table_args__ = (
+        ForeignKeyConstraint(['transfer_line_id'], ['inventory_transfer_lines.id'], name='fk_transfer_receipts_line', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['source_layer_id'], ['inventory_cost_layers.id'], name='fk_transfer_receipts_source_layer', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['destination_layer_id'], ['inventory_cost_layers.id'], name='fk_transfer_receipts_destination_layer', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['destination_movement_id'], ['stock_movements.id'], name='fk_transfer_receipts_movement', ondelete='RESTRICT'),
+        UniqueConstraint('transfer_line_id','receipt_sequence','source_layer_id', name='uq_transfer_receipts_evidence'),
+        CheckConstraint('receipt_sequence >= 1 AND quantity > 0 AND unit_cost >= 0 AND extended_cost >= 0', name='ck_transfer_receipts_values'), OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    transfer_line_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    receipt_sequence: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_layer_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    destination_layer_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    destination_movement_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    quantity: Mapped[Decimal] = mapped_column(Numeric(19,6), nullable=False)
+    unit_cost: Mapped[Decimal] = mapped_column(Numeric(31,12), nullable=False)
+    extended_cost: Mapped[Decimal] = mapped_column(Numeric(31,12), nullable=False)
+    currency: Mapped[str] = mapped_column(String(3, collation='ascii_bin'), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
 
 
@@ -2080,14 +2235,14 @@ class StockMovement(Base):
         CheckConstraint(
             "movement_type IN ('OPENING_BALANCE','MANUAL_IN','MANUAL_OUT',"
             "'ADJUSTMENT','REVERSAL','CONSUMPTION','GOODS_RECEIPT','WASTE',"
-            "'PREPARATION_INPUT','PREPARATION_OUTPUT')",
+            "'PREPARATION_INPUT','PREPARATION_OUTPUT','TRANSFER_OUT','TRANSFER_IN')",
             name='ck_stock_movements_type',
         ),
         CheckConstraint('quantity <> 0', name='ck_stock_movements_nonzero'),
         CheckConstraint(
-            "(movement_type IN ('OPENING_BALANCE','MANUAL_IN','GOODS_RECEIPT','PREPARATION_OUTPUT') "
+            "(movement_type IN ('OPENING_BALANCE','MANUAL_IN','GOODS_RECEIPT','PREPARATION_OUTPUT','TRANSFER_IN') "
             "AND quantity>0) OR "
-            "(movement_type IN ('MANUAL_OUT','CONSUMPTION','WASTE','PREPARATION_INPUT') AND quantity<0) OR "
+            "(movement_type IN ('MANUAL_OUT','CONSUMPTION','WASTE','PREPARATION_INPUT','TRANSFER_OUT') AND quantity<0) OR "
             "(movement_type IN ('ADJUSTMENT','REVERSAL') AND quantity<>0)",
             name='ck_stock_movements_sign',
         ),
@@ -2300,6 +2455,9 @@ class StockMovement(Base):
         String(24), nullable=False, default='LEGACY_UNAVAILABLE',
         server_default=text("'LEGACY_UNAVAILABLE'"),
     )
+    fifo_evidence_status: Mapped[str] = mapped_column(String(24), nullable=False, default='FIFO_NON_DERIVABLE', server_default=text("'FIFO_NON_DERIVABLE'"))
+    fifo_extended_cost: Mapped[Decimal | None] = mapped_column(Numeric(31,12), nullable=True)
+    fifo_currency: Mapped[str | None] = mapped_column(String(3, collation='ascii_bin'), nullable=True)
     goods_receipt_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     goods_receipt_line_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     inventory_loss_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

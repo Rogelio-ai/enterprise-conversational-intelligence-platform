@@ -1261,6 +1261,10 @@ async def create_stock_movement(
             evidence_status=evidence_status,
         )
         db.add(movement)
+        await db.flush()
+        if movement.quantity < _ZERO and movement_type != 'REVERSAL':
+            from app.restaurant.inventory import fifo_transfers as b11
+            await b11.allocate_fifo(db, movement=movement, quantity=-movement.quantity)
         await db.commit()
         await db.refresh(movement)
         return _movement_projection(movement, item.base_uom), False

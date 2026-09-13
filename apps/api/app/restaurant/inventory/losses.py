@@ -20,6 +20,7 @@ from app.models import (
 )
 from app.restaurant.inventory import errors
 from app.restaurant.inventory import service as inventory_service
+from app.restaurant.inventory import fifo_transfers as b11
 from app.restaurant.inventory.units import QUANTITY_UNIT, UnitConversionError, exact_quantity
 
 
@@ -489,6 +490,7 @@ async def _post_movement(
     )
     db.add(movement)
     await db.flush()
+    await b11.allocate_fifo(db, movement=movement, quantity=value.normalized_quantity)
     return movement
 
 

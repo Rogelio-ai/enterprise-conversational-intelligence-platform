@@ -51,7 +51,7 @@ test('WS-34-B9 deterministic Staff Web P0 journey reaches real inventory authori
   await login(page, OPERATOR);
   await openInventory(page, 'Existencias');
   await expect(page.getByRole('heading', { name: 'Stock actual por almacén' })).toBeVisible();
-  await expect(page.getByText('Tomate E2E')).toBeVisible();
+  await expect(page.getByText('Tomate E2E').first()).toBeVisible();
   await expect(page.getByText('10 UNIT').first()).toBeVisible();
   await expect(page.getByRole('columnheader', { name: 'Costos' })).toBeVisible();
   await expect(page.getByText(/Costo estándar.*10/i).first()).toBeVisible();
@@ -88,7 +88,7 @@ test('WS-34-B9 deterministic Staff Web P0 journey reaches real inventory authori
   await page.getByRole('link', { name: 'Existencias' }).click();
   await expect(page.getByText('12 UNIT')).toBeVisible();
   await expect(page.getByText('13 UNIT')).toBeVisible();
-  await expect(page.getByText(/Última compra.*20/)).toBeVisible();
+  await expect(page.getByText(/Última compra.*20/).first()).toBeVisible();
 
   await page.getByRole('link', { name: 'Pérdidas' }).click();
   await expectPageFitsViewport(page);
@@ -177,7 +177,7 @@ test('WS-34-B9 deterministic Staff Web P0 journey reaches real inventory authori
   await expectPageFitsViewport(page);
   await expect(page.getByText('11 UNIT')).toBeVisible();
   await expect(page.getByText('12 UNIT')).toBeVisible();
-  await expect(page.getByText(/Última compra.*20/)).toBeVisible();
+  await expect(page.getByText(/Última compra.*20/).first()).toBeVisible();
 
   await switchActor(page, OPERATOR);
   await openInventory(page, 'Órdenes de compra');
@@ -206,7 +206,7 @@ test('WS-34-B9 deterministic Staff Web P0 journey reaches real inventory authori
   const recipeOption = await page.getByLabel('Receta publicada').getByRole('option', { name: /Salsa preparada E2E · revisión 1/ }).getAttribute('value');
   if (!recipeOption) throw new Error('Published preparation recipe has no selectable value');
   await page.getByLabel('Receta publicada').selectOption(recipeOption); await page.getByRole('button', { name: 'Crear lote DRAFT' }).click(); await expect(page.locator('p.inventory-lifecycle', { hasText: /^Lote #\d+ · DRAFT$/ })).toBeVisible(); await expect(page.getByText('Movimientos').locator('..')).toContainText('0');
-  await page.getByRole('link', { name: 'Existencias' }).click(); await expect(page.getByText('13 UNIT')).toBeVisible(); await expect(page.getByText('15 UNIT')).toBeVisible(); await expect(page.getByText('0 UNIT')).toBeVisible();
+  await page.getByRole('link', { name: 'Existencias' }).click(); await expect(page.getByText('13 UNIT')).toBeVisible(); await expect(page.getByText('15 UNIT')).toBeVisible(); await expect(page.getByText('0 UNIT').first()).toBeVisible();
   await page.getByRole('link', { name: 'Preparaciones' }).click(); await page.getByRole('button', { name: /Lote #\d+ · DRAFT/ }).click(); await page.getByRole('button', { name: 'Iniciar lote' }).click();
   const completionRequestPromise=page.waitForRequest((request)=>request.url().includes('/preparation-batches/')&&request.url().endsWith(':complete')); await page.getByRole('button', { name: 'Completar lote' }).click(); const completionRequest=await completionRequestPromise;
   await expect(page.locator('p.inventory-lifecycle', { hasText: /^Lote #\d+ · COMPLETED$/ })).toBeVisible(); await expect(page.getByText(/Costo material 35/)).toBeVisible(); await expect(page.locator('dt', { hasText: /^Rendimiento real$/ }).locator('..')).toContainText('2.000000000000');
@@ -214,7 +214,8 @@ test('WS-34-B9 deterministic Staff Web P0 journey reaches real inventory authori
   await page.getByRole('link', { name: 'Existencias' }).click(); await expect(page.getByText('11 UNIT')).toBeVisible(); await expect(page.getByText('12 UNIT')).toBeVisible(); await expect(page.getByText('4 UNIT')).toBeVisible(); await expectPageFitsViewport(page);
   await page.getByRole('link', { name: 'Reabastecimiento' }).click(); await page.getByLabel('Artículo').selectOption({label:'Tomate E2E'}); await page.getByLabel('Mínimo / reorden').fill('5'); await page.getByLabel('Objetivo / par').fill('20'); await page.getByRole('button',{name:'Guardar política'}).click(); await expect(page.getByText('9.000000 UNIT',{exact:true})).toBeVisible(); await expect(page.getByText('No es stock')).toBeVisible(); await expect(page.getByRole('link',{name:'Crear orden de compra'})).toBeVisible();
   await page.getByRole('link', { name: 'Lotes' }).click(); await expect(page.getByText('LOT-RECEIVED-E2E')).toBeVisible(); await expect(page.getByText('LOT-PREPARED-E2E')).toBeVisible();
-  await page.getByRole('link', { name: 'Valuación' }).click(); await page.getByRole('button',{name:'Crear snapshot inmutable'}).click(); await expect(page.getByText('FINALIZED · STANDARD_COST')).toBeVisible(); const frozenTotalCell=page.getByText('Total derivable').locator('..').locator('dd'); await expect(frozenTotalCell).toHaveText(/^[0-9]+\.[0-9]{12} MXN$/); const frozenTotal=await frozenTotalCell.textContent();
+  await page.getByRole('link', { name: 'Transferencias' }).click(); await page.getByLabel('Almacén destino', { exact: true }).selectOption({label:'Almacén destino FIFO'}); await page.getByLabel('Artículo', { exact: true }).selectOption({label:'Sal E2E'}); await page.getByLabel('Cantidad', { exact: true }).fill('1'); await page.getByRole('button',{name:'Agregar línea'}).click(); await page.getByRole('button',{name:'Crear transferencia DRAFT'}).click(); await page.getByRole('button',{name:'Enviar a revisión'}).click(); await page.getByRole('button',{name:'Despachar con FIFO'}).click(); await page.getByLabel('Recibir Sal E2E').fill('1'); await page.getByRole('button',{name:'Registrar recepción parcial'}).click(); await expect(page.getByText(/RECEIVED · versión/)).toBeVisible();
+  await page.getByRole('link', { name: 'Valuación' }).click(); await page.getByRole('button',{name:'Crear snapshot inmutable'}).click(); await expect(page.getByText('FINALIZED · FIFO')).toBeVisible(); await page.getByLabel('Método de valuación').selectOption('STANDARD_COST'); await page.getByRole('button',{name:'Crear snapshot inmutable'}).click(); await expect(page.getByText('FINALIZED · STANDARD_COST')).toBeVisible(); const frozenTotalCell=page.getByText('Total derivable').locator('..').locator('dd'); await expect(frozenTotalCell).toHaveText(/^[0-9]+\.[0-9]{12} MXN$/); const frozenTotal=await frozenTotalCell.textContent();
   const later=await page.evaluate(async()=>{const credential=JSON.parse(sessionStorage.getItem('staff-auth-session-v1')!);const auth={Authorization:`Bearer ${credential.accessToken}`};const locations=await (await fetch('/api/locations?limit=100&offset=0',{headers:auth})).json();const intelligence=await (await fetch('/api/inventory/intelligence?location_id='+locations.items[0].id,{headers:auth})).json();const tomato=intelligence.stock.find((row:any)=>row.code==='B7-TOM');return (await fetch('/api/inventory/stock-movements',{method:'POST',headers:{...auth,'Content-Type':'application/json','Idempotency-Key':'b10-e2e-later'},body:JSON.stringify({inventory_item_id:tomato.inventory_item_id,warehouse_id:tomato.warehouse_id,movement_type:'MANUAL_IN',quantity:'1',uom:'UNIT',reversal_of_movement_id:null,reason:'Later movement after frozen snapshot',reference:'B10-E2E'})})).status}); expect(later).toBe(201);
   await page.reload(); await expect(page.getByText('FINALIZED · STANDARD_COST')).toBeVisible(); await expect(page.getByText(frozenTotal!)).toBeVisible();
 });

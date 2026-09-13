@@ -288,9 +288,15 @@ def sql_connection(integration_settings: Settings):
             cursor.execute('SET FOREIGN_KEY_CHECKS=0')
             try:
                 for table in (
+                    'inventory_transfer_receipts',
+                    'inventory_movement_cost_allocations',
+                    'inventory_transfer_lines',
+                    'inventory_transfers',
+                    'inventory_valuation_snapshot_fifo_layers',
                     'inventory_valuation_snapshot_lines',
                     'inventory_valuation_snapshots',
                     'stock_movements',
+                    'inventory_cost_layers',
                     'inventory_lots',
                     'replenishment_policies',
                     'inventory_reconciliations',

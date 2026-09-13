@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+from decimal import Decimal
 from pathlib import Path
 import sys
 
@@ -33,6 +34,7 @@ PERMISSIONS = (
     'inventory.preparation.complete',
     'inventory.replenishment.read', 'inventory.replenishment.manage',
     'inventory.lot.read', 'inventory.valuation.read', 'inventory.valuation.create',
+    'inventory.fifo.read', 'inventory.transfer.read', 'inventory.transfer.manage',
 )
 
 
@@ -132,6 +134,7 @@ def seed(db) -> None:
         if warehouse_response.status_code != 200:
             raise RuntimeError(f'warehouse lookup failed: {warehouse_response.text}')
         warehouse = warehouse_response.json()['items'][0]
+        destination_warehouse_id = execute(db, "INSERT INTO warehouses (tenant_id,organization_id,location_id,code,name,status,default_slot,negative_stock_policy,version) VALUES (%s,%s,%s,'B11-DEST','Almacén destino FIFO','ACTIVE',NULL,'BLOCK',1)", (tenant_id, organization_id, location_id))
         supplier = api(client, 'POST', '/inventory/suppliers', headers, {'organization_id': organization_id, 'code': 'B7-SUP', 'name': 'Proveedor E2E', 'contact_reference': None, 'location_ids': [location_id]})
         for item in items[:2]:
             api(client, 'POST', f"/inventory/suppliers/{supplier['id']}/offerings", headers, {'location_id': location_id, 'inventory_item_id': item['id'], 'supplier_item_code': item['code'], 'purchase_uom': 'UNIT'})
@@ -160,6 +163,8 @@ def verify(db) -> None:
             'b10_policies': 'SELECT COUNT(*) AS n FROM replenishment_policies WHERE tenant_id=%s',
             'b10_lots': 'SELECT COUNT(*) AS n FROM inventory_lots WHERE tenant_id=%s',
             'b10_snapshots': "SELECT COUNT(*) AS n FROM inventory_valuation_snapshots WHERE tenant_id=%s AND status='FINALIZED' AND valuation_method='STANDARD_COST'",
+            'b11_fifo_snapshots': "SELECT COUNT(*) AS n FROM inventory_valuation_snapshots WHERE tenant_id=%s AND status='FINALIZED' AND valuation_method='FIFO'",
+            'b11_transfers': "SELECT COUNT(*) AS n FROM inventory_transfers WHERE tenant_id=%s AND status='RECEIVED'",
         }.items():
             cursor.execute(sql, (tenant_id,))
             checks[name] = int(cursor.fetchone()['n'])
@@ -170,13 +175,14 @@ def verify(db) -> None:
         'closed_purchase_orders': 1,
         'completed_preparation_batches': 1, 'preparation_movements': 3,
         'b10_policies': 1, 'b10_lots': 2, 'b10_snapshots': 1,
+        'b11_fifo_snapshots': 1, 'b11_transfers': 1,
     }
     if checks != expected:
         raise RuntimeError(f'authoritative E2E evidence mismatch: {checks} != {expected}')
     with db.cursor() as cursor:
         cursor.execute("SELECT i.code,SUM(m.quantity) quantity FROM inventory_items i JOIN stock_movements m ON m.inventory_item_id=i.id WHERE i.tenant_id=%s AND i.code IN ('B7-TOM','B7-SAL','B9-PREP') GROUP BY i.code",(tenant_id,))
         stock={row['code']:str(row['quantity']) for row in cursor.fetchall()}
-    if stock != {'B7-SAL':'12.000000','B7-TOM':'12.000000','B9-PREP':'4.000000'}:
+    if sum(Decimal(value) for code,value in stock.items() if code=='B7-TOM') != Decimal('12.000000') or stock.get('B7-SAL')!='12.000000' or stock.get('B9-PREP')!='4.000000':
         raise RuntimeError(f'preparation stock evidence mismatch: {stock}')
     print(json.dumps(checks, sort_keys=True))
 

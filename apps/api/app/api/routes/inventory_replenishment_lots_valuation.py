@@ -10,6 +10,7 @@ from app.api.deps import AuthenticatedContext, get_db, require_permission
 from app.core.execution import ActorType, ExecutionContext
 from app.core.middleware import get_correlation_id
 from app.restaurant.inventory import replenishment_lots_valuation as b10
+from app.restaurant.inventory import fifo_transfers as b11
 
 
 router = APIRouter(prefix='/inventory', tags=['inventory-replenishment-lots-valuation'])
@@ -38,7 +39,7 @@ class SnapshotIn(BaseModel):
     warehouse_id: int = Field(gt=0)
     as_of: datetime
     currency: str = Field(min_length=3, max_length=3)
-    valuation_method: Literal['STANDARD_COST'] = 'STANDARD_COST'
+    valuation_method: Literal['STANDARD_COST', 'FIFO'] = 'STANDARD_COST'
 
 
 def _ctx(value: AuthenticatedContext) -> ExecutionContext:
@@ -100,8 +101,9 @@ async def create_snapshot(
     try:
         location_id = await b10.service.warehouse_location(db, tenant_id=context.tenant_id, warehouse_id=payload.warehouse_id)
         _authorize(context, location_id)
-        data = payload.model_dump(); data.pop('valuation_method')
-        value, replay = await b10.create_snapshot(db, context=_ctx(context), idempotency_key=idempotency_key, cost_visible='inventory.cost.read' in context.permissions, **data)
+        data = payload.model_dump(); method = data.pop('valuation_method')
+        creator = b11.create_fifo_snapshot if method == 'FIFO' else b10.create_snapshot
+        value, replay = await creator(db, context=_ctx(context), idempotency_key=idempotency_key, cost_visible='inventory.cost.read' in context.permissions, **data)
         if replay:
             response.headers['Idempotent-Replay'] = 'true'
         return value

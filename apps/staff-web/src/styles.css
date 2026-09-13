@@ -575,6 +575,8 @@ a { color: inherit; }
 .inventory-lifecycle { padding: .75rem; border: 2px solid var(--color-warning); border-radius: var(--radius-sm); font-weight: 850; letter-spacing: .03em; }
 .inventory-lifecycle--accepted, .inventory-lifecycle--posted { color: var(--color-success); border-color: var(--color-success); }
 .inventory-lifecycle--pending_approval { color: var(--color-warning); }
+.inventory-lifecycle--received { color: var(--color-success); border-color: var(--color-success); }
+.inventory-transfer-line { padding: var(--space-sm); border: 1px solid var(--color-border); border-radius: var(--radius-sm); margin-block: var(--space-sm); }
 .inventory-evidence { display: grid; grid-template-columns: repeat(3,minmax(0,1fr)); gap: .4rem; }
 .inventory-evidence > div { padding: .55rem; border-bottom: 1px solid var(--color-border); }
 .inventory-evidence dt { color: var(--color-text-secondary); font-size: .7rem; }

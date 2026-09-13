@@ -18,7 +18,8 @@ const permissions = [
     'inventory.purchase_order.read', 'inventory.purchase_order.manage', 'inventory.purchase_order.approve',
     'inventory.preparation.read', 'inventory.preparation.manage', 'inventory.preparation.complete',
     'inventory.replenishment.read', 'inventory.replenishment.manage', 'inventory.lot.read',
-    'inventory.valuation.read', 'inventory.valuation.create',
+    'inventory.valuation.read', 'inventory.valuation.create', 'inventory.fifo.read',
+    'inventory.transfer.read', 'inventory.transfer.manage',
 ];
 const identity: StaffIdentity = { user_id: 1, email: 'inventory@example.test', display_name: 'Iris Inventario', tenant_id: 11, membership_id: 12, authorized_location_ids: [21], roles: ['INVENTORY_OPERATOR'], permissions };
 const location = { id: 21, tenant_id: 11, organization_id: 31, code: 'CENTRO', name: 'Sucursal Centro', timezone: 'America/Mexico_City', status: 'ACTIVE' };
@@ -26,7 +27,7 @@ const intelligence: InventoryIntelligence = {
   location_id: 21, generated_at: '2026-09-12T12:00:00Z', cost_visible: false,
   active_warehouse_count: 1, active_inventory_item_count: 2, stock_position_count: 2,
   negative_stock_count: 0, counts_requiring_action: 0, reconciliations_requiring_action: 0,
-  warehouses: [{ id: 41, code: 'MAIN', name: 'Almacén principal', negative_stock_policy: 'WARN', is_default: true }],
+  warehouses: [{ id: 41, code: 'MAIN', name: 'Almacén principal', negative_stock_policy: 'WARN', is_default: true }, { id: 42, code: 'AUX', name: 'Almacén auxiliar', negative_stock_policy: 'BLOCK', is_default: false }],
   stock: [
     { inventory_item_id: 51, code: 'TOM', name: 'Tomate', warehouse_id: 41, warehouse_name: 'Almacén principal', base_uom: 'KG', quantity: '8.000000', negative_stock_policy: 'WARN', attention: ['WARN_POLICY'], last_material_activity_at: '2026-09-12T11:00:00Z', standard_unit_cost: null, cost_currency: null, inventory_value_at_standard_cost: null, purchase_cost: null, stock_source: 'SUM_STOCK_MOVEMENT_QUANTITY', valuation_source: null },
     { inventory_item_id: 52, code: 'SAL', name: 'Sal', warehouse_id: 41, warehouse_name: 'Almacén principal', base_uom: 'KG', quantity: '3.000000', negative_stock_policy: 'WARN', attention: ['WARN_POLICY'], last_material_activity_at: null, standard_unit_cost: null, cost_currency: null, inventory_value_at_standard_cost: null, purchase_cost: null, stock_source: 'SUM_STOCK_MOVEMENT_QUANTITY', valuation_source: null },
@@ -82,7 +83,10 @@ function mockApi(currentIdentity = identity, acceptConflict = false, inventoryDa
     if (url.includes('/inventory/replenishment-policies?')) return json({items:[{id:301,location_id:21,warehouse_id:41,inventory_item_id:51,status:'ACTIVE',minimum_quantity:'4.000000',target_quantity:'12.000000',source_uom:'KG',on_hand:'8.000000',on_order:'2.000000',suggested_quantity:'4.000000',version:1,updated_at:'2026-09-12T12:00:00Z'}]});
     if (/\/inventory\/replenishment-policies\/41\/51$/.test(url) && init?.method==='PUT') return json({id:301,location_id:21,warehouse_id:41,inventory_item_id:51,status:'ACTIVE',minimum_quantity:'4.000000',target_quantity:'12.000000',source_uom:'KG',on_hand:'8.000000',on_order:'2.000000',suggested_quantity:'4.000000',version:2,updated_at:'2026-09-12T12:00:00Z'});
     if (url.includes('/inventory/lots?')) return json({items:[{id:311,location_id:21,warehouse_id:41,inventory_item_id:51,origin_type:'GOODS_RECEIPT',goods_receipt_line_id:74,preparation_batch_output_id:null,lot_code:'LOT-TOM-01',origin_at:'2026-09-12T10:00:00Z',manufacture_date:'2026-08-01',expiry_date:'2026-09-01',best_before_date:'2026-08-25',date_state:'EXPIRED',original_quantity:'5.000000',balance:'5.000000',source_quantity:'5.000000',source_uom:'KG',base_uom_evidence:'KG',cost_evidence_status:'RESOLVED',unit_cost_evidence:null,cost_currency_evidence:null,cost_visible:false,status:'ACTIVE'}]});
-    const snapshot={id:321,location_id:21,warehouse_id:41,status:'FINALIZED',valuation_method:'STANDARD_COST',as_of:'2026-09-12T12:00:00Z',movement_cursor:99,currency:null,derivable_total_value:null,non_derivable_line_count:1,cost_visible:false,created_at:'2026-09-12T12:01:00Z',lines:[{id:322,inventory_item_id:51,quantity_as_of:'8.000000',evidence_status:'COST_NON_DERIVABLE',cost_revision_id:null,unit_cost_evidence:null,cost_currency_evidence:null,line_value:null}]};
+    if (url.includes('/inventory/fifo-layers?')) return json({items:[]});
+    if (url.includes('/inventory/transfers?')) return json({items:[]});
+    if (url.endsWith('/inventory/transfers')&&init?.method==='POST') { const p=JSON.parse(String(init.body));return json({id:401,location_id:21,source_warehouse_id:p.source_warehouse_id,destination_warehouse_id:p.destination_warehouse_id,status:'DRAFT',reference:p.reference,version:1,submitted_at:null,shipped_at:null,received_at:null,cancelled_at:null,cost_visible:false,lines:p.lines.map((x:any,i:number)=>({id:410+i,line_number:i+1,inventory_item_id:x.inventory_item_id,sent_quantity:x.quantity,received_quantity:'0.000000',remaining_in_transit:x.quantity,source_movement_id:null,source_allocations:[],receipts:[]}))},201); }
+    const snapshot={id:321,location_id:21,warehouse_id:41,status:'FINALIZED',valuation_method:'STANDARD_COST',as_of:'2026-09-12T12:00:00Z',movement_cursor:99,layer_cursor:0,currency:null,derivable_total_value:null,non_derivable_line_count:1,cost_visible:false,created_at:'2026-09-12T12:01:00Z',lines:[{id:322,inventory_item_id:51,quantity_as_of:'8.000000',evidence_status:'COST_NON_DERIVABLE',cost_revision_id:null,unit_cost_evidence:null,cost_currency_evidence:null,line_value:null}]};
     if (url.includes('/inventory/valuation-snapshots?')) return json({items:[snapshot]});
     if (url.endsWith('/inventory/valuation-snapshots')&&init?.method==='POST') return json(snapshot,201);
     if (url.includes('/inventory/losses?')) return json({ items: [] });
@@ -330,6 +334,14 @@ describe('Inventory Staff Web', () => {
     cleanup(); mockApi(); renderInventory('/inventory/valuation');
     expect(await screen.findByText('FINALIZED · STANDARD_COST')).toBeVisible();
     expect(screen.getByText('Protegido por permisos')).toBeVisible();
-    expect(screen.getByText(/No es FIFO/)).toBeVisible();
+    expect(screen.getByText(/Última compra y compra ponderada reciente/)).toBeVisible();
+  });
+
+  it('creates a responsive multi-line transfer draft and exposes FIFO valuation', async()=>{
+    mockApi();const user=userEvent.setup();renderInventory('/inventory/transfers');
+    expect(await screen.findByRole('heading',{name:'Nueva transferencia multi-línea'})).toBeVisible();
+    await user.selectOptions(screen.getByLabelText('Almacén destino'),'42');await user.selectOptions(screen.getByLabelText('Artículo'),'51');await user.type(screen.getByLabelText('Cantidad'),'5');await user.click(screen.getByRole('button',{name:'Agregar línea'}));await user.click(screen.getByRole('button',{name:'Crear transferencia DRAFT'}));
+    expect(await screen.findByText(/DRAFT · versión 1/)).toBeVisible();
+    cleanup();mockApi();renderInventory('/inventory/valuation');expect(await screen.findByRole('option',{name:'FIFO · capas económicas'})).toBeInTheDocument();expect(await screen.findByText(/FIFO_NON_DERIVABLE/)).toBeVisible();
   });
 });
