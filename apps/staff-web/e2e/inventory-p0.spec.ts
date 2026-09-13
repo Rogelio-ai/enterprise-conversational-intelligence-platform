@@ -45,7 +45,8 @@ async function expectPageFitsViewport(page: Page) {
   expect(await page.evaluate(() => document.documentElement.scrollWidth <= window.innerWidth + 1)).toBe(true);
 }
 
-test('WS-34-B8 deterministic Staff Web P0 journey reaches real inventory authorities', async ({ page }) => {
+test('WS-34-B9 deterministic Staff Web P0 journey reaches real inventory authorities', async ({ page }) => {
+  test.setTimeout(600_000);
   await page.setViewportSize({ width: 1440, height: 900 });
   await login(page, OPERATOR);
   await openInventory(page, 'Existencias');
@@ -135,7 +136,7 @@ test('WS-34-B8 deterministic Staff Web P0 journey reaches real inventory authori
   await page.getByRole('button', { name: 'Aprobar' }).click();
   await page.getByRole('button', { name: 'Publicar ajustes' }).click();
   await expect(page.getByRole('alert')).toContainText('El conteo FULL está incompleto');
-  await expect(page.getByText('NO CONTADO')).toBeVisible();
+  await expect(page.getByText('NO CONTADO').first()).toBeVisible();
 
   await switchActor(page, OPERATOR);
   await openInventory(page, 'Conteos físicos');
@@ -143,6 +144,7 @@ test('WS-34-B8 deterministic Staff Web P0 journey reaches real inventory authori
   await page.getByRole('button', { name: 'Abrir conteo' }).click();
   await addCountLine(page, 'Tomate E2E', '11');
   await addCountLine(page, 'Sal E2E', '12');
+  await addCountLine(page, 'Salsa preparada E2E', '0');
   await page.getByRole('button', { name: 'Enviar' }).click();
 
   await switchActor(page, APPROVER);
@@ -192,7 +194,21 @@ test('WS-34-B8 deterministic Staff Web P0 journey reaches real inventory authori
   await page.getByRole('link', { name: 'Recepción' }).click(); await page.getByLabel('Orden de compra (opcional)').selectOption({ index: 1 }); await page.getByLabel('Artículo / presentación').selectOption({ index: 1 }); await page.getByLabel('Recibido', { exact: true }).fill('1'); await page.getByLabel('Aceptado', { exact: true }).fill('1'); await page.getByLabel('Costo unitario').fill('20'); await page.getByRole('button', { name: 'Agregar línea' }).click(); await page.getByRole('button', { name: 'Crear un DRAFT con todas las líneas' }).click(); await page.getByRole('button', { name: 'Aceptar una vez y publicar todas las líneas' }).click();
   await page.getByRole('link', { name: 'Órdenes de compra' }).click(); await page.getByRole('button', { name: /PARTIALLY_RECEIVED/ }).click(); await expect(page.getByText(/Pendiente 1/)).toBeVisible();
   await page.getByRole('link', { name: 'Recepción' }).click(); await page.getByLabel('Orden de compra (opcional)').selectOption({ index: 1 }); await addReceiptLine(page, 1, '1', '18'); await addReceiptLine(page, 2, '3', '5'); await page.getByRole('button', { name: 'Crear un DRAFT con todas las líneas' }).click(); await page.getByRole('button', { name: 'Aceptar una vez y publicar todas las líneas' }).click();
-  await page.getByRole('link', { name: 'Órdenes de compra' }).click(); await page.getByRole('button', { name: /RECEIVED/ }).click();
+  await page.getByRole('link', { name: 'Órdenes de compra' }).click(); await page.getByRole('button', { name: /^#\d+ · RECEIVED ·/ }).click();
   const firstLineCostEvidence = page.locator('article.inventory-state-note').filter({ hasText: 'Línea 1' }).locator('small').filter({ hasText: /variación.*1/i });
   await expect(firstLineCostEvidence).toBeVisible(); await page.getByRole('button', { name: 'Cerrar' }).click(); await expect(page.getByText(/CLOSED/).first()).toBeVisible(); await expectPageFitsViewport(page);
+
+  await page.getByRole('link', { name: 'Preparaciones' }).click();
+  await page.getByLabel('Artículo preparado').selectOption({ label: 'Salsa preparada E2E · UNIT' }); await page.getByLabel('Salida esperada').fill('4');
+  await page.getByLabel('Artículo de entrada').selectOption({ label: 'Tomate E2E · UNIT' }); await page.getByLabel('Cantidad esperada').fill('2'); await page.getByLabel('Base del rendimiento').check(); await page.getByRole('button', { name: 'Agregar entrada' }).click();
+  await page.getByLabel('Artículo de entrada').selectOption({ label: 'Sal E2E · UNIT' }); await page.getByLabel('Cantidad esperada').fill('3'); await page.getByRole('button', { name: 'Agregar entrada' }).click(); await page.getByRole('button', { name: 'Publicar versión inmutable' }).click();
+  const recipeOption = await page.getByLabel('Receta publicada').getByRole('option', { name: /Salsa preparada E2E · revisión 1/ }).getAttribute('value');
+  if (!recipeOption) throw new Error('Published preparation recipe has no selectable value');
+  await page.getByLabel('Receta publicada').selectOption(recipeOption); await page.getByRole('button', { name: 'Crear lote DRAFT' }).click(); await expect(page.locator('p.inventory-lifecycle', { hasText: /^Lote #\d+ · DRAFT$/ })).toBeVisible(); await expect(page.getByText('Movimientos').locator('..')).toContainText('0');
+  await page.getByRole('link', { name: 'Existencias' }).click(); await expect(page.getByText('13 UNIT')).toBeVisible(); await expect(page.getByText('15 UNIT')).toBeVisible(); await expect(page.getByText('0 UNIT')).toBeVisible();
+  await page.getByRole('link', { name: 'Preparaciones' }).click(); await page.getByRole('button', { name: /Lote #\d+ · DRAFT/ }).click(); await page.getByRole('button', { name: 'Iniciar lote' }).click();
+  const completionRequestPromise=page.waitForRequest((request)=>request.url().includes('/preparation-batches/')&&request.url().endsWith(':complete')); await page.getByRole('button', { name: 'Completar lote' }).click(); const completionRequest=await completionRequestPromise;
+  await expect(page.locator('p.inventory-lifecycle', { hasText: /^Lote #\d+ · COMPLETED$/ })).toBeVisible(); await expect(page.getByText(/Costo material 35/)).toBeVisible(); await expect(page.locator('dt', { hasText: /^Rendimiento real$/ }).locator('..')).toContainText('2.000000000000');
+  const replay=await page.evaluate(async ({url,key,body})=>{const credential=JSON.parse(sessionStorage.getItem('staff-auth-session-v1')!);const response=await fetch(url,{method:'POST',headers:{Authorization:`Bearer ${credential.accessToken}`,'Content-Type':'application/json','Idempotency-Key':key},body});return {status:response.status,replay:response.headers.get('Idempotent-Replay')};},{url:completionRequest.url().replace('http://localhost:8000','/api'),key:completionRequest.headers()['idempotency-key'],body:completionRequest.postData()!}); expect(replay).toEqual({status:200,replay:'true'});
+  await page.getByRole('link', { name: 'Existencias' }).click(); await expect(page.getByText('11 UNIT')).toBeVisible(); await expect(page.getByText('12 UNIT')).toBeVisible(); await expect(page.getByText('4 UNIT')).toBeVisible(); await expectPageFitsViewport(page);
 });

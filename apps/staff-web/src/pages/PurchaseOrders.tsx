@@ -1,4 +1,4 @@
-import { useRef, useState, type FormEvent } from 'react';
+import { useEffect, useRef, useState, type FormEvent } from 'react';
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { NavLink } from 'react-router-dom';
 
@@ -71,6 +71,12 @@ export function PurchaseOrders({ data }: { data: InventoryIntelligence }) {
     enabled: Boolean(location && supplierId), retry: false,
   });
   const selectedOffering = offerings.data?.items.find((value) => value.id === offeringId);
+
+  useEffect(() => {
+    if (!current) return;
+    const refreshed = orders.data?.items.find((value) => value.id === current.id);
+    if (refreshed && refreshed.version > current.version) setCurrent(refreshed);
+  }, [current, orders.data]);
 
   const resetComposition = () => {
     setEditingOrderId(undefined); setSupplierId(0); setWarehouseId(0);

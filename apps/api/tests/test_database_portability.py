@@ -122,6 +122,11 @@ POST_0026_APPLICATION_TABLES = {
     'physical_counts',
     'purchase_orders',
     'purchase_order_lines',
+    'preparation_recipe_versions',
+    'preparation_recipe_components',
+    'preparation_batches',
+    'preparation_batch_inputs',
+    'preparation_batch_outputs',
     'product_consumption_components',
     'product_consumption_definitions',
     'product_consumption_version_components',
@@ -2351,6 +2356,49 @@ def test_0048_purchase_orders_preserve_receipts_stock_and_safe_reversibility(
             assert cursor.fetchone()['quantity'] == Decimal('8.000000')
     finally:
         connection.close()
+
+
+def test_0049_preparations_preserve_history_balances_retry_and_safe_roundtrip(
+    isolated_database, integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0048_purchase_order_operations')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute("INSERT INTO tenants (name,slug,status) VALUES ('B9','b9-migration','ACTIVE')"); tenant_id=int(cursor.lastrowid)
+            cursor.execute("INSERT INTO organizations (tenant_id,code,name,status) VALUES (%s,'ORG','Org','ACTIVE')",(tenant_id,)); organization_id=int(cursor.lastrowid)
+            cursor.execute("INSERT INTO locations (tenant_id,organization_id,code,name,timezone,status) VALUES (%s,%s,'LOC','Location','UTC','ACTIVE')",(tenant_id,organization_id)); location_id=int(cursor.lastrowid)
+            cursor.execute("INSERT INTO warehouses (tenant_id,organization_id,location_id,code,name,status,default_slot,negative_stock_policy,version) VALUES (%s,%s,%s,'MAIN','Main','ACTIVE',1,'ALLOW',1)",(tenant_id,organization_id,location_id)); warehouse_id=int(cursor.lastrowid)
+            cursor.execute("INSERT INTO inventory_items (tenant_id,organization_id,location_id,code,name,base_uom,standard_unit_cost,currency,status,version) VALUES (%s,%s,%s,'RAW','Raw','UNIT',2,'MXN','ACTIVE',1)",(tenant_id,organization_id,location_id)); item_id=int(cursor.lastrowid)
+            cursor.execute("INSERT INTO stock_movements (tenant_id,organization_id,location_id,warehouse_id,inventory_item_id,movement_type,quantity,recorded_at,actor_type,actor_id,idempotency_actor_scope,idempotency_key,request_schema_version,request_fingerprint,negative_stock_policy,negative_stock_warning,resulting_stock_quantity,evidence_status,opening_balance_slot) VALUES (%s,%s,%s,%s,%s,'OPENING_BALANCE',8,CURRENT_TIMESTAMP,'EMPLOYEE',1,'EMPLOYEE:1','b9-opening',1,'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','ALLOW',0,8,'LEGACY_UNAVAILABLE',1)",(tenant_id,organization_id,location_id,warehouse_id,item_id)); movement_id=int(cursor.lastrowid)
+    finally: connection.close()
+    _run_alembic(database_name,'head'); _run_alembic(database_name,'head')
+    connection=_connect_isolated_database(integration_settings,database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version'); assert cursor.fetchone()['version_num']=='0049_prepared_components_yield'
+            cursor.execute('SELECT quantity,preparation_batch_id FROM stock_movements WHERE id=%s',(movement_id,)); row=cursor.fetchone(); assert row['quantity']==Decimal('8.000000') and row['preparation_batch_id'] is None
+            cursor.execute('SELECT COUNT(*) count FROM preparation_batches'); assert cursor.fetchone()['count']==0
+            cursor.execute("SELECT COUNT(*) count FROM stock_movements WHERE movement_type IN ('PREPARATION_INPUT','PREPARATION_OUTPUT')"); assert cursor.fetchone()['count']==0
+    finally: connection.close()
+    _run_alembic_downgrade(database_name,'0048_purchase_order_operations'); _run_alembic(database_name,'head')
+    connection=_connect_isolated_database(integration_settings,database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT quantity FROM stock_movements WHERE id=%s',(movement_id,)); assert cursor.fetchone()['quantity']==Decimal('8.000000')
+            cursor.execute("INSERT INTO inventory_items (tenant_id,organization_id,location_id,code,name,base_uom,standard_unit_cost,currency,status,version) VALUES (%s,%s,%s,'PREP','Prepared','UNIT',1,'MXN','ACTIVE',1)",(tenant_id,organization_id,location_id)); output_item_id=int(cursor.lastrowid)
+            cursor.execute("INSERT INTO preparation_recipe_versions (tenant_id,organization_id,location_id,output_inventory_item_id,revision,status,publication_status,expected_output_quantity,output_source_uom,output_conversion_factor,output_base_uom_evidence,normalized_expected_output_quantity,effective_from,actor_id,source,published_at) VALUES (%s,%s,%s,%s,1,'ACTIVE','PUBLISHED',1,'UNIT',1,'UNIT',1,CURRENT_TIMESTAMP,1,'MIGRATION_TEST',CURRENT_TIMESTAMP)",(tenant_id,organization_id,location_id,output_item_id)); recipe_id=int(cursor.lastrowid)
+            cursor.execute("INSERT INTO preparation_recipe_components (tenant_id,organization_id,location_id,recipe_version_id,inventory_item_id,line_number,expected_quantity,source_uom,conversion_factor,base_uom_evidence,normalized_expected_quantity,yield_basis_slot) VALUES (%s,%s,%s,%s,%s,1,1,'UNIT',1,'UNIT',1,1)",(tenant_id,organization_id,location_id,recipe_id,item_id))
+    finally: connection.close()
+    with pytest.raises(subprocess.CalledProcessError):
+        _run_alembic_downgrade(database_name,'0048_purchase_order_operations')
+    connection=_connect_isolated_database(integration_settings,database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version'); assert cursor.fetchone()['version_num']=='0049_prepared_components_yield'
+            cursor.execute('SELECT COUNT(*) count FROM preparation_recipe_versions WHERE id=%s',(recipe_id,)); assert cursor.fetchone()['count']==1
+    finally: connection.close()
 
 
 def test_0042_fresh_install_reaches_uom_cost_evidence_contract(

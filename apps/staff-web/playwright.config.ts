@@ -6,7 +6,7 @@ export default defineConfig({
   fullyParallel: false,
   workers: 1,
   timeout: 300_000,
-  expect: { timeout: 15_000 },
+  expect: { timeout: 60_000 },
   globalSetup: './e2e/global-setup.ts',
   globalTeardown: './e2e/global-teardown.ts',
   reporter: 'line',

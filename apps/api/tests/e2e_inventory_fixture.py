@@ -29,6 +29,8 @@ PERMISSIONS = (
     'inventory.reconciliation.manage',
     'inventory.purchase_order.read', 'inventory.purchase_order.manage',
     'inventory.purchase_order.approve',
+    'inventory.preparation.read', 'inventory.preparation.manage',
+    'inventory.preparation.complete',
 )
 
 
@@ -115,6 +117,7 @@ def seed(db) -> None:
         items = [
             api(client, 'POST', '/inventory-items', headers, {'location_id': location_id, 'code': 'B7-TOM', 'name': 'Tomate E2E', 'base_uom': 'UNIT', 'standard_unit_cost': '10', 'currency': 'MXN'}),
             api(client, 'POST', '/inventory-items', headers, {'location_id': location_id, 'code': 'B7-SAL', 'name': 'Sal E2E', 'base_uom': 'UNIT', 'standard_unit_cost': '5', 'currency': 'MXN'}),
+            api(client, 'POST', '/inventory-items', headers, {'location_id': location_id, 'code': 'B9-PREP', 'name': 'Salsa preparada E2E', 'base_uom': 'UNIT', 'standard_unit_cost': '1', 'currency': 'MXN'}),
         ]
         with db.cursor() as cursor:
             cursor.execute(
@@ -128,7 +131,7 @@ def seed(db) -> None:
             raise RuntimeError(f'warehouse lookup failed: {warehouse_response.text}')
         warehouse = warehouse_response.json()['items'][0]
         supplier = api(client, 'POST', '/inventory/suppliers', headers, {'organization_id': organization_id, 'code': 'B7-SUP', 'name': 'Proveedor E2E', 'contact_reference': None, 'location_ids': [location_id]})
-        for item in items:
+        for item in items[:2]:
             api(client, 'POST', f"/inventory/suppliers/{supplier['id']}/offerings", headers, {'location_id': location_id, 'inventory_item_id': item['id'], 'supplier_item_code': item['code'], 'purchase_uom': 'UNIT'})
             api(client, 'POST', '/inventory/stock-movements', {**headers, 'Idempotency-Key': f"b7-opening-{item['id']}"}, {'inventory_item_id': item['id'], 'warehouse_id': warehouse['id'], 'movement_type': 'OPENING_BALANCE', 'quantity': '10', 'uom': 'UNIT', 'reversal_of_movement_id': None, 'reason': 'WS-34-B7 deterministic baseline', 'reference': 'B7-E2E'})
         api(client, 'PUT', f"/inventory/loss-policies/{warehouse['id']}", headers, {'expected_version': 0, 'approval_value_threshold': '1', 'currency': 'MXN', 'status': 'ACTIVE'})
@@ -150,6 +153,8 @@ def verify(db) -> None:
             'incomplete_full_counts': "SELECT COUNT(*) AS n FROM physical_counts WHERE tenant_id=%s AND count_scope='FULL' AND status='APPROVED'",
             'closed_reconciliations': "SELECT COUNT(*) AS n FROM inventory_reconciliations WHERE tenant_id=%s AND status='CLOSED'",
             'closed_purchase_orders': "SELECT COUNT(*) AS n FROM purchase_orders WHERE tenant_id=%s AND status='CLOSED'",
+            'completed_preparation_batches': "SELECT COUNT(*) AS n FROM preparation_batches WHERE tenant_id=%s AND status='COMPLETED' AND material_cost=35 AND prepared_unit_material_cost=8.75 AND expected_yield=2 AND actual_yield=2",
+            'preparation_movements': "SELECT COUNT(*) AS n FROM stock_movements WHERE tenant_id=%s AND movement_type IN ('PREPARATION_INPUT','PREPARATION_OUTPUT')",
         }.items():
             cursor.execute(sql, (tenant_id,))
             checks[name] = int(cursor.fetchone()['n'])
@@ -158,9 +163,15 @@ def verify(db) -> None:
         'posted_losses': 1, 'posted_partial_counts': 1, 'posted_full_counts': 1,
         'incomplete_full_counts': 1, 'closed_reconciliations': 1,
         'closed_purchase_orders': 1,
+        'completed_preparation_batches': 1, 'preparation_movements': 3,
     }
     if checks != expected:
         raise RuntimeError(f'authoritative E2E evidence mismatch: {checks} != {expected}')
+    with db.cursor() as cursor:
+        cursor.execute("SELECT i.code,SUM(m.quantity) quantity FROM inventory_items i JOIN stock_movements m ON m.inventory_item_id=i.id WHERE i.tenant_id=%s AND i.code IN ('B7-TOM','B7-SAL','B9-PREP') GROUP BY i.code",(tenant_id,))
+        stock={row['code']:str(row['quantity']) for row in cursor.fetchall()}
+    if stock != {'B7-SAL':'12.000000','B7-TOM':'11.000000','B9-PREP':'4.000000'}:
+        raise RuntimeError(f'preparation stock evidence mismatch: {stock}')
     print(json.dumps(checks, sort_keys=True))
 
 

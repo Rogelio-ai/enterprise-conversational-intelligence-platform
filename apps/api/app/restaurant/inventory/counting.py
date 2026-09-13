@@ -546,7 +546,11 @@ async def close_reconciliation(
         consumption = -sum((row.quantity for row in window if row.movement_type == 'CONSUMPTION'), ZERO)
         loss = -sum((row.quantity for row in window if row.inventory_loss_id is not None), ZERO)
         classified = {'GOODS_RECEIPT', 'CONSUMPTION'}
-        other = sum((row.quantity for row in window if row.movement_type not in classified and row.inventory_loss_id is None), ZERO)
+        # Preparation inputs/outputs remain explicit ledger events. For this
+        # item-level reconciliation they belong once in the net "other"
+        # material flow; their batch provenance remains queryable on each row.
+        preparation = sum((row.quantity for row in window if row.movement_type in {'PREPARATION_INPUT', 'PREPARATION_OUTPUT'}), ZERO)
+        other = preparation + sum((row.quantity for row in window if row.movement_type not in classified | {'PREPARATION_INPUT', 'PREPARATION_OUTPUT'} and row.inventory_loss_id is None), ZERO)
         theoretical = (opening + receiving - consumption - loss + other).quantize(QUANTITY_UNIT)
         variance = (line.normalized_counted_quantity - theoretical).quantize(QUANTITY_UNIT)
         value.opening_quantity = opening.quantize(QUANTITY_UNIT)

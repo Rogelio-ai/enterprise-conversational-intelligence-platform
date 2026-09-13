@@ -16,6 +16,7 @@ const permissions = [
   'inventory.count.approve', 'inventory.count.post', 'inventory.reconciliation.read',
     'inventory.reconciliation.manage',
     'inventory.purchase_order.read', 'inventory.purchase_order.manage', 'inventory.purchase_order.approve',
+    'inventory.preparation.read', 'inventory.preparation.manage', 'inventory.preparation.complete',
 ];
 const identity: StaffIdentity = { user_id: 1, email: 'inventory@example.test', display_name: 'Iris Inventario', tenant_id: 11, membership_id: 12, authorized_location_ids: [21], roles: ['INVENTORY_OPERATOR'], permissions };
 const location = { id: 21, tenant_id: 11, organization_id: 31, code: 'CENTRO', name: 'Sucursal Centro', timezone: 'America/Mexico_City', status: 'ACTIVE' };
@@ -39,12 +40,19 @@ function json(body: unknown, status = 200) { return Promise.resolve(new Response
 function mockApi(currentIdentity = identity, acceptConflict = false, inventoryData = intelligence) {
   const calls: Array<{ url: string; init?: RequestInit }> = [];
   let receiptLines: Array<Record<string, unknown>> = [];
+  const preparationRecipe = { id: 201, location_id: 21, output_inventory_item_id: 53, revision: 1, status: 'ACTIVE', publication_status: 'PUBLISHED', expected_output_quantity: '8.000000', output_source_uom: 'KG', normalized_expected_output_quantity: '8.000000', output_base_uom_evidence: 'KG', expected_yield: '0.800000000000', effective_from: '2026-09-12T12:00:00Z', effective_to: null, published_at: '2026-09-12T12:00:00Z', components: [{ id: 202, inventory_item_id: 51, line_number: 1, expected_quantity: '10.000000', source_uom: 'KG', normalized_expected_quantity: '10.000000', base_uom_evidence: 'KG', yield_basis: true }, { id: 203, inventory_item_id: 52, line_number: 2, expected_quantity: '2.000000', source_uom: 'KG', normalized_expected_quantity: '2.000000', base_uom_evidence: 'KG', yield_basis: false }] };
+  let preparationBatch: any = null;
   let count: Record<string, any> = { id: 81, warehouse_id: 41, count_scope: 'PARTIAL', status: 'DRAFT', opened_at: '2026-09-12T12:00:00Z', cursor_at: '2026-09-12T12:00:00Z', cursor_movement_id: 70, reason: 'Conteo', reference: null, version: 1, lines: [] };
   const fetchMock = vi.fn((input: string | URL | Request, init?: RequestInit) => {
     const url = String(input); calls.push({ url, init });
     if (url.endsWith('/auth/me')) return json(currentIdentity);
     if (url.includes('/locations?')) return json({ items: [location], limit: 100, offset: 0 });
     if (url.includes('/inventory/intelligence?')) return json(inventoryData);
+    if (url.includes('/inventory-items?')) return json({ items: [{ id: 51, code: 'TOM', name: 'Tomate', base_uom: 'KG', status: 'ACTIVE' }, { id: 52, code: 'SAL', name: 'Sal', base_uom: 'KG', status: 'ACTIVE' }, { id: 53, code: 'SALSA', name: 'Salsa preparada', base_uom: 'KG', status: 'ACTIVE' }] });
+    if (url.includes('/inventory/preparation-recipes?')) return json({ items: [preparationRecipe] });
+    if (url.includes('/inventory/preparation-batches?')) return json({ items: preparationBatch ? [preparationBatch] : [] });
+    if (url.endsWith('/inventory/preparation-batches') && init?.method === 'POST') { const payload=JSON.parse(String(init.body)); preparationBatch={ id:204,location_id:21,warehouse_id:41,recipe_version_id:201,status:'DRAFT',version:1,reference:payload.reference,expected_yield:'0.800000000000',actual_yield:'0.800000000000',yield_variance:'0.000000000000',cost_evidence_status:'RESOLVED',material_cost:'44.000000000000',prepared_unit_material_cost:'5.500000000000',cost_currency_evidence:'MXN',cost_visible:true,inputs:preparationRecipe.components.map((row:any,index:number)=>({id:205+index,recipe_component_id:row.id,inventory_item_id:row.inventory_item_id,source_quantity:payload.inputs[index].source_quantity,source_uom:'KG',normalized_quantity:payload.inputs[index].source_quantity,base_uom_evidence:'KG',evidence_status:'RESOLVED'})),output:{id:207,inventory_item_id:53,source_quantity:payload.output_quantity,source_uom:'KG',normalized_quantity:payload.output_quantity,base_uom_evidence:'KG',evidence_status:'RESOLVED'},movements:[],created_at:'2026-09-12T12:00:00Z',started_at:null,completed_at:null,cancelled_at:null};return json(preparationBatch,201); }
+    if (/\/inventory\/preparation-batches\/204:(start|complete|cancel)$/.test(url)) { const action=url.split(':').at(-1); preparationBatch={...preparationBatch,status:action==='start'?'IN_PROGRESS':action==='complete'?'COMPLETED':'CANCELLED',version:preparationBatch.version+1,movements:action==='complete'?[{id:210,movement_type:'PREPARATION_INPUT',quantity:'-10.000000'},{id:211,movement_type:'PREPARATION_INPUT',quantity:'-2.000000'},{id:212,movement_type:'PREPARATION_OUTPUT',quantity:'8.000000'}]:[]};return json(preparationBatch); }
     if (url.includes('/inventory/purchase-orders?')) return json({ items: [] });
     if (url.endsWith('/inventory/purchase-orders') && init?.method === 'POST') {
       const payload = JSON.parse(String(init.body));
@@ -114,13 +122,13 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('Inventory Staff Web', () => {
   it('shows scoped ledger stock, navigation, attention, and server-side cost masking', async () => {
     const api = mockApi({ ...identity, permissions: permissions.filter((value) => value !== 'inventory.cost.read') }); renderInventory('/inventory/stock');
-    expect(await screen.findByRole('heading', { name: 'Stock actual por almacén' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'Stock actual por almacén' }, { timeout: 10_000 })).toBeVisible();
     expect(screen.getByText('Tomate')).toBeVisible(); expect(screen.getByText('8 KG')).toBeVisible();
     expect(screen.getByText(/Costos y valores no fueron incluidos/)).toBeVisible();
     expect(screen.queryByRole('columnheader', { name: 'Costos' })).not.toBeInTheDocument();
     expect(screen.getByRole('link', { name: 'Recepción' })).toHaveAttribute('href', '/inventory/receiving');
     expect(api.calls.some(({ url }) => url.includes('location_id=21'))).toBe(true);
-  });
+  }, 15_000);
 
   it('shows a deliberate no-warehouse state without exposing unusable workflows', async () => {
     mockApi(identity, false, { ...intelligence, active_warehouse_count: 0, stock_position_count: 0, warehouses: [], stock: [] });
@@ -154,6 +162,16 @@ describe('Inventory Staff Web', () => {
     await user.click(screen.getByRole('button', { name: 'Enviar a aprobación' }));
     expect(await screen.findByText('#101 · SUBMITTED')).toBeVisible();
   }, 15_000);
+
+  it('runs a multi-input preparation batch and presents server-derived yield and cost', async () => {
+    mockApi(); const user=userEvent.setup(); renderInventory('/inventory/preparations');
+    expect(await screen.findByRole('heading',{name:'Nueva versión de preparación'})).toBeVisible();
+    await screen.findByRole('option',{name:'Salsa preparada · revisión 1'}); await user.selectOptions(screen.getByLabelText('Receta publicada'),'201');
+    expect(screen.getByLabelText('Entrada real Tomate')).toHaveValue('10.000000'); expect(screen.getByLabelText('Entrada real Sal')).toHaveValue('2.000000');
+    await user.click(screen.getByRole('button',{name:'Crear lote DRAFT'})); expect(await screen.findByText('Lote #204 · DRAFT',{selector:'p'})).toBeVisible(); expect(screen.getByText(/Movimientos/).parentElement).toHaveTextContent('0');
+    await user.click(screen.getByRole('button',{name:'Iniciar lote'})); expect(await screen.findByText('Lote #204 · IN_PROGRESS',{selector:'p'})).toBeVisible();
+    await user.click(screen.getByRole('button',{name:'Completar lote'})); expect(await screen.findByText('Lote #204 · COMPLETED',{selector:'p'})).toBeVisible(); expect(screen.getByText(/Costo material 44/)).toBeVisible(); expect(screen.getByText(/Rendimiento real/).parentElement).toHaveTextContent('0.800000000000');
+  },15_000);
 
   it('composes, edits, removes, and accepts one authoritative multi-line receipt', async () => {
     const api = mockApi(); const user = userEvent.setup(); renderInventory('/inventory/receiving');

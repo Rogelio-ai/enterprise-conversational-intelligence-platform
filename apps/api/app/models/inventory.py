@@ -1526,6 +1526,169 @@ class InventoryReconciliation(TimestampMixin, Base):
     version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1, server_default=text('1'))
 
 
+class PreparationRecipeVersion(Base):
+    __tablename__ = 'preparation_recipe_versions'
+    __table_args__ = (
+        ForeignKeyConstraint(['output_inventory_item_id', 'tenant_id', 'organization_id', 'location_id'], ['inventory_items.id', 'inventory_items.tenant_id', 'inventory_items.organization_id', 'inventory_items.location_id'], name='fk_preparation_recipe_versions_output_scope', ondelete='RESTRICT'),
+        UniqueConstraint('id', 'tenant_id', 'organization_id', 'location_id', name='uq_preparation_recipe_versions_scope'),
+        UniqueConstraint('tenant_id', 'location_id', 'output_inventory_item_id', 'revision', name='uq_preparation_recipe_versions_revision'),
+        CheckConstraint('revision >= 1 AND expected_output_quantity > 0 AND normalized_expected_output_quantity > 0 AND output_conversion_factor > 0', name='ck_preparation_recipe_versions_values'),
+        CheckConstraint("status IN ('ACTIVE','INACTIVE') AND publication_status='PUBLISHED'", name='ck_preparation_recipe_versions_status'),
+        CheckConstraint('effective_to IS NULL OR effective_to >= effective_from', name='ck_preparation_recipe_versions_effectivity'),
+        Index('ix_preparation_recipe_versions_resolve', 'tenant_id', 'location_id', 'output_inventory_item_id', 'effective_from', 'revision'), OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    output_inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    revision: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False)
+    publication_status: Mapped[str] = mapped_column(String(16), nullable=False, default='PUBLISHED', server_default=text("'PUBLISHED'"))
+    expected_output_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    output_source_uom: Mapped[str] = mapped_column(String(32, collation='ascii_bin'), nullable=False)
+    output_conversion_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    output_conversion_factor: Mapped[Decimal] = mapped_column(Numeric(25, 12), nullable=False)
+    output_base_uom_evidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    normalized_expected_output_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    effective_from: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    effective_to: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    actor_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source: Mapped[str] = mapped_column(String(48, collation='ascii_bin'), nullable=False)
+    published_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
+
+
+class PreparationRecipeComponent(Base):
+    __tablename__ = 'preparation_recipe_components'
+    __table_args__ = (
+        ForeignKeyConstraint(['recipe_version_id', 'tenant_id', 'organization_id', 'location_id'], ['preparation_recipe_versions.id', 'preparation_recipe_versions.tenant_id', 'preparation_recipe_versions.organization_id', 'preparation_recipe_versions.location_id'], name='fk_preparation_recipe_components_version_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['inventory_item_id', 'tenant_id', 'organization_id', 'location_id'], ['inventory_items.id', 'inventory_items.tenant_id', 'inventory_items.organization_id', 'inventory_items.location_id'], name='fk_preparation_recipe_components_item_scope', ondelete='RESTRICT'),
+        UniqueConstraint('id', 'recipe_version_id', 'inventory_item_id', name='uq_preparation_recipe_components_batch_scope'),
+        UniqueConstraint('recipe_version_id', 'inventory_item_id', name='uq_preparation_recipe_components_item'),
+        UniqueConstraint('recipe_version_id', 'yield_basis_slot', name='uq_preparation_recipe_components_yield_basis'),
+        CheckConstraint('expected_quantity > 0 AND normalized_expected_quantity > 0 AND conversion_factor > 0', name='ck_preparation_recipe_components_values'),
+        CheckConstraint('yield_basis_slot IS NULL OR yield_basis_slot=1', name='ck_preparation_recipe_components_yield_basis'), OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    recipe_version_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    expected_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    source_uom: Mapped[str] = mapped_column(String(32, collation='ascii_bin'), nullable=False)
+    conversion_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(25, 12), nullable=False)
+    base_uom_evidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    normalized_expected_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    yield_basis_slot: Mapped[int | None] = mapped_column(SmallInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
+
+
+class PreparationBatch(TimestampMixin, Base):
+    __tablename__ = 'preparation_batches'
+    __table_args__ = (
+        ForeignKeyConstraint(['warehouse_id', 'tenant_id', 'organization_id', 'location_id'], ['warehouses.id', 'warehouses.tenant_id', 'warehouses.organization_id', 'warehouses.location_id'], name='fk_preparation_batches_warehouse_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['recipe_version_id', 'tenant_id', 'organization_id', 'location_id'], ['preparation_recipe_versions.id', 'preparation_recipe_versions.tenant_id', 'preparation_recipe_versions.organization_id', 'preparation_recipe_versions.location_id'], name='fk_preparation_batches_recipe_scope', ondelete='RESTRICT'),
+        UniqueConstraint('id', 'tenant_id', 'organization_id', 'location_id', 'warehouse_id', name='uq_preparation_batches_scope'),
+        CheckConstraint("status IN ('DRAFT','IN_PROGRESS','COMPLETED','CANCELLED')", name='ck_preparation_batches_status'),
+        CheckConstraint("cost_evidence_status IN ('RESOLVED','COST_NON_DERIVABLE')", name='ck_preparation_batches_cost_status'),
+        CheckConstraint('version >= 1 AND expected_yield > 0 AND actual_yield > 0', name='ck_preparation_batches_values'),
+        CheckConstraint("(cost_evidence_status='RESOLVED' AND material_cost IS NOT NULL AND prepared_unit_material_cost IS NOT NULL AND cost_currency_evidence IS NOT NULL) OR (cost_evidence_status='COST_NON_DERIVABLE' AND material_cost IS NULL AND prepared_unit_material_cost IS NULL AND cost_currency_evidence IS NULL)", name='ck_preparation_batches_cost_evidence'),
+        Index('ix_preparation_batches_location_status', 'tenant_id', 'location_id', 'status', 'id'), OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    recipe_version_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default='DRAFT', server_default=text("'DRAFT'"))
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1, server_default=text('1'))
+    expected_yield: Mapped[Decimal] = mapped_column(Numeric(25, 12), nullable=False)
+    actual_yield: Mapped[Decimal] = mapped_column(Numeric(25, 12), nullable=False)
+    yield_variance: Mapped[Decimal] = mapped_column(Numeric(25, 12), nullable=False)
+    cost_evidence_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    material_cost: Mapped[Decimal | None] = mapped_column(Numeric(31, 12), nullable=True)
+    prepared_unit_material_cost: Mapped[Decimal | None] = mapped_column(Numeric(31, 12), nullable=True)
+    cost_currency_evidence: Mapped[str | None] = mapped_column(String(3, collation='ascii_bin'), nullable=True)
+    reference: Mapped[str | None] = mapped_column(String(200), nullable=True)
+    created_by_actor_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    started_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    started_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    completed_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    completed_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    cancelled_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    cancelled_by_actor_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    completion_command_key: Mapped[str | None] = mapped_column(String(128, collation='ascii_bin'), nullable=True)
+    completion_fingerprint: Mapped[str | None] = mapped_column(String(64, collation='ascii_bin'), nullable=True)
+
+
+class PreparationBatchInput(Base):
+    __tablename__ = 'preparation_batch_inputs'
+    __table_args__ = (
+        ForeignKeyConstraint(['batch_id', 'tenant_id', 'organization_id', 'location_id', 'warehouse_id'], ['preparation_batches.id', 'preparation_batches.tenant_id', 'preparation_batches.organization_id', 'preparation_batches.location_id', 'preparation_batches.warehouse_id'], name='fk_preparation_batch_inputs_batch_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['recipe_component_id', 'recipe_version_id', 'inventory_item_id'], ['preparation_recipe_components.id', 'preparation_recipe_components.recipe_version_id', 'preparation_recipe_components.inventory_item_id'], name='fk_preparation_batch_inputs_component_scope', ondelete='RESTRICT'),
+        UniqueConstraint('id', 'batch_id', 'inventory_item_id', name='uq_preparation_batch_inputs_movement_scope'),
+        UniqueConstraint('batch_id', 'recipe_component_id', name='uq_preparation_batch_inputs_component'),
+        CheckConstraint('source_quantity > 0 AND normalized_quantity > 0 AND conversion_factor > 0', name='ck_preparation_batch_inputs_values'), OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    batch_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    recipe_version_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    recipe_component_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    line_number: Mapped[int] = mapped_column(Integer, nullable=False)
+    source_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    source_uom: Mapped[str] = mapped_column(String(32, collation='ascii_bin'), nullable=False)
+    normalized_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    conversion_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(25, 12), nullable=False)
+    base_uom_evidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    standard_cost_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    standard_unit_cost_evidence: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    cost_currency_evidence: Mapped[str | None] = mapped_column(String(3, collation='ascii_bin'), nullable=True)
+    extended_material_cost: Mapped[Decimal | None] = mapped_column(Numeric(31, 12), nullable=True)
+    evidence_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
+
+
+class PreparationBatchOutput(Base):
+    __tablename__ = 'preparation_batch_outputs'
+    __table_args__ = (
+        ForeignKeyConstraint(['batch_id', 'tenant_id', 'organization_id', 'location_id', 'warehouse_id'], ['preparation_batches.id', 'preparation_batches.tenant_id', 'preparation_batches.organization_id', 'preparation_batches.location_id', 'preparation_batches.warehouse_id'], name='fk_preparation_batch_outputs_batch_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['inventory_item_id', 'tenant_id', 'organization_id', 'location_id'], ['inventory_items.id', 'inventory_items.tenant_id', 'inventory_items.organization_id', 'inventory_items.location_id'], name='fk_preparation_batch_outputs_item_scope', ondelete='RESTRICT'),
+        UniqueConstraint('id', 'batch_id', 'inventory_item_id', name='uq_preparation_batch_outputs_movement_scope'),
+        UniqueConstraint('batch_id', name='uq_preparation_batch_outputs_primary'),
+        CheckConstraint('source_quantity > 0 AND normalized_quantity > 0 AND conversion_factor > 0', name='ck_preparation_batch_outputs_values'), OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    batch_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    recipe_version_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    source_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    source_uom: Mapped[str] = mapped_column(String(32, collation='ascii_bin'), nullable=False)
+    normalized_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    conversion_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(25, 12), nullable=False)
+    base_uom_evidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    allocated_material_cost: Mapped[Decimal | None] = mapped_column(Numeric(31, 12), nullable=True)
+    unit_material_cost: Mapped[Decimal | None] = mapped_column(Numeric(31, 12), nullable=True)
+    cost_currency_evidence: Mapped[str | None] = mapped_column(String(3, collation='ascii_bin'), nullable=True)
+    evidence_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
+
+
 class StockMovement(Base):
     __tablename__ = 'stock_movements'
     __table_args__ = (
@@ -1681,6 +1844,18 @@ class StockMovement(Base):
             name='fk_stock_movements_count_line_scope', ondelete='RESTRICT',
         ),
         ForeignKeyConstraint(
+            ['preparation_batch_input_id', 'preparation_batch_id', 'inventory_item_id'],
+            ['preparation_batch_inputs.id', 'preparation_batch_inputs.batch_id',
+             'preparation_batch_inputs.inventory_item_id'],
+            name='fk_stock_movements_preparation_input_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['preparation_batch_output_id', 'preparation_batch_id', 'inventory_item_id'],
+            ['preparation_batch_outputs.id', 'preparation_batch_outputs.batch_id',
+             'preparation_batch_outputs.inventory_item_id'],
+            name='fk_stock_movements_preparation_output_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
             ['source_product_id', 'tenant_id', 'organization_id'],
             ['products.id', 'products.tenant_id', 'products.organization_id'],
             name='fk_stock_movements_source_product_scope', ondelete='RESTRICT',
@@ -1732,16 +1907,23 @@ class StockMovement(Base):
         UniqueConstraint(
             'physical_count_line_id', name='uq_stock_movements_count_line',
         ),
+        UniqueConstraint(
+            'preparation_batch_input_id', name='uq_stock_movements_preparation_input',
+        ),
+        UniqueConstraint(
+            'preparation_batch_output_id', name='uq_stock_movements_preparation_output',
+        ),
         CheckConstraint(
             "movement_type IN ('OPENING_BALANCE','MANUAL_IN','MANUAL_OUT',"
-            "'ADJUSTMENT','REVERSAL','CONSUMPTION','GOODS_RECEIPT','WASTE')",
+            "'ADJUSTMENT','REVERSAL','CONSUMPTION','GOODS_RECEIPT','WASTE',"
+            "'PREPARATION_INPUT','PREPARATION_OUTPUT')",
             name='ck_stock_movements_type',
         ),
         CheckConstraint('quantity <> 0', name='ck_stock_movements_nonzero'),
         CheckConstraint(
-            "(movement_type IN ('OPENING_BALANCE','MANUAL_IN','GOODS_RECEIPT') "
+            "(movement_type IN ('OPENING_BALANCE','MANUAL_IN','GOODS_RECEIPT','PREPARATION_OUTPUT') "
             "AND quantity>0) OR "
-            "(movement_type IN ('MANUAL_OUT','CONSUMPTION','WASTE') AND quantity<0) OR "
+            "(movement_type IN ('MANUAL_OUT','CONSUMPTION','WASTE','PREPARATION_INPUT') AND quantity<0) OR "
             "(movement_type IN ('ADJUSTMENT','REVERSAL') AND quantity<>0)",
             name='ck_stock_movements_sign',
         ),
@@ -1844,6 +2026,16 @@ class StockMovement(Base):
             name='ck_stock_movements_count_evidence',
         ),
         CheckConstraint(
+            "(movement_type='PREPARATION_INPUT' AND preparation_batch_id IS NOT NULL AND "
+            "preparation_batch_input_id IS NOT NULL AND preparation_batch_output_id IS NULL) OR "
+            "(movement_type='PREPARATION_OUTPUT' AND preparation_batch_id IS NOT NULL AND "
+            "preparation_batch_output_id IS NOT NULL AND preparation_batch_input_id IS NULL) OR "
+            "(movement_type NOT IN ('PREPARATION_INPUT','PREPARATION_OUTPUT') AND "
+            "preparation_batch_id IS NULL AND preparation_batch_input_id IS NULL AND "
+            "preparation_batch_output_id IS NULL)",
+            name='ck_stock_movements_preparation_evidence',
+        ),
+        CheckConstraint(
             '(unit_cost_snapshot IS NULL OR unit_cost_snapshot >= 0) AND '
             '(extended_cost_snapshot IS NULL OR extended_cost_snapshot >= 0)',
             name='ck_stock_movements_consumption_cost',
@@ -1871,6 +2063,10 @@ class StockMovement(Base):
         Index(
             'ix_stock_movements_count', 'tenant_id', 'physical_count_id',
             'physical_count_line_id',
+        ),
+        Index(
+            'ix_stock_movements_preparation', 'tenant_id', 'preparation_batch_id',
+            'preparation_batch_input_id', 'preparation_batch_output_id',
         ),
         OPTIONS,
     )
@@ -1945,6 +2141,9 @@ class StockMovement(Base):
     loss_movement_role: Mapped[str | None] = mapped_column(String(16), nullable=True)
     physical_count_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     physical_count_line_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    preparation_batch_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    preparation_batch_input_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    preparation_batch_output_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     restaurant_order_consumption_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True
     )

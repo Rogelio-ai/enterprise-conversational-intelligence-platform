@@ -145,6 +145,12 @@ export const staffApi = {
   createPurchaseOrder(payload: object): Promise<PurchaseOrder> { return request('/inventory/purchase-orders', { method: 'POST', body: JSON.stringify(payload) }); },
   amendPurchaseOrder(id: number, payload: object): Promise<PurchaseOrder> { return request(`/inventory/purchase-orders/${id}`, { method: 'PATCH', body: JSON.stringify(payload) }); },
   actOnPurchaseOrder(id: number, action: 'submit'|'approve'|'cancel'|'close', expectedVersion: number, key: string): Promise<PurchaseOrder> { return request(`/inventory/purchase-orders/${id}:${action}`, { method: 'POST', headers: {'Idempotency-Key': key}, body: JSON.stringify({expected_version: expectedVersion}) }); },
+  inventoryItems(locationId: number): Promise<{items: import('./contracts').InventoryItemOption[]}> { return request(`/inventory-items?location_id=${locationId}&limit=100&offset=0`); },
+  preparationRecipes(locationId: number): Promise<{items: import('./contracts').PreparationRecipeVersion[]}> { return request(`/inventory/preparation-recipes?location_id=${locationId}`); },
+  publishPreparationRecipe(payload: object): Promise<import('./contracts').PreparationRecipeVersion> { return request('/inventory/preparation-recipes', { method:'POST', body:JSON.stringify(payload) }); },
+  preparationBatches(locationId: number): Promise<{items: import('./contracts').PreparationBatch[]}> { return request(`/inventory/preparation-batches?location_id=${locationId}`); },
+  createPreparationBatch(payload: object): Promise<import('./contracts').PreparationBatch> { return request('/inventory/preparation-batches', { method:'POST', body:JSON.stringify(payload) }); },
+  actOnPreparationBatch(id:number, action:'start'|'complete'|'cancel', expectedVersion:number, key?:string): Promise<import('./contracts').PreparationBatch> { return request(`/inventory/preparation-batches/${id}:${action}`, { method:'POST', headers:key?{'Idempotency-Key':key}:undefined, body:JSON.stringify({expected_version:expectedVersion}) }); },
   inventoryLosses(locationId: number): Promise<{ items: InventoryLoss[] }> {
     return request(`/inventory/losses?location_id=${locationId}`);
   },
