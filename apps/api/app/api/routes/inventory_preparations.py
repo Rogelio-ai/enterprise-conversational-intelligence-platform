@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Any
 
@@ -58,6 +58,10 @@ class BatchIn(BaseModel):
     inputs: tuple[BatchInputIn, ...] = Field(min_length=1)
     output_quantity: ExactDecimal = Field(gt=0)
     output_uom: str = Field(min_length=1, max_length=32)
+    output_lot_code: str | None = Field(default=None, min_length=1, max_length=100)
+    manufacture_date: date | None = None
+    expiry_date: date | None = None
+    best_before_date: date | None = None
 
 
 class ActionIn(BaseModel):

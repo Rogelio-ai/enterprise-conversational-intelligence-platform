@@ -20,6 +20,8 @@ Lifecycle = Literal['ACTIVE', 'INACTIVE']
 TrackingMode = Literal['DERIVABLE', 'NON_DERIVABLE']
 NegativeStockPolicy = Literal['ALLOW', 'WARN', 'BLOCK']
 UnitCode = Literal['KG', 'G', 'L', 'ML', 'UNIT', 'PORTION']
+LotTrackingPolicy = Literal['OPTIONAL', 'REQUIRED']
+DateTrackingPolicy = Literal['NONE', 'EXPIRY', 'BEST_BEFORE', 'BOTH']
 IdempotencyKey = Annotated[
     str,
     Header(
@@ -46,6 +48,8 @@ class InventoryItemCreateRequest(BaseModel):
     base_uom: UnitCode
     standard_unit_cost: ExactDecimal = Field(ge=0)
     currency: str = Field(min_length=3, max_length=3)
+    lot_tracking_policy: LotTrackingPolicy = 'OPTIONAL'
+    date_tracking_policy: DateTrackingPolicy = 'NONE'
 
 
 class InventoryItemUpdateRequest(BaseModel):
@@ -55,6 +59,8 @@ class InventoryItemUpdateRequest(BaseModel):
     standard_unit_cost: ExactDecimal | None = Field(default=None, ge=0)
     currency: str | None = Field(default=None, min_length=3, max_length=3)
     status: Lifecycle | None = None
+    lot_tracking_policy: LotTrackingPolicy | None = None
+    date_tracking_policy: DateTrackingPolicy | None = None
 
     @model_validator(mode='after')
     def require_change(self) -> 'InventoryItemUpdateRequest':
@@ -81,6 +87,8 @@ class InventoryItemResponse(BaseModel):
     currency: str
     status: str
     version: int
+    lot_tracking_policy: str
+    date_tracking_policy: str
     created_at: datetime
     updated_at: datetime
 
@@ -188,6 +196,7 @@ class StockMovementResponse(BaseModel):
     loss_movement_role: str | None
     physical_count_id: int | None
     physical_count_line_id: int | None
+    inventory_lot_id: int | None
 
 
 class StockMovementListResponse(BaseModel):

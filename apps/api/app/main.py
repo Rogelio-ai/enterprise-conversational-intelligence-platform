@@ -27,6 +27,7 @@ from app.api.routes.inventory import router as inventory_router
 from app.api.routes.inventory_receiving import router as inventory_receiving_router
 from app.api.routes.inventory_purchase_orders import router as inventory_purchase_orders_router
 from app.api.routes.inventory_preparations import router as inventory_preparations_router
+from app.api.routes.inventory_replenishment_lots_valuation import router as inventory_b10_router
 from app.api.routes.inventory_losses import router as inventory_losses_router
 from app.api.routes.inventory_counting import router as inventory_counting_router
 from app.api.routes.inventory_intelligence import router as inventory_intelligence_router
@@ -196,6 +197,7 @@ def create_app(
     app.include_router(inventory_receiving_router)
     app.include_router(inventory_purchase_orders_router)
     app.include_router(inventory_preparations_router)
+    app.include_router(inventory_b10_router)
     app.include_router(inventory_losses_router)
     app.include_router(inventory_counting_router)
     app.include_router(inventory_intelligence_router)

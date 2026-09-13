@@ -7,9 +7,11 @@ import { useStaffContext } from '../context/StaffContext';
 import { useAuth } from '../session/AuthContext';
 import { PurchaseOrders } from './PurchaseOrders';
 import { Preparations } from './Preparations';
+import { Lots, Replenishment, Valuation } from './InventoryPlanning';
 
 const views = [
   ['overview', 'Resumen'], ['stock', 'Existencias'], ['receiving', 'Recepción'], ['purchase-orders', 'Órdenes de compra'], ['preparations', 'Preparaciones'],
+  ['replenishment', 'Reabastecimiento'], ['lots', 'Lotes'], ['valuation', 'Valuación'],
   ['losses', 'Pérdidas'], ['counts', 'Conteos físicos'], ['reconciliation', 'Conciliación'],
 ] as const;
 
@@ -34,6 +36,10 @@ interface ReceiptDraftLine {
   rejected: string;
   unitCost: string;
   currency: string;
+  lotCode: string;
+  manufactureDate: string;
+  expiryDate: string;
+  bestBeforeDate: string;
   purchaseOrderLineId?: number;
 }
 
@@ -95,6 +101,10 @@ function Receiving({ data, refresh }: { data: InventoryIntelligence; refresh: ()
   const [rejected, setRejected] = useState('0');
   const [unitCost, setUnitCost] = useState('');
   const [currency, setCurrency] = useState('MXN');
+  const [lotCode, setLotCode] = useState('');
+  const [manufactureDate, setManufactureDate] = useState('');
+  const [expiryDate, setExpiryDate] = useState('');
+  const [bestBeforeDate, setBestBeforeDate] = useState('');
   const [reference, setReference] = useState('');
   const [draftLines, setDraftLines] = useState<ReceiptDraftLine[]>([]);
   const [compositionError, setCompositionError] = useState<string>();
@@ -116,6 +126,8 @@ function Receiving({ data, refresh }: { data: InventoryIntelligence; refresh: ()
         supplier_offering_id: line.offeringId, received_quantity: line.received,
         accepted_quantity: line.accepted, rejected_quantity: line.rejected,
         unit_cost: line.unitCost, currency: line.currency,
+        lot_code: line.lotCode || null, manufacture_date: line.manufactureDate || null,
+        expiry_date: line.expiryDate || null, best_before_date: line.bestBeforeDate || null,
         purchase_order_line_id: line.purchaseOrderLineId ?? null,
       })),
     }),
@@ -131,10 +143,10 @@ function Receiving({ data, refresh }: { data: InventoryIntelligence; refresh: ()
     setDraftLines((lines) => [...lines, {
       offeringId: selectedOffering.id, inventoryItemId: selectedOffering.inventory_item_id,
       purchaseUom: selectedOffering.purchase_uom, received, accepted, rejected,
-      unitCost, currency,
+      unitCost, currency, lotCode, manufactureDate, expiryDate, bestBeforeDate,
       purchaseOrderLineId: selectedPurchaseOrder?.lines.find((line) => line.supplier_offering_id === selectedOffering.id)?.id,
     }]);
-    setOfferingId(0); setReceived(''); setAccepted(''); setRejected('0'); setUnitCost(''); setCompositionError(undefined);
+    setOfferingId(0); setReceived(''); setAccepted(''); setRejected('0'); setUnitCost(''); setLotCode(''); setManufactureDate(''); setExpiryDate(''); setBestBeforeDate(''); setCompositionError(undefined);
   };
   const updateLine = (index: number, field: 'received' | 'accepted' | 'rejected' | 'unitCost' | 'currency', value: string) => {
     setDraftLines((lines) => lines.map((line, current) => current === index ? { ...line, [field]: field === 'currency' ? value.toUpperCase() : value } : line));
@@ -150,6 +162,7 @@ function Receiving({ data, refresh }: { data: InventoryIntelligence; refresh: ()
       <div className="inventory-form-grid"><label>Recibido<input inputMode="decimal" required value={received} onChange={(event) => { setReceived(event.target.value); if (!accepted) setAccepted(event.target.value); }} /></label><label>Aceptado<input inputMode="decimal" required value={accepted} onChange={(event) => setAccepted(event.target.value)} /></label><label>Rechazado<input inputMode="decimal" required value={rejected} onChange={(event) => setRejected(event.target.value)} /></label></div>
       <p>UOM congelada: <strong>{selectedOffering?.purchase_uom ?? 'Selecciona una presentación'}</strong></p>
       <div className="inventory-form-grid"><label>Costo unitario<input inputMode="decimal" required value={unitCost} onChange={(event) => setUnitCost(event.target.value)} /></label><label>Moneda<input maxLength={3} required value={currency} onChange={(event) => setCurrency(event.target.value.toUpperCase())} /></label></div>
+      <fieldset className="inventory-line-composer"><legend>Trazabilidad de lote (según política del artículo)</legend><label>Código de lote<input maxLength={100} value={lotCode} onChange={(event)=>setLotCode(event.target.value)}/></label><label>Fabricación<input type="date" value={manufactureDate} onChange={(event)=>setManufactureDate(event.target.value)}/></label><label>Caducidad<input type="date" value={expiryDate} onChange={(event)=>setExpiryDate(event.target.value)}/></label><label>Consumo preferente<input type="date" value={bestBeforeDate} onChange={(event)=>setBestBeforeDate(event.target.value)}/></label></fieldset>
       <button type="button" className="secondary-button" disabled={!selectedOffering || !received || !accepted || !rejected || !unitCost} onClick={addLine}>Agregar línea</button>
       {compositionError ? <p className="inventory-feedback inventory-feedback--error" role="alert">{compositionError}</p> : null}
       <label>Referencia externa<input value={reference} onChange={(event) => setReference(event.target.value)} /></label>
@@ -239,5 +252,8 @@ export function InventoryPage() {
   const data = intelligence.data; const refresh = () => { void intelligence.refetch(); };
   const hasWarehouses = Boolean(data?.warehouses.length);
   const title = useMemo(() => views.find(([key]) => key === activeView)?.[1] ?? 'Resumen', [activeView]);
+  if (data && hasWarehouses && ['replenishment', 'lots', 'valuation'].includes(activeView)) {
+    return <section className="inventory-page" aria-labelledby="inventory-heading"><header className="inventory-heading"><div><p className="eyebrow">Control de inventario · {location?.name}</p><h1 id="inventory-heading">Inventario</h1><p>{title}. Estado operativo confirmado por el servidor.</p></div></header><nav className="inventory-nav" aria-label="Secciones de inventario">{views.map(([key, label]) => <NavLink key={key} end={key === 'overview'} to={key === 'overview' ? '/inventory' : `/inventory/${key}`}>{label}</NavLink>)}</nav>{activeView === 'replenishment' ? <Replenishment data={data} /> : activeView === 'lots' ? <Lots data={data} /> : <Valuation data={data} />}</section>;
+  }
   return <section className="inventory-page" aria-labelledby="inventory-heading"><header className="inventory-heading"><div><p className="eyebrow">Control de inventario · {location?.name}</p><h1 id="inventory-heading">Inventario</h1><p>{title}. Estado operativo confirmado por el servidor.</p></div><div><label>Almacén<select value={warehouseId ?? ''} onChange={(event) => setWarehouseId(event.target.value ? Number(event.target.value) : undefined)}><option value="">Todos</option>{data?.warehouses.map((value) => <option value={value.id} key={value.id}>{value.name}</option>)}</select></label><button className="secondary-button" disabled={intelligence.isFetching} onClick={refresh}>{intelligence.isFetching ? 'Actualizando…' : 'Actualizar'}</button></div></header><nav className="inventory-nav" aria-label="Secciones de inventario">{views.map(([key, label]) => <NavLink key={key} end={key === 'overview'} to={key === 'overview' ? '/inventory' : `/inventory/${key}`}>{label}</NavLink>)}</nav>{intelligence.isPending ? <div className="inventory-panel inventory-loading" role="status"><span className="state-spinner" aria-hidden="true">◌</span><span>Cargando inventario confirmado…</span></div> : null}{intelligence.isError ? <div className="inventory-panel inventory-feedback--error" role="alert"><strong>No fue posible cargar inventario.</strong><p>{errorMessage(intelligence.error)}</p><button className="secondary-button" onClick={refresh}>Reintentar</button></div> : null}{data && !hasWarehouses ? <div className="inventory-panel inventory-empty" role="status"><strong>No hay almacenes activos.</strong> Habilita un almacén para consultar o registrar operación de inventario.</div> : null}{data && hasWarehouses && activeView === 'overview' ? <Overview data={data} /> : null}{data && hasWarehouses && activeView === 'stock' ? <Stock data={data} /> : null}{data && hasWarehouses && activeView === 'receiving' ? <Receiving data={data} refresh={refresh} /> : null}{data && hasWarehouses && activeView === 'purchase-orders' ? <PurchaseOrders data={data} /> : null}{data && hasWarehouses && activeView === 'preparations' ? <Preparations data={data} /> : null}{data && hasWarehouses && activeView === 'losses' ? <Losses data={data} refresh={refresh} /> : null}{data && hasWarehouses && activeView === 'counts' ? <Counts data={data} refresh={refresh} /> : null}{data && hasWarehouses && activeView === 'reconciliation' ? <Reconciliation data={data} refresh={refresh} /> : null}</section>;
 }

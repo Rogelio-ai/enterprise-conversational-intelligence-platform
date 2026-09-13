@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 
 from sqlalchemy import (
@@ -8,6 +8,7 @@ from sqlalchemy import (
     Boolean,
     CheckConstraint,
     DateTime,
+    Date,
     ForeignKeyConstraint,
     Index,
     Integer,
@@ -138,6 +139,14 @@ class InventoryItem(TimestampMixin, Base):
             name='ck_inventory_items_currency',
         ),
         CheckConstraint('version >= 1', name='ck_inventory_items_version'),
+        CheckConstraint(
+            "lot_tracking_policy IN ('OPTIONAL','REQUIRED')",
+            name='ck_inventory_items_lot_tracking_policy',
+        ),
+        CheckConstraint(
+            "date_tracking_policy IN ('NONE','EXPIRY','BEST_BEFORE','BOTH')",
+            name='ck_inventory_items_date_tracking_policy',
+        ),
         Index(
             'ix_inventory_items_location_status_name', 'tenant_id', 'location_id',
             'status', 'name', 'id',
@@ -163,6 +172,12 @@ class InventoryItem(TimestampMixin, Base):
     )
     version: Mapped[int] = mapped_column(
         BigInteger, nullable=False, default=1, server_default=text('1')
+    )
+    lot_tracking_policy: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='OPTIONAL', server_default=text("'OPTIONAL'")
+    )
+    date_tracking_policy: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='NONE', server_default=text("'NONE'")
     )
 
 
@@ -1023,6 +1038,10 @@ class GoodsReceiptLine(Base):
     evidence_status: Mapped[str] = mapped_column(
         String(16), nullable=False, default='PENDING', server_default=text("'PENDING'")
     )
+    lot_code: Mapped[str | None] = mapped_column(String(100, collation='utf8mb4_bin'), nullable=True)
+    manufacture_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
+    expiry_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
+    best_before_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(), nullable=False, server_default=func.current_timestamp()
     )
@@ -1686,6 +1705,146 @@ class PreparationBatchOutput(Base):
     unit_material_cost: Mapped[Decimal | None] = mapped_column(Numeric(31, 12), nullable=True)
     cost_currency_evidence: Mapped[str | None] = mapped_column(String(3, collation='ascii_bin'), nullable=True)
     evidence_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    lot_code: Mapped[str | None] = mapped_column(String(100, collation='utf8mb4_bin'), nullable=True)
+    manufacture_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
+    expiry_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
+    best_before_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
+
+
+class ReplenishmentPolicy(TimestampMixin, Base):
+    __tablename__ = 'replenishment_policies'
+    __table_args__ = (
+        ForeignKeyConstraint(['warehouse_id', 'tenant_id', 'organization_id', 'location_id'], ['warehouses.id', 'warehouses.tenant_id', 'warehouses.organization_id', 'warehouses.location_id'], name='fk_replenishment_policies_warehouse_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['inventory_item_id', 'tenant_id', 'organization_id', 'location_id'], ['inventory_items.id', 'inventory_items.tenant_id', 'inventory_items.organization_id', 'inventory_items.location_id'], name='fk_replenishment_policies_item_scope', ondelete='RESTRICT'),
+        UniqueConstraint('warehouse_id', 'inventory_item_id', name='uq_replenishment_policies_item'),
+        UniqueConstraint('id', 'tenant_id', 'organization_id', 'location_id', 'warehouse_id', 'inventory_item_id', name='uq_replenishment_policies_scope'),
+        CheckConstraint("status IN ('ACTIVE','INACTIVE')", name='ck_replenishment_policies_status'),
+        CheckConstraint('version >= 1', name='ck_replenishment_policies_version'),
+        CheckConstraint('(minimum_quantity IS NULL OR minimum_quantity >= 0) AND (target_quantity IS NULL OR target_quantity >= 0) AND (normalized_minimum_quantity IS NULL OR normalized_minimum_quantity >= 0) AND (normalized_target_quantity IS NULL OR normalized_target_quantity >= 0) AND conversion_factor > 0', name='ck_replenishment_policies_values'),
+        CheckConstraint('target_quantity IS NOT NULL OR minimum_quantity IS NOT NULL', name='ck_replenishment_policies_configured'),
+        CheckConstraint('target_quantity IS NULL OR minimum_quantity IS NULL OR target_quantity >= minimum_quantity', name='ck_replenishment_policies_order'),
+        Index('ix_replenishment_policies_location_status', 'tenant_id', 'location_id', 'status', 'inventory_item_id'), OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default='ACTIVE', server_default=text("'ACTIVE'"))
+    minimum_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    target_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    source_uom: Mapped[str] = mapped_column(String(32, collation='ascii_bin'), nullable=False)
+    conversion_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(25, 12), nullable=False)
+    base_uom_evidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    normalized_minimum_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    normalized_target_quantity: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    version: Mapped[int] = mapped_column(BigInteger, nullable=False, default=1, server_default=text('1'))
+    actor_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class InventoryLot(Base):
+    __tablename__ = 'inventory_lots'
+    __table_args__ = (
+        ForeignKeyConstraint(['warehouse_id', 'tenant_id', 'organization_id', 'location_id'], ['warehouses.id', 'warehouses.tenant_id', 'warehouses.organization_id', 'warehouses.location_id'], name='fk_inventory_lots_warehouse_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['inventory_item_id', 'tenant_id', 'organization_id', 'location_id'], ['inventory_items.id', 'inventory_items.tenant_id', 'inventory_items.organization_id', 'inventory_items.location_id'], name='fk_inventory_lots_item_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['goods_receipt_line_id'], ['goods_receipt_lines.id'], name='fk_inventory_lots_receipt_line', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['preparation_batch_output_id'], ['preparation_batch_outputs.id'], name='fk_inventory_lots_preparation_output', ondelete='RESTRICT'),
+        UniqueConstraint('id', 'tenant_id', 'organization_id', 'location_id', 'warehouse_id', 'inventory_item_id', name='uq_inventory_lots_scope'),
+        UniqueConstraint('tenant_id', 'warehouse_id', 'inventory_item_id', 'lot_code', name='uq_inventory_lots_code'),
+        UniqueConstraint('goods_receipt_line_id', name='uq_inventory_lots_receipt_line'),
+        UniqueConstraint('preparation_batch_output_id', name='uq_inventory_lots_preparation_output'),
+        CheckConstraint("origin_type IN ('GOODS_RECEIPT','PREPARATION_BATCH')", name='ck_inventory_lots_origin'),
+        CheckConstraint("status IN ('ACTIVE','CLOSED')", name='ck_inventory_lots_status'),
+        CheckConstraint('original_quantity > 0 AND source_quantity > 0 AND conversion_factor > 0', name='ck_inventory_lots_quantities'),
+        CheckConstraint("cost_evidence_status IN ('RESOLVED','COST_NON_DERIVABLE')", name='ck_inventory_lots_cost_status'),
+        CheckConstraint("(origin_type='GOODS_RECEIPT' AND goods_receipt_line_id IS NOT NULL AND preparation_batch_output_id IS NULL) OR (origin_type='PREPARATION_BATCH' AND preparation_batch_output_id IS NOT NULL AND goods_receipt_line_id IS NULL)", name='ck_inventory_lots_origin_evidence'),
+        CheckConstraint("(cost_evidence_status='RESOLVED' AND unit_cost_evidence IS NOT NULL AND cost_currency_evidence IS NOT NULL) OR (cost_evidence_status='COST_NON_DERIVABLE' AND unit_cost_evidence IS NULL AND cost_currency_evidence IS NULL)", name='ck_inventory_lots_cost_evidence'),
+        Index('ix_inventory_lots_location_item', 'tenant_id', 'location_id', 'inventory_item_id', 'origin_at', 'id'), OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    origin_type: Mapped[str] = mapped_column(String(24), nullable=False)
+    goods_receipt_line_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    preparation_batch_output_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    lot_code: Mapped[str] = mapped_column(String(100, collation='utf8mb4_bin'), nullable=False)
+    origin_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    manufacture_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
+    expiry_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
+    best_before_date: Mapped[date | None] = mapped_column(Date(), nullable=True)
+    original_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    source_quantity: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    source_uom: Mapped[str] = mapped_column(String(32, collation='ascii_bin'), nullable=False)
+    conversion_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    conversion_factor: Mapped[Decimal] = mapped_column(Numeric(25, 12), nullable=False)
+    base_uom_evidence: Mapped[str] = mapped_column(String(16), nullable=False)
+    cost_evidence_status: Mapped[str] = mapped_column(String(24), nullable=False)
+    unit_cost_evidence: Mapped[Decimal | None] = mapped_column(Numeric(31, 12), nullable=True)
+    cost_currency_evidence: Mapped[str | None] = mapped_column(String(3, collation='ascii_bin'), nullable=True)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default='ACTIVE', server_default=text("'ACTIVE'"))
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
+
+
+class InventoryValuationSnapshot(Base):
+    __tablename__ = 'inventory_valuation_snapshots'
+    __table_args__ = (
+        ForeignKeyConstraint(['warehouse_id', 'tenant_id', 'organization_id', 'location_id'], ['warehouses.id', 'warehouses.tenant_id', 'warehouses.organization_id', 'warehouses.location_id'], name='fk_inventory_valuation_snapshots_warehouse_scope', ondelete='RESTRICT'),
+        UniqueConstraint('id', 'tenant_id', 'organization_id', 'location_id', 'warehouse_id', name='uq_inventory_valuation_snapshots_scope'),
+        UniqueConstraint('tenant_id', 'idempotency_actor_scope', 'idempotency_key', name='uq_inventory_valuation_snapshots_idempotency'),
+        CheckConstraint("status='FINALIZED' AND valuation_method='STANDARD_COST'", name='ck_inventory_valuation_snapshots_authority'),
+        CheckConstraint('movement_cursor >= 0 AND non_derivable_line_count >= 0', name='ck_inventory_valuation_snapshots_values'),
+        CheckConstraint("currency REGEXP '^[A-Z][A-Z][A-Z]$'", name='ck_inventory_valuation_snapshots_currency'),
+        Index('ix_inventory_valuation_snapshots_location', 'tenant_id', 'location_id', 'as_of', 'id'), OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default='FINALIZED', server_default=text("'FINALIZED'"))
+    valuation_method: Mapped[str] = mapped_column(String(24), nullable=False, default='STANDARD_COST', server_default=text("'STANDARD_COST'"))
+    as_of: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    movement_cursor: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    currency: Mapped[str] = mapped_column(String(3, collation='ascii_bin'), nullable=False)
+    derivable_total_value: Mapped[Decimal] = mapped_column(Numeric(31, 12), nullable=False)
+    non_derivable_line_count: Mapped[int] = mapped_column(Integer, nullable=False)
+    created_by_actor_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    idempotency_actor_scope: Mapped[str] = mapped_column(String(200, collation='ascii_bin'), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(128, collation='ascii_bin'), nullable=False)
+    request_fingerprint: Mapped[str] = mapped_column(String(64, collation='ascii_bin'), nullable=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
+
+
+class InventoryValuationSnapshotLine(Base):
+    __tablename__ = 'inventory_valuation_snapshot_lines'
+    __table_args__ = (
+        ForeignKeyConstraint(['snapshot_id', 'tenant_id', 'organization_id', 'location_id', 'warehouse_id'], ['inventory_valuation_snapshots.id', 'inventory_valuation_snapshots.tenant_id', 'inventory_valuation_snapshots.organization_id', 'inventory_valuation_snapshots.location_id', 'inventory_valuation_snapshots.warehouse_id'], name='fk_inventory_valuation_lines_snapshot_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['inventory_item_id', 'tenant_id', 'organization_id', 'location_id'], ['inventory_items.id', 'inventory_items.tenant_id', 'inventory_items.organization_id', 'inventory_items.location_id'], name='fk_inventory_valuation_lines_item_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['cost_revision_id'], ['inventory_cost_revisions.id'], name='fk_inventory_valuation_lines_cost_revision', ondelete='RESTRICT'),
+        UniqueConstraint('snapshot_id', 'inventory_item_id', name='uq_inventory_valuation_lines_item'),
+        CheckConstraint("evidence_status IN ('RESOLVED','COST_NON_DERIVABLE','CURRENCY_MISMATCH')", name='ck_inventory_valuation_lines_status'),
+        CheckConstraint("(evidence_status='RESOLVED' AND cost_revision_id IS NOT NULL AND unit_cost_evidence IS NOT NULL AND cost_currency_evidence IS NOT NULL AND line_value IS NOT NULL) OR (evidence_status='COST_NON_DERIVABLE' AND cost_revision_id IS NULL AND unit_cost_evidence IS NULL AND cost_currency_evidence IS NULL AND line_value IS NULL) OR (evidence_status='CURRENCY_MISMATCH' AND cost_revision_id IS NOT NULL AND unit_cost_evidence IS NOT NULL AND cost_currency_evidence IS NOT NULL AND line_value IS NULL)", name='ck_inventory_valuation_lines_evidence'),
+        OPTIONS,
+    )
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    warehouse_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    snapshot_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    inventory_item_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    quantity_as_of: Mapped[Decimal] = mapped_column(Numeric(19, 6), nullable=False)
+    cost_revision_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    unit_cost_evidence: Mapped[Decimal | None] = mapped_column(Numeric(19, 6), nullable=True)
+    cost_currency_evidence: Mapped[str | None] = mapped_column(String(3, collation='ascii_bin'), nullable=True)
+    line_value: Mapped[Decimal | None] = mapped_column(Numeric(31, 12), nullable=True)
+    evidence_status: Mapped[str] = mapped_column(String(24), nullable=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False, server_default=func.current_timestamp())
 
 
@@ -1707,6 +1866,11 @@ class StockMovement(Base):
                 'inventory_items.organization_id', 'inventory_items.location_id',
             ],
             name='fk_stock_movements_item_scope', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['inventory_lot_id', 'tenant_id', 'organization_id', 'location_id', 'warehouse_id', 'inventory_item_id'],
+            ['inventory_lots.id', 'inventory_lots.tenant_id', 'inventory_lots.organization_id', 'inventory_lots.location_id', 'inventory_lots.warehouse_id', 'inventory_lots.inventory_item_id'],
+            name='fk_stock_movements_lot_scope', ondelete='RESTRICT',
         ),
         ForeignKeyConstraint(
             [
@@ -2068,6 +2232,7 @@ class StockMovement(Base):
             'ix_stock_movements_preparation', 'tenant_id', 'preparation_batch_id',
             'preparation_batch_input_id', 'preparation_batch_output_id',
         ),
+        Index('ix_stock_movements_lot', 'tenant_id', 'inventory_lot_id', 'recorded_at', 'id'),
         OPTIONS,
     )
 
@@ -2144,6 +2309,7 @@ class StockMovement(Base):
     preparation_batch_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     preparation_batch_input_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     preparation_batch_output_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    inventory_lot_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     restaurant_order_consumption_id: Mapped[int | None] = mapped_column(
         BigInteger, nullable=True
     )

@@ -547,6 +547,7 @@ async def resolve_quantity_evidence(
 async def create_inventory_item(
     db: AsyncSession, *, tenant_id: int, location_id: int, code: str, name: str,
     base_uom: str, standard_unit_cost: Decimal, currency: str, actor_id: int,
+    lot_tracking_policy: str = 'OPTIONAL', date_tracking_policy: str = 'NONE',
 ) -> InventoryItem:
     location = await _location(
         db, tenant_id=tenant_id, location_id=location_id, for_update=True,
@@ -562,6 +563,12 @@ async def create_inventory_item(
         raise errors.InvalidInventoryItemError(str(exc)) from exc
     standard_unit_cost = _cost(standard_unit_cost)
     currency = _currency(currency)
+    lot_tracking_policy = lot_tracking_policy.strip().upper()
+    date_tracking_policy = date_tracking_policy.strip().upper()
+    if lot_tracking_policy not in ('OPTIONAL', 'REQUIRED'):
+        raise errors.InvalidInventoryItemError('Unsupported lot-tracking policy')
+    if date_tracking_policy not in ('NONE', 'EXPIRY', 'BEST_BEFORE', 'BOTH'):
+        raise errors.InvalidInventoryItemError('Unsupported date-tracking policy')
     value = InventoryItem(
         tenant_id=tenant_id,
         organization_id=location.organization_id,
@@ -573,6 +580,8 @@ async def create_inventory_item(
         currency=currency,
         status='ACTIVE',
         version=1,
+        lot_tracking_policy=lot_tracking_policy,
+        date_tracking_policy=date_tracking_policy,
     )
     db.add(value)
     try:
@@ -604,6 +613,8 @@ async def update_inventory_item(
     expected_version: int, name: str | None = None,
     standard_unit_cost: Decimal | None = None, currency: str | None = None,
     status: str | None = None, actor_id: int,
+    lot_tracking_policy: str | None = None,
+    date_tracking_policy: str | None = None,
 ) -> InventoryItem:
     value = await _item(
         db, tenant_id=tenant_id, inventory_item_id=inventory_item_id,
@@ -640,6 +651,16 @@ async def update_inventory_item(
         if status not in ('ACTIVE', 'INACTIVE'):
             raise errors.InvalidInventoryItemError('Unsupported Inventory Item status')
         value.status = status
+    if lot_tracking_policy is not None:
+        policy = lot_tracking_policy.strip().upper()
+        if policy not in ('OPTIONAL', 'REQUIRED'):
+            raise errors.InvalidInventoryItemError('Unsupported lot-tracking policy')
+        value.lot_tracking_policy = policy
+    if date_tracking_policy is not None:
+        policy = date_tracking_policy.strip().upper()
+        if policy not in ('NONE', 'EXPIRY', 'BEST_BEFORE', 'BOTH'):
+            raise errors.InvalidInventoryItemError('Unsupported date-tracking policy')
+        value.date_tracking_policy = policy
     value.version += 1
     try:
         await db.commit()
@@ -1003,6 +1024,7 @@ def _movement_projection(value: StockMovement, base_uom: str) -> StockMovementPr
         loss_movement_role=value.loss_movement_role,
         physical_count_id=value.physical_count_id,
         physical_count_line_id=value.physical_count_line_id,
+        inventory_lot_id=value.inventory_lot_id,
     )
 
 

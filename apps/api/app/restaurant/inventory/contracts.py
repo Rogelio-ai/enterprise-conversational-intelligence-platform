@@ -76,6 +76,7 @@ class StockMovementProjection:
     loss_movement_role: str | None
     physical_count_id: int | None
     physical_count_line_id: int | None
+    inventory_lot_id: int | None
 
 
 @dataclass(frozen=True, slots=True)

@@ -26,6 +26,7 @@ from app.models import (
 )
 from app.restaurant.inventory import errors
 from app.restaurant.inventory import service as inventory_service
+from app.restaurant.inventory import replenishment_lots_valuation as b10
 from app.restaurant.inventory.units import QUANTITY_UNIT, UnitConversionError, exact_quantity
 
 
@@ -69,7 +70,9 @@ def _cost(value: Decimal) -> Decimal:
 
 
 def _fingerprint(value: object) -> str:
-    encoded = json.dumps(value, sort_keys=True, separators=(',', ':'), ensure_ascii=True)
+    encoded = json.dumps(
+        value, sort_keys=True, separators=(',', ':'), ensure_ascii=True, default=str,
+    )
     return hashlib.sha256(encoded.encode()).hexdigest()
 
 
@@ -399,6 +402,10 @@ def _line_projection(value: GoodsReceiptLine) -> dict:
         'normalized_quantity': value.normalized_quantity,
         'extended_cost': value.extended_cost,
         'evidence_status': value.evidence_status,
+        'lot_code': value.lot_code,
+        'manufacture_date': value.manufacture_date,
+        'expiry_date': value.expiry_date,
+        'best_before_date': value.best_before_date,
     }
 
 
@@ -566,6 +573,10 @@ async def create_receipt(
                 accepted_quantity=accepted, rejected_quantity=rejected,
                 source_uom=offering.purchase_uom,
                 unit_cost=_cost(data['unit_cost']), currency=currency,
+                lot_code=_text(data.get('lot_code'), 100),
+                manufacture_date=data.get('manufacture_date'),
+                expiry_date=data.get('expiry_date'),
+                best_before_date=data.get('best_before_date'),
                 evidence_status='PENDING',
             ))
         await db.commit()
@@ -681,6 +692,10 @@ async def accept_receipt(
             'accepted': str(line.accepted_quantity),
             'rejected': str(line.rejected_quantity), 'uom': line.source_uom,
             'unit_cost': str(line.unit_cost), 'currency': line.currency,
+            'lot_code': line.lot_code,
+            'manufacture_date': line.manufacture_date,
+            'expiry_date': line.expiry_date,
+            'best_before_date': line.best_before_date,
         } for line in lines],
     })
     try:
@@ -743,6 +758,21 @@ async def accept_receipt(
                 db, tenant_id=context.tenant_id,
                 inventory_item_id=item.id, as_of=accepted_at,
             )
+            if not line.lot_code and any((
+                line.manufacture_date, line.expiry_date, line.best_before_date,
+            )):
+                raise errors.InvalidGoodsReceiptError('Tracked dates require a lot code')
+            lot = await b10.create_origin_lot(
+                db, item=item, warehouse=warehouse, origin_type='GOODS_RECEIPT',
+                origin_id=line.id, lot_code=line.lot_code, origin_at=accepted_at,
+                manufacture_date=line.manufacture_date, expiry_date=line.expiry_date,
+                best_before_date=line.best_before_date, original_quantity=normalized,
+                source_quantity=line.accepted_quantity, source_uom=source_uom,
+                conversion_revision_id=line.conversion_revision_id,
+                conversion_factor=factor, base_uom_evidence=item.base_uom,
+                unit_cost_evidence=(line.extended_cost / normalized).quantize(Decimal('0.000000000001')),
+                cost_currency_evidence=line.currency,
+            )
             movement = StockMovement(
                 tenant_id=context.tenant_id, organization_id=receipt.organization_id,
                 location_id=receipt.location_id, warehouse_id=receipt.warehouse_id,
@@ -773,6 +803,7 @@ async def accept_receipt(
                 ),
                 evidence_status='RESOLVED' if cost_revision else 'COST_NON_DERIVABLE',
                 goods_receipt_id=receipt.id, goods_receipt_line_id=line.id,
+                inventory_lot_id=lot.id if lot else None,
             )
             db.add(movement)
             await db.flush()

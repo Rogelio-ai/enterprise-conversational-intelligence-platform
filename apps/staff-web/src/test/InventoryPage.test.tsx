@@ -17,6 +17,8 @@ const permissions = [
     'inventory.reconciliation.manage',
     'inventory.purchase_order.read', 'inventory.purchase_order.manage', 'inventory.purchase_order.approve',
     'inventory.preparation.read', 'inventory.preparation.manage', 'inventory.preparation.complete',
+    'inventory.replenishment.read', 'inventory.replenishment.manage', 'inventory.lot.read',
+    'inventory.valuation.read', 'inventory.valuation.create',
 ];
 const identity: StaffIdentity = { user_id: 1, email: 'inventory@example.test', display_name: 'Iris Inventario', tenant_id: 11, membership_id: 12, authorized_location_ids: [21], roles: ['INVENTORY_OPERATOR'], permissions };
 const location = { id: 21, tenant_id: 11, organization_id: 31, code: 'CENTRO', name: 'Sucursal Centro', timezone: 'America/Mexico_City', status: 'ACTIVE' };
@@ -77,6 +79,12 @@ function mockApi(currentIdentity = identity, acceptConflict = false, inventoryDa
       return json({ id: 73, location_id: 21, warehouse_id: 41, supplier_id: 71, external_reference: payload.external_reference, status: 'DRAFT', version: 1, accepted_at: null, lines: receiptLines }, 201);
     }
     if (url.includes('/inventory/goods-receipts/73:accept')) return acceptConflict ? json({ detail: { code: 'goods_receipt_conflict', message: 'Receipt changed' } }, 409) : json({ id: 73, location_id: 21, warehouse_id: 41, supplier_id: 71, external_reference: null, status: 'ACCEPTED', version: 2, accepted_at: '2026-09-12T12:01:00Z', lines: receiptLines.map((line, index) => ({ ...line, evidence_status: 'RESOLVED', stock_movement_id: 80 + index })) });
+    if (url.includes('/inventory/replenishment-policies?')) return json({items:[{id:301,location_id:21,warehouse_id:41,inventory_item_id:51,status:'ACTIVE',minimum_quantity:'4.000000',target_quantity:'12.000000',source_uom:'KG',on_hand:'8.000000',on_order:'2.000000',suggested_quantity:'4.000000',version:1,updated_at:'2026-09-12T12:00:00Z'}]});
+    if (/\/inventory\/replenishment-policies\/41\/51$/.test(url) && init?.method==='PUT') return json({id:301,location_id:21,warehouse_id:41,inventory_item_id:51,status:'ACTIVE',minimum_quantity:'4.000000',target_quantity:'12.000000',source_uom:'KG',on_hand:'8.000000',on_order:'2.000000',suggested_quantity:'4.000000',version:2,updated_at:'2026-09-12T12:00:00Z'});
+    if (url.includes('/inventory/lots?')) return json({items:[{id:311,location_id:21,warehouse_id:41,inventory_item_id:51,origin_type:'GOODS_RECEIPT',goods_receipt_line_id:74,preparation_batch_output_id:null,lot_code:'LOT-TOM-01',origin_at:'2026-09-12T10:00:00Z',manufacture_date:'2026-08-01',expiry_date:'2026-09-01',best_before_date:'2026-08-25',date_state:'EXPIRED',original_quantity:'5.000000',balance:'5.000000',source_quantity:'5.000000',source_uom:'KG',base_uom_evidence:'KG',cost_evidence_status:'RESOLVED',unit_cost_evidence:null,cost_currency_evidence:null,cost_visible:false,status:'ACTIVE'}]});
+    const snapshot={id:321,location_id:21,warehouse_id:41,status:'FINALIZED',valuation_method:'STANDARD_COST',as_of:'2026-09-12T12:00:00Z',movement_cursor:99,currency:null,derivable_total_value:null,non_derivable_line_count:1,cost_visible:false,created_at:'2026-09-12T12:01:00Z',lines:[{id:322,inventory_item_id:51,quantity_as_of:'8.000000',evidence_status:'COST_NON_DERIVABLE',cost_revision_id:null,unit_cost_evidence:null,cost_currency_evidence:null,line_value:null}]};
+    if (url.includes('/inventory/valuation-snapshots?')) return json({items:[snapshot]});
+    if (url.endsWith('/inventory/valuation-snapshots')&&init?.method==='POST') return json(snapshot,201);
     if (url.includes('/inventory/losses?')) return json({ items: [] });
     if (url.endsWith('/inventory/losses') && init?.method === 'POST') {
       const payload = JSON.parse(String(init.body));
@@ -306,5 +314,22 @@ describe('Inventory Staff Web', () => {
     mockApi({ ...identity, permissions: ['location.read'] }); renderInventory('/inventory');
     expect(await screen.findByRole('heading', { name: 'Este espacio no está disponible' })).toBeVisible();
     await waitFor(() => expect(screen.queryByRole('link', { name: 'Inventario' })).not.toBeInTheDocument());
+  });
+
+  it('presents advisory replenishment, lot warnings, and private STANDARD_COST evidence', async () => {
+    mockApi(); renderInventory('/inventory/replenishment');
+    expect(await screen.findByRole('heading', { name: 'Política humana de reabastecimiento' })).toBeVisible();
+    expect(await screen.findByText('4.000000 KG', { selector: 'strong' })).toBeVisible();
+    expect(screen.getByText('No es stock')).toBeVisible();
+    expect(screen.getByRole('link', { name: 'Crear orden de compra' })).toHaveAttribute('href', '/inventory/purchase-orders');
+    cleanup(); mockApi(); renderInventory('/inventory/lots');
+    expect(await screen.findByText('LOT-TOM-01')).toBeVisible();
+    expect(screen.getByText('EXPIRED')).toBeVisible();
+    expect(screen.getByText('Requiere revisión; sin baja automática')).toBeVisible();
+    expect(screen.getByText('Información monetaria protegida.')).toBeVisible();
+    cleanup(); mockApi(); renderInventory('/inventory/valuation');
+    expect(await screen.findByText('FINALIZED · STANDARD_COST')).toBeVisible();
+    expect(screen.getByText('Protegido por permisos')).toBeVisible();
+    expect(screen.getByText(/No es FIFO/)).toBeVisible();
   });
 });

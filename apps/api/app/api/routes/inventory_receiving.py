@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Annotated, Any, Literal
 
@@ -124,6 +124,10 @@ class ReceiptLineCreateRequest(BaseModel):
     unit_cost: ExactDecimal = Field(ge=0)
     currency: str = Field(min_length=3, max_length=3)
     purchase_order_line_id: int | None = Field(default=None, gt=0)
+    lot_code: str | None = Field(default=None, min_length=1, max_length=100)
+    manufacture_date: date | None = None
+    expiry_date: date | None = None
+    best_before_date: date | None = None
 
     @model_validator(mode='after')
     def quantities_balance(self) -> 'ReceiptLineCreateRequest':
@@ -166,6 +170,10 @@ class ReceiptLineResponse(BaseModel):
     evidence_status: str
     stock_movement_id: int | None
     purchase_order_line_id: int | None
+    lot_code: str | None
+    manufacture_date: date | None
+    expiry_date: date | None
+    best_before_date: date | None
 
 
 class ReceiptResponse(BaseModel):

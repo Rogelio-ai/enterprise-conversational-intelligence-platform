@@ -31,6 +31,8 @@ PERMISSIONS = (
     'inventory.purchase_order.approve',
     'inventory.preparation.read', 'inventory.preparation.manage',
     'inventory.preparation.complete',
+    'inventory.replenishment.read', 'inventory.replenishment.manage',
+    'inventory.lot.read', 'inventory.valuation.read', 'inventory.valuation.create',
 )
 
 
@@ -155,6 +157,9 @@ def verify(db) -> None:
             'closed_purchase_orders': "SELECT COUNT(*) AS n FROM purchase_orders WHERE tenant_id=%s AND status='CLOSED'",
             'completed_preparation_batches': "SELECT COUNT(*) AS n FROM preparation_batches WHERE tenant_id=%s AND status='COMPLETED' AND material_cost=35 AND prepared_unit_material_cost=8.75 AND expected_yield=2 AND actual_yield=2",
             'preparation_movements': "SELECT COUNT(*) AS n FROM stock_movements WHERE tenant_id=%s AND movement_type IN ('PREPARATION_INPUT','PREPARATION_OUTPUT')",
+            'b10_policies': 'SELECT COUNT(*) AS n FROM replenishment_policies WHERE tenant_id=%s',
+            'b10_lots': 'SELECT COUNT(*) AS n FROM inventory_lots WHERE tenant_id=%s',
+            'b10_snapshots': "SELECT COUNT(*) AS n FROM inventory_valuation_snapshots WHERE tenant_id=%s AND status='FINALIZED' AND valuation_method='STANDARD_COST'",
         }.items():
             cursor.execute(sql, (tenant_id,))
             checks[name] = int(cursor.fetchone()['n'])
@@ -164,13 +169,14 @@ def verify(db) -> None:
         'incomplete_full_counts': 1, 'closed_reconciliations': 1,
         'closed_purchase_orders': 1,
         'completed_preparation_batches': 1, 'preparation_movements': 3,
+        'b10_policies': 1, 'b10_lots': 2, 'b10_snapshots': 1,
     }
     if checks != expected:
         raise RuntimeError(f'authoritative E2E evidence mismatch: {checks} != {expected}')
     with db.cursor() as cursor:
         cursor.execute("SELECT i.code,SUM(m.quantity) quantity FROM inventory_items i JOIN stock_movements m ON m.inventory_item_id=i.id WHERE i.tenant_id=%s AND i.code IN ('B7-TOM','B7-SAL','B9-PREP') GROUP BY i.code",(tenant_id,))
         stock={row['code']:str(row['quantity']) for row in cursor.fetchall()}
-    if stock != {'B7-SAL':'12.000000','B7-TOM':'11.000000','B9-PREP':'4.000000'}:
+    if stock != {'B7-SAL':'12.000000','B7-TOM':'12.000000','B9-PREP':'4.000000'}:
         raise RuntimeError(f'preparation stock evidence mismatch: {stock}')
     print(json.dumps(checks, sort_keys=True))
 
