@@ -37,6 +37,7 @@ from app.restaurant import (
 )
 from app.restaurant.inventory import receiving
 from app.restaurant.inventory import service as inventory_service
+from app.restaurant.inventory import consumption_provisioning
 from app.restaurant.inventory import warehouse_provisioning
 from app.restaurant.preparation import (
     area_provisioning,
@@ -55,6 +56,8 @@ IMPORTABLE_NOW = frozenset({
     'menu_items',
     'prices',
     'warehouses',
+    'consumption_definitions',
+    'consumption_components',
 })
 OPERATIONAL_NOT_CATALOG_IMPORT = frozenset({'payment_methods'})
 DEFERRED_PROVISIONING = frozenset(
@@ -92,6 +95,14 @@ AUTHORITY_BY_GROUP = {
     'prices': 'restaurant.pricing.provisioning.provision_price',
     'warehouses': (
         'restaurant.inventory.warehouse_provisioning.provision_warehouse'
+    ),
+    'consumption_definitions': (
+        'restaurant.inventory.consumption_provisioning.'
+        'provision_consumption_definition'
+    ),
+    'consumption_components': (
+        'restaurant.inventory.consumption_provisioning.'
+        'provision_consumption_definition'
     ),
 }
 
@@ -303,7 +314,10 @@ async def build_import_plan(
     ordered_rows = _dependency_ordered_rows(analysis.rows)
     populated = {row.group for row in ordered_rows}
     if (
-        populated & {'warehouses', 'inventory_items', 'uom_conversions'}
+        populated & {
+            'warehouses', 'inventory_items', 'uom_conversions',
+            'consumption_definitions', 'consumption_components',
+        }
         and 'inventory.manage' not in permissions
     ):
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'inventory.manage permission is required')
@@ -378,6 +392,31 @@ async def build_import_plan(
         row.values['product_key'] for row in ordered_rows
         if row.group == 'products'
     }
+    inventory_item_keys = {
+        row.values['inventory_item_code'] for row in ordered_rows
+        if row.group == 'inventory_items'
+    }
+    pending_uom_evidence = frozenset(
+        (row.values['inventory_item_code'], row.values['operational_uom'])
+        for row in ordered_rows if row.group == 'uom_conversions'
+    )
+    consumption_component_rows: dict[
+        tuple[str, str], list[AnalyzedRow]
+    ] = {}
+    for component_row in ordered_rows:
+        if component_row.group == 'consumption_components':
+            key = (
+                component_row.values['product_key'],
+                component_row.values['location_code'],
+            )
+            consumption_component_rows.setdefault(key, []).append(component_row)
+    consumption_plans: dict[
+        tuple[str, str],
+        tuple[
+            consumption_provisioning.ConsumptionProvisioningPlan,
+            str | None,
+        ],
+    ] = {}
     area_keys = {
         row.values['preparation_area_code'] for row in ordered_rows
         if row.group == 'preparation_areas'
@@ -647,6 +686,64 @@ async def build_import_plan(
                 AUTHORITY_BY_GROUP[row.group], value, current_id, version,
                 blocker,
             ))
+        elif row.group == 'consumption_definitions':
+            key = (value['product_key'], value['location_code'])
+            component_rows = consumption_component_rows.get(key, [])
+            components = tuple(
+                consumption_provisioning.ConsumptionComponentDefinition(
+                    inventory_item_code=component.values['inventory_item_code'],
+                    quantity=_decimal(component.values['quantity']),
+                    uom=component.values['uom'],
+                )
+                for component in component_rows
+            )
+            blocker = None
+            try:
+                consumption_plan = (
+                    await consumption_provisioning.plan_consumption_definition(
+                        db, tenant_id=tenant_id,
+                        organization_id=organization.id,
+                        location_id=location.id,
+                        binding_namespace=product_namespace,
+                        product_key=value['product_key'],
+                        tracking_mode=value['tracking_mode'],
+                        effective_from=_utc_naive(value['effective_from']),
+                        status=value['status'], components=components,
+                        allow_unresolved_product=(
+                            value['product_key'] in product_keys
+                        ),
+                        allow_unresolved_items=frozenset(inventory_item_keys),
+                        allow_unresolved_evidence=pending_uom_evidence,
+                    )
+                )
+            except consumption_provisioning.ConsumptionProvisioningError as exc:
+                consumption_plan = (
+                    consumption_provisioning.ConsumptionProvisioningPlan(
+                        'CREATE', None, None, 0,
+                    )
+                )
+                blocker = str(exc)
+            consumption_plans[key] = consumption_plan, blocker
+            items.append(PlanItem(
+                row.group, row.row, row.business_key,
+                consumption_plan.operation, AUTHORITY_BY_GROUP[row.group],
+                value, consumption_plan.definition_id,
+                consumption_plan.expected_version, blocker,
+            ))
+        elif row.group == 'consumption_components':
+            key = (value['product_key'], value['location_code'])
+            parent = consumption_plans.get(key)
+            if parent is None:
+                raise RuntimeError(
+                    'Validated Consumption Component has no parent Definition'
+                )
+            consumption_plan, blocker = parent
+            items.append(PlanItem(
+                row.group, row.row, row.business_key,
+                consumption_plan.operation, AUTHORITY_BY_GROUP[row.group],
+                value, consumption_plan.definition_id,
+                consumption_plan.expected_version, blocker,
+            ))
         elif row.group == 'inventory_items':
             current = existing_items.get(value['inventory_item_code'])
             if current is None:
@@ -862,6 +959,24 @@ async def confirm_import(
         await db.commit()
         return result
 
+    consumption_components: dict[
+        tuple[str, str],
+        tuple[consumption_provisioning.ConsumptionComponentDefinition, ...],
+    ] = {}
+    for planned in plan.items:
+        if planned.group == 'consumption_components':
+            key = (
+                planned.values['product_key'], planned.values['location_code'],
+            )
+            consumption_components[key] = (
+                *consumption_components.get(key, ()),
+                consumption_provisioning.ConsumptionComponentDefinition(
+                    inventory_item_code=planned.values['inventory_item_code'],
+                    quantity=_decimal(planned.values['quantity']),
+                    uom=planned.values['uom'],
+                ),
+            )
+    consumption_outcomes: dict[tuple[str, str], str] = {}
     try:
         for item in plan.items:
             summary = summaries[item.group]
@@ -1006,6 +1121,36 @@ async def confirm_import(
                     status=value['status'],
                 )
                 actual_operation = result.operation
+            elif item.group == 'consumption_definitions':
+                key = (value['product_key'], value['location_code'])
+                result = await (
+                    consumption_provisioning.provision_consumption_definition(
+                        db, tenant_id=tenant_id,
+                        organization_id=plan.scope.organization_id,
+                        location_id=location_id,
+                        binding_namespace=(
+                            product_provisioning.onboarding_binding_namespace(
+                                contract_version=CONTRACT_VERSION,
+                                organization_id=plan.scope.organization_id,
+                            )
+                        ),
+                        product_key=value['product_key'],
+                        tracking_mode=value['tracking_mode'],
+                        effective_from=_utc_naive(value['effective_from']),
+                        status=value['status'],
+                        components=consumption_components.get(key, ()),
+                        actor_id=membership_id,
+                    )
+                )
+                actual_operation = result.operation
+                consumption_outcomes[key] = actual_operation
+            elif item.group == 'consumption_components':
+                key = (value['product_key'], value['location_code'])
+                if key not in consumption_outcomes:
+                    raise RuntimeError(
+                        'Consumption Definition aggregate was not provisioned'
+                    )
+                actual_operation = consumption_outcomes[key]
             elif item.group == 'inventory_items':
                 if item.operation == 'CREATE':
                     await inventory_service.create_inventory_item(
@@ -1091,6 +1236,27 @@ async def confirm_import(
             'code': 'IMPORT_FAILED', 'group': item.group, 'row': item.row,
             'message': 'An existing write authority rejected the planned operation',
         })
+        if item.group == 'consumption_definitions':
+            failed_key = (
+                item.values['product_key'], item.values['location_code'],
+            )
+            for dependent in plan.items:
+                if (
+                    dependent.group == 'consumption_components'
+                    and (
+                        dependent.values['product_key'],
+                        dependent.values['location_code'],
+                    ) == failed_key
+                ):
+                    summaries[dependent.group]['failed'] += 1
+                    errors.append({
+                        'code': 'IMPORT_FAILED',
+                        'group': dependent.group,
+                        'row': dependent.row,
+                        'message': (
+                            'The parent Consumption Definition aggregate failed'
+                        ),
+                    })
         completed = sum(s['created'] + s['updated'] for s in summaries.values())
         status = 'PARTIAL' if completed else 'FAILED'
     else:

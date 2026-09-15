@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
 
@@ -27,6 +28,7 @@ from app.restaurant.preparation import (
 )
 from app.restaurant.pricing import provisioning as price_provisioning
 from app.restaurant.inventory import service as inventory_service
+from app.restaurant.inventory import consumption_provisioning
 from app.restaurant.inventory import warehouse_provisioning
 from test_inventory_recipe_stock_foundation import _headers, _permission, _scope
 
@@ -50,6 +52,8 @@ def test_all_contract_groups_have_one_explicit_import_classification() -> None:
     assert by_group['menu_sections']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['menu_items']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['prices']['classification'] == 'IMPORTABLE_NOW'
+    assert by_group['consumption_definitions']['classification'] == 'IMPORTABLE_NOW'
+    assert by_group['consumption_components']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['staff']['classification'] == 'DEFERRED_PROVISIONING'
     assert by_group['tax_rules']['classification'] == 'DEFERRED_PROVISIONING'
     assert by_group['warehouses']['classification'] == 'IMPORTABLE_NOW'
@@ -70,6 +74,7 @@ def _workbook(
     menu: bool = False, menu_section: bool = False, menu_item: bool = False,
     price: bool = False,
     inventory: bool = True, warehouse: bool = False,
+    consumption: bool = False,
 ) -> bytes:
     workbook = load_workbook(BytesIO(deterministic_bytes()), data_only=False)
     _set_row(workbook, '01_Restaurant', (
@@ -95,7 +100,7 @@ def _workbook(
         _set_row(workbook, '06_Categories', (
             f'CAT-{item_code}', 'ORG', f'Category {item_code}', None, 0, 'ACTIVE',
         ))
-    if product or category_product or menu_item or price:
+    if product or category_product or menu_item or price or consumption:
         _set_row(workbook, '07_Products', (
             f'PROD-{item_code}', 'ORG',
             f'CAT-{item_code}' if category_product else None,
@@ -138,6 +143,13 @@ def _workbook(
         _set_row(workbook, '18_Warehouses', (
             'LOC', f'WH-{item_code}', f'Warehouse {item_code}',
             'YES', 'ALLOW', 'ACTIVE',
+        ))
+    if consumption:
+        _set_row(workbook, '23_Consumption', (
+            f'PROD-{item_code}', 'LOC', 'DERIVABLE', None, 'ACTIVE',
+        ))
+        _set_row(workbook, '24_Consumption_Lines', (
+            f'PROD-{item_code}', 'LOC', item_code, '2.000000', 'BAG',
         ))
     output = BytesIO()
     workbook.save(output)
@@ -2145,6 +2157,276 @@ def test_warehouse_authority_rejects_scope_identity_and_conflicting_races(
     assert first_id == second_id
     assert operations == {'CREATE', 'UNCHANGED'}
     assert _count(connection, 'warehouses', scope.tenant_id) == 2
+    for table in (
+        'stock_movements', 'inventory_lots', 'inventory_cost_layers',
+        'inventory_transfers', 'goods_receipts', 'inventory_losses',
+        'physical_counts', 'preparation_batches',
+        'inventory_valuation_snapshots',
+    ):
+        assert _count(connection, table, scope.tenant_id) == 0, table
+
+
+def test_consumption_import_replaces_complete_aggregate_without_inventory_evidence(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(
+        f'{prefix}-onboarding', item_code='CONSUMPTION', consumption=True,
+    )
+    fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
+
+    first = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert first.status_code == 201, first.text
+    result = first.json()
+    assert not result['errors'], result['errors']
+    for group in ('consumption_definitions', 'consumption_components'):
+        assert result['groups'][group]['classification'] == 'IMPORTABLE_NOW'
+        assert result['groups'][group]['authority'] == (
+            'restaurant.inventory.consumption_provisioning.'
+            'provision_consumption_definition'
+        )
+        assert result['groups'][group]['created'] == 1
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT d.id,d.product_id,d.location_id,d.version,d.status,'
+            'd.tracking_mode,c.quantity,i.code AS item_code '
+            'FROM product_consumption_definitions d '
+            'JOIN product_consumption_components c ON c.definition_id=d.id '
+            'JOIN inventory_items i ON i.id=c.inventory_item_id '
+            'WHERE d.tenant_id=%s', (scope.tenant_id,),
+        )
+        aggregate = cursor.fetchone()
+        cursor.execute(
+            'SELECT vc.source_quantity,vc.source_uom,vc.conversion_revision_id,'
+            'vc.conversion_factor FROM product_consumption_version_components vc '
+            'JOIN product_consumption_versions v ON v.id=vc.version_id '
+            'WHERE v.definition_id=%s', (aggregate['id'],),
+        )
+        evidence = cursor.fetchone()
+    assert aggregate == {
+        'id': aggregate['id'], 'product_id': aggregate['product_id'],
+        'location_id': scope.location_id, 'version': 1, 'status': 'ACTIVE',
+        'tracking_mode': 'DERIVABLE', 'quantity': Decimal('2000.000000'),
+        'item_code': 'CONSUMPTION',
+    }
+    assert evidence == {
+        'source_quantity': Decimal('2.000000'), 'source_uom': 'BAG',
+        'conversion_revision_id': evidence['conversion_revision_id'],
+        'conversion_factor': Decimal('1000.000000000000'),
+    }
+    assert evidence['conversion_revision_id'] is not None
+
+    replay = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert replay.status_code == 200 and replay.json()['replay'] is True
+    assert _count(connection, 'product_consumption_definitions', scope.tenant_id) == 1
+    assert _count(connection, 'product_consumption_components', scope.tenant_id) == 1
+    assert _count(connection, 'product_consumption_versions', scope.tenant_id) == 1
+
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    workbook['24_Consumption_Lines']['D2'] = '3.000000'
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    changed = output.getvalue()
+    changed_fingerprint = _analyze(client, headers, changed).json()['dataset_fingerprint']
+    updated = _confirm(client, headers, changed, scope.location_id, changed_fingerprint)
+    assert updated.status_code == 201, updated.text
+    for group in ('consumption_definitions', 'consumption_components'):
+        assert updated.json()['groups'][group]['updated'] == 1
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT version FROM product_consumption_definitions WHERE id=%s',
+            (aggregate['id'],),
+        )
+        assert cursor.fetchone()['version'] == 2
+        cursor.execute(
+            'SELECT quantity FROM product_consumption_components '
+            'WHERE definition_id=%s', (aggregate['id'],),
+        )
+        assert cursor.fetchone()['quantity'] == Decimal('3000.000000')
+    assert _count(connection, 'product_consumption_components', scope.tenant_id) == 1
+    assert _count(connection, 'product_consumption_versions', scope.tenant_id) == 2
+    assert _count(
+        connection, 'product_consumption_version_components', scope.tenant_id,
+    ) == 2
+    for table in (
+        'stock_movements', 'inventory_lots', 'inventory_cost_layers',
+        'inventory_transfers', 'goods_receipts', 'inventory_losses',
+        'physical_counts', 'preparation_batches',
+        'inventory_valuation_snapshots',
+    ):
+        assert _count(connection, table, scope.tenant_id) == 0, table
+
+
+def test_consumption_authority_validates_evidence_and_converges_concurrently(
+    client, sql_connection, integration_settings, monkeypatch,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(
+        f'{prefix}-onboarding', item_code='CONS-RACE', product=True,
+    )
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    _set_row(workbook, '07_Products', (
+        'PROD-CONS-CONFLICT', 'ORG', None,
+        'Product CONS-CONFLICT', None, 'ACTIVE',
+    ), row=3)
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    content = output.getvalue()
+    fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
+    seeded = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert seeded.status_code == 201, seeded.text
+
+    async def exercise() -> tuple[int, int, set[str]]:
+        from app.db.session import DatabaseManager
+
+        database = DatabaseManager(integration_settings)
+        namespace = product_provisioning.onboarding_binding_namespace(
+            contract_version=CONTRACT_VERSION,
+            organization_id=scope.organization_id,
+        )
+        component = consumption_provisioning.ConsumptionComponentDefinition(
+            inventory_item_code='CONS-RACE', quantity=Decimal('1.000000'),
+            uom='BAG',
+        )
+        arguments = {
+            'tenant_id': scope.tenant_id,
+            'organization_id': scope.organization_id,
+            'location_id': scope.location_id,
+            'binding_namespace': namespace,
+            'product_key': 'PROD-CONS-RACE',
+            'tracking_mode': 'DERIVABLE',
+            'effective_from': datetime(2030, 1, 1),
+            'status': 'ACTIVE', 'components': (component,),
+            'actor_id': scope.membership_id,
+        }
+        original_plan = consumption_provisioning.plan_consumption_definition
+
+        def synchronized_plan():
+            arrived = 0
+            gate = asyncio.Event()
+
+            async def value(*args, **kwargs):
+                nonlocal arrived
+                plan = await original_plan(*args, **kwargs)
+                arrived += 1
+                if arrived == 2:
+                    gate.set()
+                await asyncio.wait_for(gate.wait(), timeout=5)
+                return plan
+
+            return value
+
+        try:
+            async with database.session_factory() as db:
+                with pytest.raises(
+                    consumption_provisioning.ConsumptionScopeNotFoundError
+                ):
+                    await original_plan(
+                        db, **{
+                            key: value for key, value in arguments.items()
+                            if key not in {'actor_id', 'organization_id'}
+                        }, organization_id=scope.organization_id + 999999,
+                    )
+                invalid_components = (
+                    consumption_provisioning.ConsumptionComponentDefinition(
+                        'CONS-RACE', Decimal('1.0000001'), 'BAG',
+                    ),
+                    consumption_provisioning.ConsumptionComponentDefinition(
+                        'CONS-RACE', Decimal('1.000000'), 'CASE',
+                    ),
+                    consumption_provisioning.ConsumptionComponentDefinition(
+                        'UNKNOWN', Decimal('1.000000'), 'G',
+                    ),
+                )
+                expected_errors = (
+                    consumption_provisioning.ConsumptionProvisioningError,
+                    consumption_provisioning.ConsumptionProvisioningError,
+                    consumption_provisioning.ConsumptionScopeNotFoundError,
+                )
+                for invalid, expected_error in zip(
+                    invalid_components, expected_errors, strict=True,
+                ):
+                    with pytest.raises(expected_error):
+                        await original_plan(
+                            db, **{
+                                key: value for key, value in arguments.items()
+                                if key not in {'actor_id', 'components'}
+                            }, components=(invalid,),
+                        )
+
+            monkeypatch.setattr(
+                consumption_provisioning, 'plan_consumption_definition',
+                synchronized_plan(),
+            )
+            async with (
+                database.session_factory() as first_db,
+                database.session_factory() as second_db,
+            ):
+                first, second = await asyncio.gather(
+                    consumption_provisioning.provision_consumption_definition(
+                        first_db, **arguments,
+                    ),
+                    consumption_provisioning.provision_consumption_definition(
+                        second_db, **arguments,
+                    ),
+                )
+
+            monkeypatch.setattr(
+                consumption_provisioning, 'plan_consumption_definition',
+                synchronized_plan(),
+            )
+            conflicting = {
+                **arguments, 'product_key': 'PROD-CONS-CONFLICT',
+            }
+            async with (
+                database.session_factory() as first_db,
+                database.session_factory() as second_db,
+            ):
+                conflicts = await asyncio.gather(
+                    consumption_provisioning.provision_consumption_definition(
+                        first_db, **conflicting,
+                    ),
+                    consumption_provisioning.provision_consumption_definition(
+                        second_db, **{
+                            **conflicting,
+                            'components': (
+                                consumption_provisioning.
+                                ConsumptionComponentDefinition(
+                                    'CONS-RACE', Decimal('2.000000'), 'BAG',
+                                ),
+                            ),
+                        },
+                    ),
+                    return_exceptions=True,
+                )
+            assert sum(
+                isinstance(
+                    value, consumption_provisioning.ConsumptionConflictError,
+                )
+                for value in conflicts
+            ) == 1
+            return first.definition.id, second.definition.id, {
+                first.operation, second.operation,
+            }
+        finally:
+            monkeypatch.setattr(
+                consumption_provisioning, 'plan_consumption_definition',
+                original_plan,
+            )
+            await database.dispose()
+
+    first_id, second_id, operations = asyncio.run(exercise())
+    assert first_id == second_id
+    assert operations == {'CREATE', 'UNCHANGED'}
+    assert _count(connection, 'product_consumption_definitions', scope.tenant_id) == 2
+    assert _count(connection, 'product_consumption_components', scope.tenant_id) == 2
+    assert _count(connection, 'product_consumption_versions', scope.tenant_id) == 2
     for table in (
         'stock_movements', 'inventory_lots', 'inventory_cost_layers',
         'inventory_transfers', 'goods_receipts', 'inventory_losses',
