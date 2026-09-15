@@ -27,13 +27,14 @@ from app.models import (
 )
 from app.onboarding.analyzer import AnalysisResult, AnalyzedRow
 from app.onboarding.contract import CONTRACT_VERSION, ONBOARDING_CONTRACT
+from app.restaurant.catalog import provisioning as product_provisioning
 from app.restaurant.inventory import receiving
 from app.restaurant.inventory import service as inventory_service
 
 
 IMPORTABLE_NOW = frozenset({
     'restaurant_profile', 'inventory_items', 'uom_conversions', 'suppliers',
-    'supplier_offerings',
+    'supplier_offerings', 'products',
 })
 OPERATIONAL_NOT_CATALOG_IMPORT = frozenset({'payment_methods'})
 DEFERRED_PROVISIONING = frozenset(
@@ -51,6 +52,7 @@ AUTHORITY_BY_GROUP = {
     'uom_conversions': 'restaurant.inventory.service.append_item_uom_conversion',
     'suppliers': 'restaurant.inventory.receiving.create/update_supplier',
     'supplier_offerings': 'restaurant.inventory.receiving.create/update_offering',
+    'products': 'restaurant.catalog.provisioning.provision_product',
 }
 
 
@@ -245,6 +247,12 @@ async def build_import_plan(
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'inventory.manage permission is required')
     if populated & {'suppliers', 'supplier_offerings'} and 'inventory.supplier.manage' not in permissions:
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'inventory.supplier.manage permission is required')
+    if 'products' in populated and 'product.manage' not in permissions:
+        raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'product.manage permission is required')
+
+    product_namespace = product_provisioning.onboarding_binding_namespace(
+        contract_version=CONTRACT_VERSION, organization_id=organization.id,
+    )
 
     existing_items = {
         value.code: value for value in (
@@ -277,7 +285,25 @@ async def build_import_plan(
             ))
             continue
         value = row.values
-        if row.group == 'inventory_items':
+        if row.group == 'products':
+            blocker = None
+            try:
+                product_plan = await product_provisioning.plan_product(
+                    db, tenant_id=tenant_id, organization_id=organization.id,
+                    binding_namespace=product_namespace,
+                    product_key=value['product_key'],
+                    category_name=value['category_name'], name=value['name'],
+                    description=value['description'], status=value['status'],
+                )
+                operation, current_id = product_plan.operation, product_plan.product_id
+            except product_provisioning.ProductProvisioningError as exc:
+                operation, current_id, blocker = 'CREATE', None, str(exc)
+            items.append(PlanItem(
+                row.group, row.row, row.business_key, operation,
+                AUTHORITY_BY_GROUP[row.group], value, current_id,
+                blocking_error=blocker,
+            ))
+        elif row.group == 'inventory_items':
             current = existing_items.get(value['inventory_item_code'])
             if current is None:
                 operation, current_id, version, blocker = 'CREATE', None, None, (
@@ -502,7 +528,21 @@ async def confirm_import(
                 summary['unchanged'] += 1
                 continue
             value = item.values
-            if item.group == 'inventory_items':
+            actual_operation = item.operation
+            if item.group == 'products':
+                result = await product_provisioning.provision_product(
+                    db, tenant_id=tenant_id,
+                    organization_id=plan.scope.organization_id,
+                    binding_namespace=product_provisioning.onboarding_binding_namespace(
+                        contract_version=CONTRACT_VERSION,
+                        organization_id=plan.scope.organization_id,
+                    ),
+                    product_key=value['product_key'],
+                    category_name=value['category_name'], name=value['name'],
+                    description=value['description'], status=value['status'],
+                )
+                actual_operation = result.operation
+            elif item.group == 'inventory_items':
                 if item.operation == 'CREATE':
                     await inventory_service.create_inventory_item(
                         db, tenant_id=tenant_id, location_id=location_id,
@@ -577,7 +617,9 @@ async def confirm_import(
                         expected_version=item.existing_version, status=value['status'],
                         supplier_item_code=value['supplier_item_code'],
                     )
-            summary['created' if item.operation == 'CREATE' else 'updated'] += 1
+            summary[{
+                'CREATE': 'created', 'UPDATE': 'updated', 'UNCHANGED': 'unchanged',
+            }[actual_operation]] += 1
     except Exception:
         await db.rollback()
         summaries[item.group]['failed'] += 1

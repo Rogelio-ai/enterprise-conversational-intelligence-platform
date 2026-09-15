@@ -15,7 +15,7 @@ from app.api.deps import AuthenticatedContext, get_db, require_permission
 from app.core.middleware import get_correlation_id
 from app.models import Menu, Organization, Product, ProductCategory
 from app.restaurant.catalog.queries import product_statement
-from app.restaurant.catalog import structure
+from app.restaurant.catalog import provisioning, structure
 
 
 Lifecycle = Literal['ACTIVE', 'INACTIVE']
@@ -380,28 +380,15 @@ async def create_product(
     context: Annotated[AuthenticatedContext, Depends(require_permission('product.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Product:
-    await _get_organization(
-        db, tenant_id=context.tenant_id, organization_id=payload.organization_id
-    )
-    if payload.category_id is not None:
-        await _get_category(
-            db,
-            tenant_id=context.tenant_id,
-            category_id=payload.category_id,
+    try:
+        product = await provisioning.create_product(
+            db, tenant_id=context.tenant_id,
             organization_id=payload.organization_id,
+            category_id=payload.category_id, name=payload.name,
+            description=payload.description,
         )
-    product = Product(
-        tenant_id=context.tenant_id,
-        organization_id=payload.organization_id,
-        category_id=payload.category_id,
-        name=payload.name,
-        description=payload.description,
-        status='ACTIVE',
-        source='PLATFORM',
-    )
-    db.add(product)
-    await db.commit()
-    await db.refresh(product)
+    except provisioning.ProductScopeNotFoundError as exc:
+        raise _not_found(str(exc).removesuffix(' not found')) from exc
     logger.info(
         'Product created',
         extra={
@@ -433,21 +420,14 @@ async def update_product(
     context: Annotated[AuthenticatedContext, Depends(require_permission('product.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Product:
-    product = await _get_product(
-        db, tenant_id=context.tenant_id, product_id=product_id, for_update=True
-    )
     updates = payload.model_dump(exclude_unset=True)
-    if 'category_id' in updates and updates['category_id'] is not None:
-        await _get_category(
-            db,
-            tenant_id=context.tenant_id,
-            category_id=updates['category_id'],
-            organization_id=product.organization_id,
+    try:
+        product = await provisioning.update_product(
+            db, tenant_id=context.tenant_id, product_id=product_id,
+            changes=updates,
         )
-    for field, value in updates.items():
-        setattr(product, field, value)
-    await db.commit()
-    await db.refresh(product)
+    except provisioning.ProductScopeNotFoundError as exc:
+        raise _not_found(str(exc).removesuffix(' not found')) from exc
     logger.info(
         'Product updated',
         extra={
