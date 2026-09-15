@@ -78,6 +78,7 @@ from app.models.menu import (
 )
 from app.models.organization import Location, Organization
 from app.models.order_draft import OrderDraft, OrderDraftItem, OrderDraftItemSelection
+from app.models.onboarding import OnboardingImport
 from app.models.paid_check_print import PaidCheckDispatch, PaidCheckDispatchAttempt
 from app.models.pricing import ProductPrice, Promotion, PromotionLocation, PromotionProduct
 from app.models.product_structure import (
@@ -136,6 +137,7 @@ from app.models.preparation import (
 )
 
 __all__ = [
+    'OnboardingImport',
     'BillingDocument',
     'BillingDocumentLine',
     'BillingDocumentLineTax',

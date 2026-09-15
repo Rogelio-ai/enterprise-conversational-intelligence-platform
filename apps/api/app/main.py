@@ -36,6 +36,7 @@ from app.api.routes.menus import router as menus_router
 from app.api.routes.manager_overview import router as manager_overview_router
 from app.api.routes.organizations import router as organizations_router
 from app.api.routes.order_drafts import router as order_drafts_router
+from app.api.routes.onboarding import router as onboarding_router
 from app.api.routes.products import router as products_router
 from app.api.routes.product_compositions import router as product_compositions_router
 from app.api.routes.product_aliases import router as product_aliases_router
@@ -223,6 +224,7 @@ def create_app(
     app.include_router(customers_router)
     app.include_router(conversations_router)
     app.include_router(order_drafts_router)
+    app.include_router(onboarding_router)
     app.include_router(products_router)
     app.include_router(product_compositions_router)
     app.include_router(product_aliases_router)
