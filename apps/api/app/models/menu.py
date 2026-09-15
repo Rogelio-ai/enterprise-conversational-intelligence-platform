@@ -390,6 +390,49 @@ class MenuSection(TimestampMixin, Base):
     )
 
 
+class MenuSectionExternalMapping(Base):
+    __tablename__ = 'menu_section_external_mappings'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['tenant_id'], ['tenants.id'],
+            name='fk_menu_section_external_mappings_tenant', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['section_id', 'menu_id', 'tenant_id', 'organization_id'],
+            [
+                'menu_sections.id',
+                'menu_sections.menu_id',
+                'menu_sections.tenant_id',
+                'menu_sections.organization_id',
+            ],
+            name='fk_menu_section_external_mappings_section_scope',
+            ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'organization_id', 'menu_id', 'connector_key',
+            'external_section_id',
+            name='uq_menu_section_external_mapping_source',
+        ),
+        Index(
+            'ix_menu_section_external_mappings_section',
+            'tenant_id', 'organization_id', 'menu_id', 'section_id', 'id',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    menu_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    section_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    connector_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    external_section_id: Mapped[str] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class MenuItem(TimestampMixin, Base):
     __tablename__ = 'menu_items'
     __table_args__ = (

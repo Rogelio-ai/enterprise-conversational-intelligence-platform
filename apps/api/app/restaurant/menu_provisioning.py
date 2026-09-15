@@ -237,9 +237,9 @@ async def update_menu_location(
 
 async def _mapped_menu(
     db: AsyncSession, *, tenant_id: int, organization_id: int,
-    binding_namespace: str, menu_key: str,
+    binding_namespace: str, menu_key: str, for_update: bool = False,
 ) -> Menu | None:
-    return await db.scalar(select(Menu).join(
+    statement = select(Menu).join(
         MenuExternalMapping,
         (MenuExternalMapping.menu_id == Menu.id)
         & (MenuExternalMapping.tenant_id == Menu.tenant_id)
@@ -249,12 +249,15 @@ async def _mapped_menu(
         MenuExternalMapping.organization_id == organization_id,
         MenuExternalMapping.connector_key == binding_namespace,
         MenuExternalMapping.external_menu_id == menu_key,
-    ))
+    )
+    if for_update:
+        statement = statement.with_for_update()
+    return await db.scalar(statement)
 
 
 async def resolve_menu_binding(
     db: AsyncSession, *, tenant_id: int, organization_id: int,
-    binding_namespace: str, menu_key: str,
+    binding_namespace: str, menu_key: str, for_update: bool = False,
 ) -> Menu:
     namespace = _text(
         binding_namespace, field='Menu binding namespace', maximum=128,
@@ -262,7 +265,7 @@ async def resolve_menu_binding(
     key = _text(menu_key, field='Menu operator key', maximum=200)
     menu = await _mapped_menu(
         db, tenant_id=tenant_id, organization_id=organization_id,
-        binding_namespace=namespace, menu_key=key,
+        binding_namespace=namespace, menu_key=key, for_update=for_update,
     )
     if menu is None:
         raise MenuScopeNotFoundError('Menu binding not found')

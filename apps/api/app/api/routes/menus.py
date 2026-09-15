@@ -23,7 +23,7 @@ from app.models import (
     Product,
 )
 from app.restaurant.catalog.queries import load_menu_graph, menu_statement
-from app.restaurant import menu_provisioning
+from app.restaurant import menu_provisioning, menu_section_provisioning
 
 
 Lifecycle = Literal['ACTIVE', 'INACTIVE']
@@ -508,18 +508,14 @@ async def create_menu_section(
     context: Annotated[AuthenticatedContext, Depends(require_permission('menu.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> MenuSection:
+    try:
+        section = await menu_section_provisioning.create_menu_section(
+            db, tenant_id=context.tenant_id, menu_id=menu_id,
+            name=payload.name, display_order=payload.display_order,
+        )
+    except menu_section_provisioning.MenuSectionScopeNotFoundError as exc:
+        raise _not_found('Menu') from exc
     menu = await _get_menu(db, tenant_id=context.tenant_id, menu_id=menu_id)
-    section = MenuSection(
-        tenant_id=context.tenant_id,
-        organization_id=menu.organization_id,
-        menu_id=menu.id,
-        name=payload.name,
-        display_order=payload.display_order,
-        status='ACTIVE',
-    )
-    db.add(section)
-    await db.commit()
-    await db.refresh(section)
     _log_mutation(
         'menu_section_created',
         'create',
@@ -538,18 +534,15 @@ async def update_menu_section(
     context: Annotated[AuthenticatedContext, Depends(require_permission('menu.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> MenuSection:
+    try:
+        section = await menu_section_provisioning.update_menu_section(
+            db, tenant_id=context.tenant_id, menu_id=menu_id,
+            section_id=section_id,
+            changes=payload.model_dump(exclude_unset=True),
+        )
+    except menu_section_provisioning.MenuSectionScopeNotFoundError as exc:
+        raise _not_found(str(exc).removesuffix(' not found')) from exc
     menu = await _get_menu(db, tenant_id=context.tenant_id, menu_id=menu_id)
-    section = await _get_section(
-        db,
-        tenant_id=context.tenant_id,
-        menu_id=menu.id,
-        section_id=section_id,
-        for_update=True,
-    )
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(section, field, value)
-    await db.commit()
-    await db.refresh(section)
     _log_mutation(
         'menu_section_updated',
         'update',
