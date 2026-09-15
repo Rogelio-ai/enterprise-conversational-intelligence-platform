@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from decimal import Decimal
 from io import BytesIO
 
 from fastapi.testclient import TestClient
@@ -24,6 +25,7 @@ from app.restaurant.preparation import (
     configuration_provisioning,
     route_provisioning,
 )
+from app.restaurant.pricing import provisioning as price_provisioning
 from app.restaurant.inventory import service as inventory_service
 from test_inventory_recipe_stock_foundation import _headers, _permission, _scope
 
@@ -46,6 +48,7 @@ def test_all_contract_groups_have_one_explicit_import_classification() -> None:
     assert by_group['menus']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['menu_sections']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['menu_items']['classification'] == 'IMPORTABLE_NOW'
+    assert by_group['prices']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['staff']['classification'] == 'DEFERRED_PROVISIONING'
     assert by_group['tax_rules']['classification'] == 'DEFERRED_PROVISIONING'
     assert by_group['warehouses']['classification'] == 'DEFERRED_PROVISIONING'
@@ -64,6 +67,7 @@ def _workbook(
     preparation_configuration: bool = False, preparation_area: bool = False,
     area_resource: bool = False, preparation_route: bool = False,
     menu: bool = False, menu_section: bool = False, menu_item: bool = False,
+    price: bool = False,
 ) -> bytes:
     workbook = load_workbook(BytesIO(deterministic_bytes()), data_only=False)
     _set_row(workbook, '01_Restaurant', (
@@ -88,7 +92,7 @@ def _workbook(
         _set_row(workbook, '06_Categories', (
             f'CAT-{item_code}', 'ORG', f'Category {item_code}', None, 0, 'ACTIVE',
         ))
-    if product or category_product or menu_item:
+    if product or category_product or menu_item or price:
         _set_row(workbook, '07_Products', (
             f'PROD-{item_code}', 'ORG',
             f'CAT-{item_code}' if category_product else None,
@@ -123,6 +127,10 @@ def _workbook(
             f'MENU-{item_code}', f'SECTION-{item_code}',
             f'PROD-{item_code}', 20, 'ACTIVE',
         ))
+    if price:
+        _set_row(workbook, '11_Prices', (
+            f'PROD-{item_code}', 'LOC', '12.3400', 'MXN', 'ACTIVE',
+        ))
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -139,6 +147,7 @@ def _prepare(connection, prefix: str):
         'location.manage', 'inventory.manage', 'inventory.supplier.manage', 'product.manage',
         'resource.manage', 'preparation.configure',
         'menu.manage',
+        'pricing.manage',
     ):
         _permission(connection, scope.role_id, permission)
     return scope
@@ -1760,3 +1769,175 @@ def test_menu_item_authority_rejects_foreign_section_and_converges_concurrently(
     assert operations == {'CREATE', 'UNCHANGED'}
     assert _count(connection, 'menu_items', scope.tenant_id) == 1
     assert _count(connection, 'product_prices', scope.tenant_id) == 0
+
+
+def test_price_import_preserves_exact_money_updates_and_avoids_fiscal_writes(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(
+        f'{prefix}-onboarding', item_code='PRICE', price=True,
+    )
+    fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
+
+    first = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert first.status_code == 201, first.text
+    result = first.json()
+    assert not result['errors'], result['errors']
+    assert result['groups']['products']['created'] == 1, result
+    assert result['groups']['prices']['classification'] == 'IMPORTABLE_NOW'
+    assert result['groups']['prices']['authority'] == (
+        'restaurant.pricing.provisioning.provision_price'
+    )
+    assert result['groups']['prices']['created'] == 1
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT id,organization_id,product_id,location_id,amount,currency,'
+            'status,source FROM product_prices WHERE tenant_id=%s',
+            (scope.tenant_id,),
+        )
+        price = cursor.fetchone()
+    assert price['organization_id'] == scope.organization_id
+    assert price['location_id'] == scope.location_id
+    assert price['amount'] == Decimal('12.3400')
+    assert (price['currency'], price['status'], price['source']) == (
+        'MXN', 'ACTIVE', 'PLATFORM',
+    )
+    assert _count(connection, 'product_prices', scope.tenant_id) == 1
+    assert _count(connection, 'restaurant_tax_rules', scope.tenant_id) == 0
+    assert _count(connection, 'product_fiscal_classifications', scope.tenant_id) == 0
+
+    replay = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert replay.status_code == 200 and replay.json()['replay'] is True
+    assert _count(connection, 'product_prices', scope.tenant_id) == 1
+
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    workbook['11_Prices']['C2'] = '99.8765'
+    workbook['11_Prices']['D2'] = 'USD'
+    workbook['11_Prices']['E2'] = 'INACTIVE'
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    changed = output.getvalue()
+    changed_fingerprint = _analyze(client, headers, changed).json()['dataset_fingerprint']
+    updated = _confirm(client, headers, changed, scope.location_id, changed_fingerprint)
+    assert updated.status_code == 201, updated.text
+    assert updated.json()['groups']['prices']['updated'] == 1
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT id,amount,currency,status,source FROM product_prices WHERE id=%s',
+            (price['id'],),
+        )
+        current = cursor.fetchone()
+    assert current == {
+        'id': price['id'], 'amount': Decimal('99.8765'), 'currency': 'USD',
+        'status': 'INACTIVE', 'source': 'PLATFORM',
+    }
+    assert _count(connection, 'product_prices', scope.tenant_id) == 1
+    assert _count(connection, 'restaurant_tax_rules', scope.tenant_id) == 0
+    assert _count(connection, 'product_fiscal_classifications', scope.tenant_id) == 0
+
+
+def test_price_authority_validates_scope_source_and_converges_concurrently(
+    client, sql_connection, integration_settings,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(
+        f'{prefix}-onboarding', item_code='PRICE-RACE', product=True,
+    )
+    fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
+    seeded = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert seeded.status_code == 201, seeded.text
+    assert _count(connection, 'product_prices', scope.tenant_id) == 0
+
+    async def exercise() -> tuple[int, int, set[str]]:
+        from app.db.session import DatabaseManager
+
+        database = DatabaseManager(integration_settings)
+        namespace = product_provisioning.onboarding_binding_namespace(
+            contract_version=CONTRACT_VERSION,
+            organization_id=scope.organization_id,
+        )
+        arguments = {
+            'tenant_id': scope.tenant_id,
+            'organization_id': scope.organization_id,
+            'location_id': scope.location_id,
+            'binding_namespace': namespace,
+            'product_key': 'PROD-PRICE-RACE',
+            'amount': Decimal('7.1234'), 'currency': 'MXN',
+            'status': 'ACTIVE',
+        }
+        try:
+            async with database.session_factory() as db:
+                with pytest.raises(price_provisioning.PriceScopeNotFoundError):
+                    await price_provisioning.plan_price(
+                        db, **{**arguments,
+                               'location_id': scope.location_id + 999999},
+                    )
+                for changes in (
+                    {'amount': Decimal('1.00001')},
+                    {'currency': 'MÉX'},
+                    {'status': 'BROKEN'},
+                ):
+                    with pytest.raises(price_provisioning.PriceProvisioningError):
+                        await price_provisioning.plan_price(
+                            db, **{**arguments, **changes},
+                        )
+                with pytest.raises(price_provisioning.PriceConflictError):
+                    await price_provisioning.plan_price(
+                        db, **{**arguments, 'status': 'INACTIVE'},
+                    )
+            async with (
+                database.session_factory() as first_db,
+                database.session_factory() as second_db,
+            ):
+                first, second = await asyncio.gather(
+                    price_provisioning.provision_price(first_db, **arguments),
+                    price_provisioning.provision_price(second_db, **arguments),
+                )
+            return first.price.id, second.price.id, {
+                first.operation, second.operation,
+            }
+        finally:
+            await database.dispose()
+
+    first_id, second_id, operations = asyncio.run(exercise())
+    assert first_id == second_id
+    assert operations == {'CREATE', 'UNCHANGED'}
+    assert _count(connection, 'product_prices', scope.tenant_id) == 1
+    with connection.cursor() as cursor:
+        cursor.execute(
+            "UPDATE product_prices SET source='POS' WHERE id=%s", (first_id,),
+        )
+
+    async def reject_pos() -> None:
+        from app.db.session import DatabaseManager
+
+        database = DatabaseManager(integration_settings)
+        try:
+            async with database.session_factory() as db:
+                with pytest.raises(price_provisioning.PriceConflictError):
+                    await price_provisioning.plan_price(
+                        db, tenant_id=scope.tenant_id,
+                        organization_id=scope.organization_id,
+                        location_id=scope.location_id,
+                        binding_namespace=(
+                            product_provisioning.onboarding_binding_namespace(
+                                contract_version=CONTRACT_VERSION,
+                                organization_id=scope.organization_id,
+                            )
+                        ),
+                        product_key='PROD-PRICE-RACE',
+                        amount=Decimal('7.1234'), currency='MXN',
+                        status='ACTIVE',
+                    )
+        finally:
+            await database.dispose()
+
+    asyncio.run(reject_pos())
+    assert _count(connection, 'restaurant_tax_rules', scope.tenant_id) == 0
+    assert _count(connection, 'product_fiscal_classifications', scope.tenant_id) == 0

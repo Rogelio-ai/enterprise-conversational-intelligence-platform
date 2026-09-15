@@ -14,6 +14,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.api.deps import AuthenticatedContext, get_db, require_permission
 from app.core.middleware import get_correlation_id
 from app.models import Location, Organization, Product, ProductPrice, Promotion, PromotionLocation, PromotionProduct
+from app.restaurant.pricing import provisioning as price_provisioning
 from app.restaurant.pricing import service as pricing_service
 
 router = APIRouter(tags=['pricing', 'promotions'])
@@ -364,15 +365,17 @@ async def list_prices(context: Annotated[AuthenticatedContext, Depends(require_p
 
 @router.post('/prices', response_model=PriceResponse, status_code=201)
 async def create_price(payload: PriceCreate, context: Annotated[AuthenticatedContext, Depends(require_permission('pricing.manage'))], db: Annotated[AsyncSession, Depends(get_db)]):
-    await _organization(db, context.tenant_id, payload.organization_id)
-    await _product(db, context.tenant_id, payload.product_id, payload.organization_id)
-    await _location(db, context.tenant_id, payload.location_id, payload.organization_id)
-    price = ProductPrice(tenant_id=context.tenant_id, **payload.model_dump(), status='ACTIVE', source='PLATFORM')
-    db.add(price)
-    try: await db.commit()
-    except IntegrityError as exc:
-        await db.rollback(); raise HTTPException(409, 'Price already exists for Product and Location') from exc
-    await db.refresh(price)
+    try:
+        price = await price_provisioning.create_price(
+            db, tenant_id=context.tenant_id,
+            organization_id=payload.organization_id,
+            product_id=payload.product_id, location_id=payload.location_id,
+            amount=payload.amount, currency=payload.currency,
+        )
+    except price_provisioning.PriceScopeNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
+    except price_provisioning.PriceConflictError as exc:
+        raise HTTPException(409, str(exc)) from exc
     logger.info('Product Price created', extra={'event':'price_created','operation':'create','tenant_id':context.tenant_id,'organization_id':price.organization_id,'location_id':price.location_id,'product_id':price.product_id,'price_id':price.id,'user_id':context.user_id,'correlation_id':get_correlation_id()})
     return price
 
@@ -384,9 +387,13 @@ async def get_price(price_id: Annotated[int, Path(gt=0)], context: Annotated[Aut
 
 @router.patch('/prices/{price_id}', response_model=PriceResponse)
 async def patch_price(price_id: Annotated[int, Path(gt=0)], payload: PricePatch, context: Annotated[AuthenticatedContext, Depends(require_permission('pricing.manage'))], db: Annotated[AsyncSession, Depends(get_db)]):
-    price = await _price(db, context.tenant_id, price_id, True)
-    for key, value in payload.model_dump(exclude_unset=True).items(): setattr(price, key, value)
-    await db.commit(); await db.refresh(price)
+    try:
+        price = await price_provisioning.update_price(
+            db, tenant_id=context.tenant_id, price_id=price_id,
+            changes=payload.model_dump(exclude_unset=True),
+        )
+    except price_provisioning.PriceScopeNotFoundError as exc:
+        raise HTTPException(404, str(exc)) from exc
     logger.info('Product Price updated', extra={'event':'price_updated','operation':'update','tenant_id':context.tenant_id,'organization_id':price.organization_id,'location_id':price.location_id,'product_id':price.product_id,'price_id':price.id,'user_id':context.user_id,'correlation_id':get_correlation_id()})
     return price
 

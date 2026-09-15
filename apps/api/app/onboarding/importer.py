@@ -42,6 +42,7 @@ from app.restaurant.preparation import (
     configuration_provisioning,
     route_provisioning,
 )
+from app.restaurant.pricing import provisioning as price_provisioning
 
 
 IMPORTABLE_NOW = frozenset({
@@ -51,6 +52,7 @@ IMPORTABLE_NOW = frozenset({
     'menus',
     'menu_sections',
     'menu_items',
+    'prices',
 })
 OPERATIONAL_NOT_CATALOG_IMPORT = frozenset({'payment_methods'})
 DEFERRED_PROVISIONING = frozenset(
@@ -85,6 +87,7 @@ AUTHORITY_BY_GROUP = {
         'restaurant.menu_section_provisioning.provision_menu_section'
     ),
     'menu_items': 'restaurant.menu_item_provisioning.provision_menu_item',
+    'prices': 'restaurant.pricing.provisioning.provision_price',
 }
 
 
@@ -312,6 +315,10 @@ async def build_import_plan(
         )
     if populated & {'categories', 'products'} and 'product.manage' not in permissions:
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'product.manage permission is required')
+    if 'prices' in populated and 'pricing.manage' not in permissions:
+        raise ImportRejectedError(
+            'INSUFFICIENT_PERMISSION', 'pricing.manage permission is required'
+        )
     if (
         populated & {'menus', 'menu_sections', 'menu_items'}
         and 'menu.manage' not in permissions
@@ -577,6 +584,27 @@ async def build_import_plan(
                 operation = item_plan.operation
                 current_id = item_plan.menu_item_id
             except menu_item_provisioning.MenuItemProvisioningError as exc:
+                operation, current_id, blocker = 'CREATE', None, str(exc)
+            items.append(PlanItem(
+                row.group, row.row, row.business_key, operation,
+                AUTHORITY_BY_GROUP[row.group], value, current_id,
+                blocking_error=blocker,
+            ))
+        elif row.group == 'prices':
+            blocker = None
+            try:
+                price_plan = await price_provisioning.plan_price(
+                    db, tenant_id=tenant_id,
+                    organization_id=organization.id,
+                    location_id=location.id,
+                    binding_namespace=product_namespace,
+                    product_key=value['product_key'], amount=_decimal(value['amount']),
+                    currency=value['currency'], status=value['status'],
+                    allow_unresolved_product=value['product_key'] in product_keys,
+                )
+                operation = price_plan.operation
+                current_id = price_plan.price_id
+            except price_provisioning.PriceProvisioningError as exc:
                 operation, current_id, blocker = 'CREATE', None, str(exc)
             items.append(PlanItem(
                 row.group, row.row, row.business_key, operation,
@@ -915,6 +943,19 @@ async def confirm_import(
                     product_key=value['product_key'],
                     display_order=value['display_order'],
                     status=value['status'],
+                )
+                actual_operation = result.operation
+            elif item.group == 'prices':
+                result = await price_provisioning.provision_price(
+                    db, tenant_id=tenant_id,
+                    organization_id=plan.scope.organization_id,
+                    location_id=location_id,
+                    binding_namespace=product_provisioning.onboarding_binding_namespace(
+                        contract_version=CONTRACT_VERSION,
+                        organization_id=plan.scope.organization_id,
+                    ),
+                    product_key=value['product_key'], amount=_decimal(value['amount']),
+                    currency=value['currency'], status=value['status'],
                 )
                 actual_operation = result.operation
             elif item.group == 'inventory_items':
