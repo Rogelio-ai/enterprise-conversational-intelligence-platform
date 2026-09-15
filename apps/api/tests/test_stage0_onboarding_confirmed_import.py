@@ -14,6 +14,7 @@ from app.onboarding.xlsx import deterministic_bytes
 from app.restaurant.catalog import category_provisioning
 from app.restaurant.catalog import provisioning as product_provisioning
 from app.restaurant import resource_provisioning
+from app.restaurant.preparation import configuration_provisioning
 from app.restaurant.inventory import service as inventory_service
 from test_inventory_recipe_stock_foundation import _headers, _permission, _scope
 
@@ -28,6 +29,7 @@ def test_all_contract_groups_have_one_explicit_import_classification() -> None:
     assert len(by_group) == 32
     assert by_group['inventory_items']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['resources']['classification'] == 'IMPORTABLE_NOW'
+    assert by_group['preparation_configuration']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['categories']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['products']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['staff']['classification'] == 'DEFERRED_PROVISIONING'
@@ -45,7 +47,7 @@ def _set_row(workbook, sheet: str, values: tuple[object, ...], row: int = 2) -> 
 def _workbook(
     tenant_slug: str, *, item_code: str = 'FLOUR', product: bool = False,
     category_product: bool = False, resource: bool = False,
-    deferred_preparation_configuration: bool = False,
+    preparation_configuration: bool = False,
 ) -> bytes:
     workbook = load_workbook(BytesIO(deterministic_bytes()), data_only=False)
     _set_row(workbook, '01_Restaurant', (
@@ -80,7 +82,7 @@ def _workbook(
         _set_row(workbook, '03_Resources', (
             'LOC', f'RESOURCE-{item_code}', f'Resource {item_code}', 'TABLE', 'ACTIVE',
         ))
-    if deferred_preparation_configuration:
+    if preparation_configuration:
         _set_row(workbook, '04_Prep_Config', ('LOC', 'PLATFORM'))
     output = BytesIO()
     workbook.save(output)
@@ -96,7 +98,7 @@ def _prepare(connection, prefix: str):
         )
     for permission in (
         'location.manage', 'inventory.manage', 'inventory.supplier.manage', 'product.manage',
-        'resource.manage',
+        'resource.manage', 'preparation.configure',
     ):
         _permission(connection, scope.role_id, permission)
     return scope
@@ -674,26 +676,127 @@ def test_invalid_and_cross_scope_confirmation_cannot_persist(client, sql_connect
     assert _count(connection, 'onboarding_imports', scope.tenant_id) == 0
 
 
-def test_deferred_group_is_visible_and_prevents_false_success(client, sql_connection) -> None:
+def test_preparation_configuration_import_create_update_replay_without_areas(
+    client, sql_connection,
+) -> None:
     connection, prefix = sql_connection
     scope = _prepare(connection, prefix)
     headers = _headers(client, scope)
     content = _workbook(
         f'{prefix}-onboarding', item_code='RICE',
-        deferred_preparation_configuration=True,
+        preparation_configuration=True,
     )
     fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
 
     response = _confirm(client, headers, content, scope.location_id, fingerprint)
     assert response.status_code == 201, response.text
     result = response.json()
-    assert result['status'] == 'PARTIAL', result
-    assert result['deferred'] == 1
+    assert result['groups']['preparation_configuration']['created'] == 1
     assert result['groups']['preparation_configuration'] == {
-        'classification': 'DEFERRED_PROVISIONING',
-        'authority': 'models.preparation.LocationPreparationConfiguration',
+        'classification': 'IMPORTABLE_NOW',
+        'authority': (
+            'restaurant.preparation.configuration_provisioning.'
+            'provision_configuration'
+        ),
         'required_for_stage0': True,
-        'planned': 1, 'created': 0, 'updated': 0, 'unchanged': 0,
-        'deferred': 1, 'failed': 0,
+        'planned': 1, 'created': 1, 'updated': 0, 'unchanged': 0,
+        'deferred': 0, 'failed': 0,
     }
-    assert _count(connection, 'location_preparation_configurations', scope.tenant_id) == 0
+    assert _count(connection, 'location_preparation_configurations', scope.tenant_id) == 1
+    assert _count(connection, 'preparation_areas', scope.tenant_id) == 0
+    assert _count(connection, 'preparation_works', scope.tenant_id) == 0
+
+    replay = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert replay.status_code == 200
+    assert replay.json()['replay'] is True
+    assert replay.json()['import_id'] == result['import_id']
+    assert _count(connection, 'location_preparation_configurations', scope.tenant_id) == 1
+
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    workbook['04_Prep_Config']['B2'] = 'EXTERNAL_POS'
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    changed = output.getvalue()
+    changed_fingerprint = _analyze(client, headers, changed).json()['dataset_fingerprint']
+    updated = _confirm(
+        client, headers, changed, scope.location_id, changed_fingerprint,
+    )
+    assert updated.status_code == 201, updated.text
+    assert updated.json()['groups']['preparation_configuration']['updated'] == 1
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT organization_id,location_id,preparation_owner '
+            'FROM location_preparation_configurations WHERE tenant_id=%s',
+            (scope.tenant_id,),
+        )
+        configuration = cursor.fetchone()
+    assert configuration == {
+        'organization_id': scope.organization_id,
+        'location_id': scope.location_id,
+        'preparation_owner': 'EXTERNAL_POS',
+    }
+    assert _count(connection, 'location_preparation_configurations', scope.tenant_id) == 1
+    assert _count(connection, 'preparation_areas', scope.tenant_id) == 0
+
+
+def test_preparation_configuration_authority_is_scoped_and_concurrency_safe(
+    sql_connection, integration_settings,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+
+    async def exercise() -> tuple[int, int, set[str]]:
+        from app.db.session import DatabaseManager
+
+        database = DatabaseManager(integration_settings)
+        arguments = {
+            'tenant_id': scope.tenant_id,
+            'organization_id': scope.organization_id,
+            'location_id': scope.location_id,
+            'preparation_owner': 'PLATFORM',
+        }
+        try:
+            async with (
+                database.session_factory() as first_db,
+                database.session_factory() as second_db,
+            ):
+                first, second = await asyncio.gather(
+                    configuration_provisioning.provision_configuration(
+                        first_db, **arguments,
+                    ),
+                    configuration_provisioning.provision_configuration(
+                        second_db, **arguments,
+                    ),
+                )
+            async with database.session_factory() as db:
+                unchanged = await configuration_provisioning.plan_configuration(
+                    db, **arguments,
+                )
+                assert unchanged.operation == 'UNCHANGED'
+                with pytest.raises(
+                    configuration_provisioning.PreparationConfigurationScopeNotFoundError
+                ):
+                    await configuration_provisioning.resolve_configuration(
+                        db, tenant_id=scope.tenant_id,
+                        organization_id=scope.organization_id + 999999,
+                        location_id=scope.location_id,
+                    )
+                with pytest.raises(
+                    configuration_provisioning.PreparationConfigurationProvisioningError
+                ):
+                    await configuration_provisioning.plan_configuration(
+                        db, **{**arguments, 'preparation_owner': 'INVALID'},
+                    )
+            return (
+                first.configuration.id, second.configuration.id,
+                {first.operation, second.operation},
+            )
+        finally:
+            await database.dispose()
+
+    first_id, second_id, operations = asyncio.run(exercise())
+    assert first_id == second_id
+    assert operations == {'CREATE', 'UNCHANGED'}
+    assert _count(connection, 'location_preparation_configurations', scope.tenant_id) == 1
+    assert _count(connection, 'preparation_areas', scope.tenant_id) == 0

@@ -31,7 +31,7 @@ from app.models import (
     ProductPreparationRoute,
     Resource,
 )
-from app.restaurant.preparation import errors, service
+from app.restaurant.preparation import configuration_provisioning, errors, service
 
 
 router = APIRouter(tags=['preparation'])
@@ -139,26 +139,18 @@ async def put_configuration(
     context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.configure'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> LocationPreparationConfiguration:
-    location = await _location(db, context.tenant_id, location_id, lock=True)
-    value = await db.scalar(select(LocationPreparationConfiguration).where(
-        LocationPreparationConfiguration.location_id == location.id,
-        LocationPreparationConfiguration.tenant_id == context.tenant_id,
-    ).with_for_update())
-    if value is None:
-        value = LocationPreparationConfiguration(
-            tenant_id=context.tenant_id, organization_id=location.organization_id,
-            location_id=location.id, preparation_owner=payload.preparation_owner,
-        )
-        db.add(value)
-    else:
-        value.preparation_owner = payload.preparation_owner
     try:
-        await db.commit()
-    except IntegrityError as exc:
-        await db.rollback()
-        raise _conflict('Location Preparation Configuration update conflicted') from exc
-    await db.refresh(value)
-    return value
+        location = await _location(db, context.tenant_id, location_id)
+        result = await configuration_provisioning.provision_configuration(
+            db, tenant_id=context.tenant_id,
+            organization_id=location.organization_id, location_id=location.id,
+            preparation_owner=payload.preparation_owner,
+        )
+    except configuration_provisioning.PreparationConfigurationScopeNotFoundError as exc:
+        raise _not_found(str(exc)) from exc
+    except configuration_provisioning.PreparationConfigurationConflictError as exc:
+        raise _conflict(str(exc)) from exc
+    return result.configuration
 
 
 class PreparationAreaCreate(BaseModel):
