@@ -69,6 +69,9 @@ class Settings(BaseSettings):
     auth_access_token_ttl_minutes: int = Field(
         default=60, alias='AUTH_ACCESS_TOKEN_TTL_MINUTES', ge=1, le=1440
     )
+    identity_invitation_ttl_hours: int = Field(
+        default=72, alias='IDENTITY_INVITATION_TTL_HOURS', ge=1, le=168
+    )
     restaurant_access_code_secret: SecretStr = Field(
         alias='RESTAURANT_ACCESS_CODE_SECRET', min_length=32
     )

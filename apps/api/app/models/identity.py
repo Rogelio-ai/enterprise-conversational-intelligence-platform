@@ -8,10 +8,13 @@ from sqlalchemy import (
     DateTime,
     ForeignKey,
     ForeignKeyConstraint,
+    Index,
+    SmallInteger,
     String,
     Text,
     UniqueConstraint,
     func,
+    text,
 )
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -53,6 +56,63 @@ class User(TimestampMixin, Base):
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default='ACTIVE')
+
+
+class IdentityInvitation(TimestampMixin, Base):
+    __tablename__ = 'identity_invitations'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['inviter_tenant_id'], ['tenants.id'],
+            name='fk_identity_invitations_tenant', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['created_by_user_id'], ['users.id'],
+            name='fk_identity_invitations_creator', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['accepted_user_id'], ['users.id'],
+            name='fk_identity_invitations_accepted_user', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'invitation_id', name='uq_identity_invitations_public_id',
+        ),
+        UniqueConstraint(
+            'email', 'active_slot', name='uq_identity_invitations_active_email',
+        ),
+        CheckConstraint(
+            'active_slot IS NULL OR active_slot = 1',
+            name='ck_identity_invitations_active_slot',
+        ),
+        CheckConstraint(
+            'consumed_at IS NULL OR revoked_at IS NULL',
+            name='ck_identity_invitations_terminal_state',
+        ),
+        Index(
+            'ix_identity_invitations_lookup',
+            'invitation_id', 'active_slot', 'expires_at',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    invitation_id: Mapped[str] = mapped_column(
+        String(36, collation='ascii_bin'), nullable=False,
+    )
+    inviter_tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    created_by_user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    accepted_user_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    email: Mapped[str] = mapped_column(
+        String(320, collation='utf8mb4_bin'), nullable=False,
+    )
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    secret_digest: Mapped[str] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=False,
+    )
+    expires_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    consumed_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    revoked_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    active_slot: Mapped[int | None] = mapped_column(
+        SmallInteger, nullable=True, default=1, server_default=text('1'),
+    )
 
 
 class TenantMembership(TimestampMixin, Base):

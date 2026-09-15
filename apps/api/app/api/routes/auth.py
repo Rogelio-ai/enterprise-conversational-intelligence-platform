@@ -9,15 +9,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthenticatedContext, get_authenticated_context, get_db
 from app.core.security import create_access_token, verify_password
+from app.identity.invitations import normalize_email
 from app.models import Tenant, TenantMembership, User
 
 
 router = APIRouter(prefix='/auth', tags=['auth'])
 _DUMMY_PASSWORD_HASH = '$argon2id$v=19$m=65536,t=3,p=4$uU8CX0/5qQg0XcGXgJzYVw$Zvmh0SIePCpIIxBUPuo7M/AADFTBbeKylDyRmziVBk4'
-
-
-def normalize_email(email: str) -> str:
-    return email.strip().casefold()
 
 
 class LoginRequest(BaseModel):

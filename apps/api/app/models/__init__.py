@@ -18,6 +18,7 @@ from app.models.fiscal_product import (
 )
 from app.models.conversation import Conversation, ConversationMessage, ConversationParticipant
 from app.models.identity import (
+    IdentityInvitation,
     MembershipLocationGrant,
     MembershipRole,
     Permission,
@@ -140,6 +141,7 @@ from app.models.preparation import (
 )
 
 __all__ = [
+    'IdentityInvitation',
     'OnboardingImport',
     'BillingDocument',
     'BillingDocumentLine',
