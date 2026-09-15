@@ -146,11 +146,12 @@ ONBOARDING_CONTRACT: tuple[Group, ...] = (
     ),
     Group(
         "categories", "06_Categories", "Jerarquía de categorías de productos.", 60,
-        "organization", ("organization_code", "category_name"), "models.menu.ProductCategory",
+        "organization", ("category_key",), "models.menu.ProductCategory",
         (
+            local_key("category_key", "Clave categoría", "Referencia inequívoca de la categoría"),
             ref("organization_code", "Código organización", "restaurant_profile.organization_code", "Organización propietaria."),
-            f("category_name", "Categoría", "text", True, "Nombre único dentro de la organización."),
-            ref("parent_category_name", "Categoría padre", "categories.category_name", "Padre opcional en la misma organización.", required=False),
+            f("name", "Categoría", "text", True, "Nombre único dentro de la organización."),
+            ref("parent_category_key", "Clave categoría padre", "categories.category_key", "Padre opcional en la misma organización.", required=False),
             f("display_order", "Orden", "integer", False, "Orden de presentación, cero o mayor.", format=">=0"),
             lifecycle(),
         ),
@@ -161,7 +162,7 @@ ONBOARDING_CONTRACT: tuple[Group, ...] = (
         (
             local_key("product_key", "Clave producto", "Referencia inequívoca del producto"),
             ref("organization_code", "Código organización", "restaurant_profile.organization_code", "Organización propietaria."),
-            ref("category_name", "Categoría", "categories.category_name", "Categoría opcional.", required=False),
+            ref("category_key", "Clave categoría", "categories.category_key", "Categoría elegida explícitamente; opcional.", required=False),
             f("name", "Producto", "text", True, "Nombre visible; la plataforma no posee hoy product_code."),
             f("description", "Descripción", "text", False, "Descripción visible."),
             lifecycle(),

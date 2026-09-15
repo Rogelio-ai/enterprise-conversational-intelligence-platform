@@ -369,6 +369,11 @@ def sql_connection(integration_settings: Settings):
                 (f'{prefix}%',),
             )
             cursor.execute(
+                'DELETE FROM product_category_external_mappings WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
                 'DELETE FROM menus WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),

@@ -74,6 +74,7 @@ from app.models.menu import (
     MenuSection,
     Product,
     ProductCategory,
+    ProductCategoryExternalMapping,
     ProductExternalMapping,
 )
 from app.models.organization import Location, Organization
@@ -210,6 +211,7 @@ __all__ = [
     'PreparationRecipeVersion',
     'ReplenishmentPolicy',
     'ProductExternalMapping',
+    'ProductCategoryExternalMapping',
     'ProductFiscalClassification',
     'ProductPrice',
     'Promotion',

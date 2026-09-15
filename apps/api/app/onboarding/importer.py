@@ -27,6 +27,7 @@ from app.models import (
 )
 from app.onboarding.analyzer import AnalysisResult, AnalyzedRow
 from app.onboarding.contract import CONTRACT_VERSION, ONBOARDING_CONTRACT
+from app.restaurant.catalog import category_provisioning
 from app.restaurant.catalog import provisioning as product_provisioning
 from app.restaurant.inventory import receiving
 from app.restaurant.inventory import service as inventory_service
@@ -34,7 +35,7 @@ from app.restaurant.inventory import service as inventory_service
 
 IMPORTABLE_NOW = frozenset({
     'restaurant_profile', 'inventory_items', 'uom_conversions', 'suppliers',
-    'supplier_offerings', 'products',
+    'supplier_offerings', 'categories', 'products',
 })
 OPERATIONAL_NOT_CATALOG_IMPORT = frozenset({'payment_methods'})
 DEFERRED_PROVISIONING = frozenset(
@@ -52,6 +53,7 @@ AUTHORITY_BY_GROUP = {
     'uom_conversions': 'restaurant.inventory.service.append_item_uom_conversion',
     'suppliers': 'restaurant.inventory.receiving.create/update_supplier',
     'supplier_offerings': 'restaurant.inventory.receiving.create/update_offering',
+    'categories': 'restaurant.catalog.category_provisioning.provision_category',
     'products': 'restaurant.catalog.provisioning.provision_product',
 }
 
@@ -102,6 +104,24 @@ def _json_value(value: Any) -> Any:
     if isinstance(value, (list, tuple)):
         return [_json_value(item) for item in value]
     return value
+
+
+def _dependency_ordered_rows(rows: tuple[AnalyzedRow, ...]) -> tuple[AnalyzedRow, ...]:
+    categories = [row for row in rows if row.group == 'categories']
+    ordered_categories: list[AnalyzedRow] = []
+    remaining = list(categories)
+    while remaining:
+        remaining_keys = {row.values['category_key'] for row in remaining}
+        ready = [
+            row for row in remaining
+            if row.values['parent_category_key'] not in remaining_keys
+        ]
+        if not ready:
+            ready = remaining
+        ordered_categories.extend(ready)
+        remaining = [row for row in remaining if row not in ready]
+    iterator = iter(ordered_categories)
+    return tuple(next(iterator) if row.group == 'categories' else row for row in rows)
 
 
 def dataset_fingerprint(analysis: AnalysisResult) -> str:
@@ -242,12 +262,13 @@ async def build_import_plan(
         values=profile.values, existing_id=location.id, blocking_error=profile_error,
     )]
 
-    populated = {row.group for row in analysis.rows}
+    ordered_rows = _dependency_ordered_rows(analysis.rows)
+    populated = {row.group for row in ordered_rows}
     if populated & {'inventory_items', 'uom_conversions'} and 'inventory.manage' not in permissions:
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'inventory.manage permission is required')
     if populated & {'suppliers', 'supplier_offerings'} and 'inventory.supplier.manage' not in permissions:
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'inventory.supplier.manage permission is required')
-    if 'products' in populated and 'product.manage' not in permissions:
+    if populated & {'categories', 'products'} and 'product.manage' not in permissions:
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'product.manage permission is required')
 
     product_namespace = product_provisioning.onboarding_binding_namespace(
@@ -271,7 +292,10 @@ async def build_import_plan(
         ).all()
     }
 
-    for row in analysis.rows:
+    category_keys = {
+        row.values['category_key'] for row in ordered_rows if row.group == 'categories'
+    }
+    for row in ordered_rows:
         if row.group == 'restaurant_profile':
             continue
         if row.group not in IMPORTABLE_NOW:
@@ -285,15 +309,36 @@ async def build_import_plan(
             ))
             continue
         value = row.values
-        if row.group == 'products':
+        if row.group == 'categories':
+            blocker = None
+            try:
+                category_plan = await category_provisioning.plan_category(
+                    db, tenant_id=tenant_id, organization_id=organization.id,
+                    binding_namespace=product_namespace,
+                    category_key=value['category_key'],
+                    parent_category_key=value['parent_category_key'],
+                    name=value['name'], display_order=value['display_order'] or 0,
+                    status=value['status'],
+                    allow_unresolved_parent=value['parent_category_key'] in category_keys,
+                )
+                operation, current_id = category_plan.operation, category_plan.category_id
+            except category_provisioning.CategoryProvisioningError as exc:
+                operation, current_id, blocker = 'CREATE', None, str(exc)
+            items.append(PlanItem(
+                row.group, row.row, row.business_key, operation,
+                AUTHORITY_BY_GROUP[row.group], value, current_id,
+                blocking_error=blocker,
+            ))
+        elif row.group == 'products':
             blocker = None
             try:
                 product_plan = await product_provisioning.plan_product(
                     db, tenant_id=tenant_id, organization_id=organization.id,
                     binding_namespace=product_namespace,
                     product_key=value['product_key'],
-                    category_name=value['category_name'], name=value['name'],
+                    category_key=value['category_key'], name=value['name'],
                     description=value['description'], status=value['status'],
+                    allow_unresolved_category=value['category_key'] in category_keys,
                 )
                 operation, current_id = product_plan.operation, product_plan.product_id
             except product_provisioning.ProductProvisioningError as exc:
@@ -529,7 +574,21 @@ async def confirm_import(
                 continue
             value = item.values
             actual_operation = item.operation
-            if item.group == 'products':
+            if item.group == 'categories':
+                result = await category_provisioning.provision_category(
+                    db, tenant_id=tenant_id,
+                    organization_id=plan.scope.organization_id,
+                    binding_namespace=product_provisioning.onboarding_binding_namespace(
+                        contract_version=CONTRACT_VERSION,
+                        organization_id=plan.scope.organization_id,
+                    ),
+                    category_key=value['category_key'],
+                    parent_category_key=value['parent_category_key'],
+                    name=value['name'], display_order=value['display_order'] or 0,
+                    status=value['status'],
+                )
+                actual_operation = result.operation
+            elif item.group == 'products':
                 result = await product_provisioning.provision_product(
                     db, tenant_id=tenant_id,
                     organization_id=plan.scope.organization_id,
@@ -538,7 +597,7 @@ async def confirm_import(
                         organization_id=plan.scope.organization_id,
                     ),
                     product_key=value['product_key'],
-                    category_name=value['category_name'], name=value['name'],
+                    category_key=value['category_key'], name=value['name'],
                     description=value['description'], status=value['status'],
                 )
                 actual_operation = result.operation

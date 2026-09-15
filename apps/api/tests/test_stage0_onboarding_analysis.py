@@ -54,8 +54,8 @@ def _add_restaurant(workbook) -> None:
 
 def _add_valid_menu_dataset(workbook) -> None:
     _add_restaurant(workbook)
-    _set_row(workbook, "06_Categories", ("ORG-01", "Tacos", None, 0, "ACTIVE"))
-    _set_row(workbook, "07_Products", ("TACO-1", "ORG-01", "Tacos", " Taco al pastor ", None, "ACTIVE"))
+    _set_row(workbook, "06_Categories", ("TACOS", "ORG-01", "Tacos", None, 0, "ACTIVE"))
+    _set_row(workbook, "07_Products", ("TACO-1", "ORG-01", "TACOS", " Taco al pastor ", None, "ACTIVE"))
     _set_row(workbook, "08_Menus", ("MENU-1", "ORG-01", "Cena", "LOC-01", "ACTIVE"))
     _set_row(workbook, "09_Menu_Sections", ("SEC-1", "MENU-1", "Principal", " 2 ", "ACTIVE"))
     _set_row(workbook, "10_Menu_Items", ("MENU-1", "SEC-1", "TACO-1", 1, "ACTIVE"))
@@ -190,7 +190,7 @@ def test_invalid_enum_decimal_duplicates_and_unresolved_references_are_reported(
     assert result.invalid_rows == 3
     assert ("products", "status", "INVALID_FIELD_VALUE") in errors
     assert ("prices", "amount", "INVALID_FIELD_VALUE") in errors
-    assert ("products", "category_name", "UNRESOLVED_REFERENCE") in errors
+    assert ("products", "category_key", "UNRESOLVED_REFERENCE") in errors
     assert sum(error.code == "DUPLICATE_BUSINESS_KEY" for error in result.errors) == 2
     assert any(error.code == "AMBIGUOUS_REFERENCE" for error in result.errors)
 
@@ -227,6 +227,34 @@ def test_scoped_references_uom_and_conditional_rules_validate_without_persistenc
     assert "asyncsession" not in source
     assert ".commit(" not in source
     assert "session.add(" not in source
+
+
+def test_legacy_category_name_headers_map_to_explicit_stable_references() -> None:
+    def edit(workbook) -> None:
+        _add_restaurant(workbook)
+        legacy_category_headers = (
+            "organization_code", "category_name", "parent_category_name",
+            "display_order", "status",
+        )
+        for column, header in enumerate(legacy_category_headers, start=1):
+            workbook["06_Categories"].cell(1, column, header)
+        workbook["06_Categories"].cell(1, 6).value = None
+        workbook["07_Products"].cell(1, 3, "category_name")
+        _set_row(workbook, "06_Categories", ("ORG-01", "Tacos", None, 0, "ACTIVE"))
+        workbook["06_Categories"].cell(2, 6).value = None
+        _set_row(
+            workbook, "07_Products",
+            ("TACO-1", "ORG-01", "Tacos", "Taco", None, "ACTIVE"),
+        )
+
+    result = analyze_xlsx(_edited_workbook(edit))
+    category = next(row for row in result.rows if row.group == "categories")
+    product = next(row for row in result.rows if row.group == "products")
+
+    assert result.status == "VALID"
+    assert category.values["category_key"] == category.values["name"] == "Tacos"
+    assert product.values["category_key"] == "Tacos"
+    assert result.persisted_rows == 0
 
 
 def test_menu_item_section_must_belong_to_its_referenced_menu() -> None:

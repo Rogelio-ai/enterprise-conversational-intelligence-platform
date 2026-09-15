@@ -96,6 +96,46 @@ class ProductCategory(TimestampMixin, Base):
     )
 
 
+class ProductCategoryExternalMapping(Base):
+    __tablename__ = 'product_category_external_mappings'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['tenant_id'], ['tenants.id'],
+            name='fk_product_category_external_mappings_tenant', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['category_id', 'tenant_id', 'organization_id'],
+            [
+                'product_categories.id',
+                'product_categories.tenant_id',
+                'product_categories.organization_id',
+            ],
+            name='fk_product_category_external_mappings_category_scope',
+            ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'organization_id', 'connector_key', 'external_category_id',
+            name='uq_product_category_external_mapping_source',
+        ),
+        Index(
+            'ix_product_category_external_mappings_category',
+            'tenant_id', 'organization_id', 'category_id', 'id',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    category_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    connector_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    external_category_id: Mapped[str] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class Product(TimestampMixin, Base):
     __tablename__ = 'products'
     __table_args__ = (

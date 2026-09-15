@@ -9,6 +9,7 @@ from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import Organization, Product, ProductCategory, ProductExternalMapping
+from app.restaurant.catalog import category_provisioning
 
 
 class ProductProvisioningError(ValueError):
@@ -217,16 +218,25 @@ def _operation(
 
 async def plan_product(
     db: AsyncSession, *, tenant_id: int, organization_id: int,
-    binding_namespace: str, product_key: str, category_name: str | None,
+    binding_namespace: str, product_key: str, category_key: str | None,
     name: str, description: str | None, status: str,
+    allow_unresolved_category: bool = False,
 ) -> ProductProvisioningPlan:
     await _organization(db, tenant_id=tenant_id, organization_id=organization_id)
     namespace = _binding(binding_namespace, field='Product binding namespace', maximum=128)
     key = _binding(product_key, field='Product operator key', maximum=200)
-    category = await _category(
-        db, tenant_id=tenant_id, organization_id=organization_id,
-        category_name=category_name,
-    )
+    category = None
+    unresolved_category = False
+    if category_key is not None:
+        try:
+            category = await category_provisioning.resolve_category_binding(
+                db, tenant_id=tenant_id, organization_id=organization_id,
+                binding_namespace=namespace, category_key=category_key,
+            )
+        except category_provisioning.CategoryProvisioningError as exc:
+            if not allow_unresolved_category:
+                raise ProductScopeNotFoundError(str(exc)) from exc
+            unresolved_category = True
     normalized_name = _text(name, field='Product name', maximum=200)
     normalized_description = _description(description)
     normalized_status = _status(status)
@@ -242,6 +252,8 @@ async def plan_product(
             name=normalized_name, description=normalized_description,
             status=normalized_status,
         )
+        if unresolved_category:
+            operation = 'UPDATE'
         product_id = product.id
     return ProductProvisioningPlan(
         operation, namespace, key, None if category is None else category.id, product_id,
@@ -250,13 +262,13 @@ async def plan_product(
 
 async def provision_product(
     db: AsyncSession, *, tenant_id: int, organization_id: int,
-    binding_namespace: str, product_key: str, category_name: str | None,
+    binding_namespace: str, product_key: str, category_key: str | None,
     name: str, description: str | None, status: str,
 ) -> ProductProvisioningResult:
     plan = await plan_product(
         db, tenant_id=tenant_id, organization_id=organization_id,
         binding_namespace=binding_namespace, product_key=product_key,
-        category_name=category_name, name=name, description=description, status=status,
+        category_key=category_key, name=name, description=description, status=status,
     )
     if plan.product_id is not None:
         product = await db.scalar(select(Product).where(

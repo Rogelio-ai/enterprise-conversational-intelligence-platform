@@ -1,28 +1,24 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthenticatedContext, get_db, require_permission
 from app.core.middleware import get_correlation_id
 from app.models import Menu, Organization, Product, ProductCategory
 from app.restaurant.catalog.queries import product_statement
-from app.restaurant.catalog import provisioning, structure
+from app.restaurant.catalog import category_provisioning, provisioning, structure
 
 
 Lifecycle = Literal['ACTIVE', 'INACTIVE']
 router = APIRouter(tags=['products'])
 logger = logging.getLogger('ecip.products')
-_DUPLICATE_KEY_PATTERN = re.compile(r"for key [`'\"]([^`'\"]+)[`'\"]", re.IGNORECASE)
-_CATEGORY_NAME_CONSTRAINT = 'uq_product_categories_tenant_org_name'
 
 
 class ProductCategoryCreateRequest(BaseModel):
@@ -126,21 +122,6 @@ def _not_found(entity: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail=f'{entity} not found')
 
 
-def _duplicate_category() -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail='Product Category name already exists in this Organization',
-    )
-
-
-def _is_constraint(exc: IntegrityError, constraint_name: str) -> bool:
-    arguments = getattr(exc.orig, 'args', ())
-    if len(arguments) < 2 or arguments[0] != 1062:
-        return False
-    match = _DUPLICATE_KEY_PATTERN.search(str(arguments[1]))
-    return match is not None and match.group(1).rsplit('.', 1)[-1] == constraint_name
-
-
 async def _get_organization(
     db: AsyncSession, *, tenant_id: int, organization_id: int
 ) -> Organization:
@@ -228,37 +209,18 @@ async def create_product_category(
     context: Annotated[AuthenticatedContext, Depends(require_permission('product.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ProductCategory:
-    await _get_organization(
-        db, tenant_id=context.tenant_id, organization_id=payload.organization_id
-    )
-    if payload.parent_id is not None:
-        try:
-            await structure.validate_new_category_parent(
-                db,
-                tenant_id=context.tenant_id,
-                organization_id=payload.organization_id,
-                parent_id=payload.parent_id,
-            )
-        except structure.StructureNotFoundError as exc:
-            await db.rollback()
-            raise _not_found('Parent Product Category') from exc
-    category = ProductCategory(
-        tenant_id=context.tenant_id,
-        organization_id=payload.organization_id,
-        parent_id=payload.parent_id,
-        name=payload.name,
-        display_order=payload.display_order,
-        status='ACTIVE',
-    )
-    db.add(category)
     try:
-        await db.commit()
-    except IntegrityError as exc:
+        category = await category_provisioning.create_category(
+            db, tenant_id=context.tenant_id,
+            organization_id=payload.organization_id,
+            parent_id=payload.parent_id, name=payload.name,
+            display_order=payload.display_order,
+        )
+    except category_provisioning.CategoryScopeNotFoundError as exc:
         await db.rollback()
-        if _is_constraint(exc, _CATEGORY_NAME_CONSTRAINT):
-            raise _duplicate_category() from exc
-        raise
-    await db.refresh(category)
+        raise _not_found(str(exc).removesuffix(' not found')) from exc
+    except category_provisioning.CategoryConflictError as exc:
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     logger.info(
         'Product Category created',
         extra={
@@ -282,34 +244,17 @@ async def update_product_category(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ProductCategory:
     updates = payload.model_dump(exclude_unset=True)
-    if 'parent_id' in updates:
-        try:
-            category = await structure.set_category_parent(
-                db,
-                tenant_id=context.tenant_id,
-                category_id=category_id,
-                parent_id=updates.pop('parent_id'),
-            )
-        except structure.StructureNotFoundError as exc:
-            await db.rollback()
-            raise _not_found(str(exc).removesuffix(' not found')) from exc
-        except structure.StructureConflictError as exc:
-            await db.rollback()
-            raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
-    else:
-        category = await _get_category(
-            db, tenant_id=context.tenant_id, category_id=category_id, for_update=True
-        )
-    for field, value in updates.items():
-        setattr(category, field, value)
     try:
-        await db.commit()
-    except IntegrityError as exc:
+        category = await category_provisioning.update_category(
+            db, tenant_id=context.tenant_id,
+            category_id=category_id, changes=updates,
+        )
+    except category_provisioning.CategoryScopeNotFoundError as exc:
         await db.rollback()
-        if _is_constraint(exc, _CATEGORY_NAME_CONSTRAINT):
-            raise _duplicate_category() from exc
-        raise
-    await db.refresh(category)
+        raise _not_found(str(exc).removesuffix(' not found')) from exc
+    except category_provisioning.CategoryConflictError as exc:
+        await db.rollback()
+        raise HTTPException(status.HTTP_409_CONFLICT, str(exc)) from exc
     logger.info(
         'Product Category updated',
         extra={

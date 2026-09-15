@@ -34,6 +34,31 @@ _EMAIL_PATTERN = re.compile(r"^[^\s@]+@[^\s@]+$")
 _LANGUAGE_PATTERN = re.compile(r"^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$")
 _UNIT_PATTERN = re.compile(r"^[A-Z][A-Z0-9_]{0,31}$")
 _DECIMAL_SHAPE = re.compile(r"decimal\((\d+),(\d+)\)")
+_LEGACY_HEADERS = {
+    "categories": (
+        "organization_code", "category_name", "parent_category_name",
+        "display_order", "status",
+    ),
+    "products": (
+        "product_key", "organization_code", "category_name",
+        "name", "description", "status",
+    ),
+}
+_LEGACY_CATEGORY_FIELDS = (
+    Field("organization_code", "Código organización", "text", True, "", reference="restaurant_profile.organization_code"),
+    Field("category_name", "Categoría", "text", True, ""),
+    Field("parent_category_name", "Categoría padre", "text", False, "", reference="categories.category_name"),
+    Field("display_order", "Orden", "integer", False, "", format=">=0"),
+    Field("status", "Estado", "enum", True, "", allowed_values=("ACTIVE", "INACTIVE")),
+)
+_LEGACY_PRODUCT_FIELDS = (
+    Field("product_key", "Clave producto", "text", True, "", format="^[A-Z][A-Z0-9_-]{0,63}$"),
+    Field("organization_code", "Código organización", "text", True, "", reference="restaurant_profile.organization_code"),
+    Field("category_name", "Categoría", "text", False, "", reference="categories.category_name"),
+    Field("name", "Producto", "text", True, ""),
+    Field("description", "Descripción", "text", False, ""),
+    Field("status", "Estado", "enum", True, "", allowed_values=("ACTIVE", "INACTIVE")),
+)
 
 
 @dataclass(frozen=True, slots=True)
@@ -288,6 +313,8 @@ def _validate_structure(workbook: Any) -> tuple[str | None, list[AnalysisIssue],
             )
         headers = _trimmed_headers(sheet)
         expected = tuple(field.key for field in group.fields)
+        legacy = _LEGACY_HEADERS.get(group.key)
+        accepted_legacy = headers == legacy
         duplicates = sorted({header for header in headers if header is not None and headers.count(header) > 1})
         for header in duplicates:
             errors.append(
@@ -300,7 +327,9 @@ def _validate_structure(workbook: Any) -> tuple[str | None, list[AnalysisIssue],
                     field=str(header),
                 )
             )
-        missing_headers = [header for header in expected if header not in headers]
+        missing_headers = [] if accepted_legacy else [
+            header for header in expected if header not in headers
+        ]
         for header in missing_headers:
             errors.append(
                 _workbook_issue(
@@ -312,7 +341,7 @@ def _validate_structure(workbook: Any) -> tuple[str | None, list[AnalysisIssue],
                     field=header,
                 )
             )
-        if headers != expected and not missing_headers and not duplicates:
+        if headers != expected and not accepted_legacy and not missing_headers and not duplicates:
             errors.append(
                 _workbook_issue(
                     "INVALID_HEADER_CONTRACT",
@@ -322,12 +351,13 @@ def _validate_structure(workbook: Any) -> tuple[str | None, list[AnalysisIssue],
                     row=1,
                 )
             )
-        if sheet.max_column > len(expected):
+        contract_width = len(headers) if accepted_legacy else len(expected)
+        if sheet.max_column > contract_width:
             for row_number in _populated_row_numbers(sheet):
                 if any(
                     sheet.cell(row_number, column).data_type == "f"
                     or _blank_to_none(sheet.cell(row_number, column).value) is not None
-                    for column in range(len(expected) + 1, sheet.max_column + 1)
+                    for column in range(contract_width + 1, sheet.max_column + 1)
                 ):
                     errors.append(
                         _workbook_issue(
@@ -352,7 +382,15 @@ def _parse_rows(workbook: Any) -> list[_WorkingRow]:
     rows: list[_WorkingRow] = []
     for group in ONBOARDING_CONTRACT:
         sheet = workbook[group.sheet]
-        width = len(group.fields)
+        headers = _trimmed_headers(sheet)
+        legacy = headers == _LEGACY_HEADERS.get(group.key)
+        if legacy and group.key == "categories":
+            fields = _LEGACY_CATEGORY_FIELDS
+        elif legacy and group.key == "products":
+            fields = _LEGACY_PRODUCT_FIELDS
+        else:
+            fields = group.fields
+        width = len(fields)
         for excel_row in _populated_row_numbers(sheet):
             cells = tuple(sheet.cell(excel_row, column) for column in range(1, width + 1))
             errors: list[AnalysisIssue] = []
@@ -366,11 +404,24 @@ def _parse_rows(workbook: Any) -> list[_WorkingRow]:
                     )
                 )
             values: dict[str, Any] = {}
-            for field, cell in zip(group.fields, cells):
+            for field, cell in zip(fields, cells):
                 normalized, error = _normalize_cell(group, excel_row, field, cell)
                 values[field.key] = normalized
                 if error is not None:
                     errors.append(error)
+            if legacy and group.key == "categories":
+                category_name = values.pop("category_name")
+                parent_name = values.pop("parent_category_name")
+                values = {
+                    "category_key": category_name,
+                    "organization_code": values["organization_code"],
+                    "name": category_name,
+                    "parent_category_key": parent_name,
+                    "display_order": values["display_order"],
+                    "status": values["status"],
+                }
+            elif legacy and group.key == "products":
+                values["category_key"] = values.pop("category_name")
             _validate_row_semantics(group, excel_row, values, errors)
             rows.append(_WorkingRow(group, excel_row, values, errors))
     return rows

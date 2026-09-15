@@ -11,6 +11,7 @@ from app.main import create_app
 from app.onboarding.importer import coverage
 from app.onboarding.contract import CONTRACT_VERSION
 from app.onboarding.xlsx import deterministic_bytes
+from app.restaurant.catalog import category_provisioning
 from app.restaurant.catalog import provisioning as product_provisioning
 from app.restaurant.inventory import service as inventory_service
 from test_inventory_recipe_stock_foundation import _headers, _permission, _scope
@@ -25,6 +26,7 @@ def test_all_contract_groups_have_one_explicit_import_classification() -> None:
     by_group = {value['group']: value for value in values}
     assert len(by_group) == 32
     assert by_group['inventory_items']['classification'] == 'IMPORTABLE_NOW'
+    assert by_group['categories']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['products']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['staff']['classification'] == 'DEFERRED_PROVISIONING'
     assert by_group['tax_rules']['classification'] == 'DEFERRED_PROVISIONING'
@@ -40,7 +42,7 @@ def _set_row(workbook, sheet: str, values: tuple[object, ...], row: int = 2) -> 
 
 def _workbook(
     tenant_slug: str, *, item_code: str = 'FLOUR', product: bool = False,
-    deferred_resource: bool = False,
+    category_product: bool = False, deferred_resource: bool = False,
 ) -> bytes:
     workbook = load_workbook(BytesIO(deterministic_bytes()), data_only=False)
     _set_row(workbook, '01_Restaurant', (
@@ -61,9 +63,15 @@ def _workbook(
     _set_row(workbook, '22_Supplier_Offers', (
         f'SUP-{item_code}', 'LOC', item_code, None, 'G', 'ACTIVE',
     ))
-    if product:
+    if category_product:
+        _set_row(workbook, '06_Categories', (
+            f'CAT-{item_code}', 'ORG', f'Category {item_code}', None, 0, 'ACTIVE',
+        ))
+    if product or category_product:
         _set_row(workbook, '07_Products', (
-            f'PROD-{item_code}', 'ORG', None, f'Product {item_code}', None, 'ACTIVE',
+            f'PROD-{item_code}', 'ORG',
+            f'CAT-{item_code}' if category_product else None,
+            f'Product {item_code}', None, 'ACTIVE',
         ))
     if deferred_resource:
         _set_row(workbook, '03_Resources', (
@@ -280,6 +288,169 @@ def test_product_import_binding_update_replay_and_distinct_keys(
     assert updated.json()['groups']['products']['updated'] == 1
     assert updated.json()['groups']['products']['unchanged'] == 1
     assert _count(connection, 'products', scope.tenant_id) == 2
+
+
+def test_category_import_precedes_and_resolves_explicit_product_category(
+    client, sql_connection, integration_settings,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(
+        f'{prefix}-onboarding', item_code='MENU', category_product=True,
+    )
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    _set_row(workbook, '06_Categories', (
+        'CAT-CHILD', 'ORG', 'Child', 'CAT-MENU', 2, 'ACTIVE',
+    ), row=2)
+    _set_row(workbook, '06_Categories', (
+        'CAT-MENU', 'ORG', 'Menu', None, 1, 'ACTIVE',
+    ), row=3)
+    workbook['07_Products']['C2'] = 'CAT-CHILD'
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    content = output.getvalue()
+
+    analysis = _analyze(client, headers, content)
+    assert analysis.status_code == 200
+    assert analysis.json()['analysis']['status'] == 'VALID'
+    fingerprint = analysis.json()['dataset_fingerprint']
+    first = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert first.status_code == 201, first.text
+    result = first.json()
+    assert result['groups']['categories']['created'] == 2
+    assert result['groups']['products']['created'] == 1
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT id,parent_id,name FROM product_categories '
+            'WHERE tenant_id=%s ORDER BY name', (scope.tenant_id,),
+        )
+        categories = cursor.fetchall()
+        cursor.execute(
+            'SELECT category_id FROM products WHERE tenant_id=%s',
+            (scope.tenant_id,),
+        )
+        product = cursor.fetchone()
+    by_name = {row['name']: row for row in categories}
+    assert by_name['Child']['parent_id'] == by_name['Menu']['id']
+    assert product['category_id'] == by_name['Child']['id']
+    assert _count(connection, 'product_category_external_mappings', scope.tenant_id) == 2
+
+    async def resolve_category() -> int:
+        from app.db.session import DatabaseManager
+
+        database = DatabaseManager(integration_settings)
+        try:
+            async with database.session_factory() as db:
+                category = await category_provisioning.resolve_category_binding(
+                    db, tenant_id=scope.tenant_id,
+                    organization_id=scope.organization_id,
+                    binding_namespace=category_provisioning.onboarding_binding_namespace(
+                        contract_version=CONTRACT_VERSION,
+                        organization_id=scope.organization_id,
+                    ),
+                    category_key='CAT-CHILD',
+                )
+                return category.id
+        finally:
+            await database.dispose()
+
+    assert asyncio.run(resolve_category()) == by_name['Child']['id']
+    replay = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert replay.status_code == 200 and replay.json()['replay'] is True
+    assert _count(connection, 'product_categories', scope.tenant_id) == 2
+
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    workbook['06_Categories']['C2'] = 'Renamed Child'
+    workbook['06_Categories']['E2'] = 4
+    changed_output = BytesIO()
+    workbook.save(changed_output)
+    workbook.close()
+    changed = changed_output.getvalue()
+    changed_fingerprint = _analyze(client, headers, changed).json()['dataset_fingerprint']
+    updated = _confirm(client, headers, changed, scope.location_id, changed_fingerprint)
+    assert updated.status_code == 201, updated.text
+    assert updated.json()['groups']['categories']['updated'] == 1
+    assert updated.json()['groups']['categories']['unchanged'] == 1
+    assert updated.json()['groups']['products']['unchanged'] == 1
+    assert _count(connection, 'product_categories', scope.tenant_id) == 2
+
+
+def test_category_name_conflict_fails_without_ambiguous_binding(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(f'{prefix}-onboarding', item_code='CATEGORY')
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    _set_row(workbook, '06_Categories', (
+        'CAT-A', 'ORG', 'Same category', None, 0, 'ACTIVE',
+    ))
+    _set_row(workbook, '06_Categories', (
+        'CAT-B', 'ORG', 'Same category', None, 0, 'ACTIVE',
+    ), row=3)
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    content = output.getvalue()
+    fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
+
+    response = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert result['groups']['categories']['created'] == 1
+    assert result['groups']['categories']['failed'] == 1
+    assert _count(connection, 'product_categories', scope.tenant_id) == 1
+    assert _count(connection, 'product_category_external_mappings', scope.tenant_id) == 1
+
+
+def test_concurrent_category_binding_reconciles_and_rejects_cross_scope_resolution(
+    sql_connection, integration_settings,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+
+    async def exercise() -> tuple[int, int]:
+        from app.db.session import DatabaseManager
+
+        database = DatabaseManager(integration_settings)
+        namespace = category_provisioning.onboarding_binding_namespace(
+            contract_version=CONTRACT_VERSION,
+            organization_id=scope.organization_id,
+        )
+        arguments = {
+            'tenant_id': scope.tenant_id,
+            'organization_id': scope.organization_id,
+            'binding_namespace': namespace,
+            'category_key': 'CONCURRENT',
+            'parent_category_key': None,
+            'name': 'Concurrent category',
+            'display_order': 0,
+            'status': 'ACTIVE',
+        }
+        try:
+            async with database.session_factory() as first_db, database.session_factory() as second_db:
+                first, second = await asyncio.gather(
+                    category_provisioning.provision_category(first_db, **arguments),
+                    category_provisioning.provision_category(second_db, **arguments),
+                )
+            async with database.session_factory() as db:
+                with pytest.raises(category_provisioning.CategoryScopeNotFoundError):
+                    await category_provisioning.resolve_category_binding(
+                        db, tenant_id=scope.tenant_id,
+                        organization_id=scope.organization_id + 999999,
+                        binding_namespace=namespace, category_key='CONCURRENT',
+                    )
+            return first.category.id, second.category.id
+        finally:
+            await database.dispose()
+
+    first_id, second_id = asyncio.run(exercise())
+    assert first_id == second_id
+    assert _count(connection, 'product_categories', scope.tenant_id) == 1
+    assert _count(connection, 'product_category_external_mappings', scope.tenant_id) == 1
 
 
 def test_product_binding_conflict_across_organization_blocks_before_product_write(
