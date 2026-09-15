@@ -14,7 +14,11 @@ from app.onboarding.xlsx import deterministic_bytes
 from app.restaurant.catalog import category_provisioning
 from app.restaurant.catalog import provisioning as product_provisioning
 from app.restaurant import resource_provisioning
-from app.restaurant.preparation import area_provisioning, configuration_provisioning
+from app.restaurant.preparation import (
+    area_provisioning,
+    configuration_provisioning,
+    route_provisioning,
+)
 from app.restaurant.inventory import service as inventory_service
 from test_inventory_recipe_stock_foundation import _headers, _permission, _scope
 
@@ -31,6 +35,7 @@ def test_all_contract_groups_have_one_explicit_import_classification() -> None:
     assert by_group['resources']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['preparation_configuration']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['preparation_areas']['classification'] == 'IMPORTABLE_NOW'
+    assert by_group['preparation_routes']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['categories']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['products']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['staff']['classification'] == 'DEFERRED_PROVISIONING'
@@ -49,7 +54,7 @@ def _workbook(
     tenant_slug: str, *, item_code: str = 'FLOUR', product: bool = False,
     category_product: bool = False, resource: bool = False,
     preparation_configuration: bool = False, preparation_area: bool = False,
-    area_resource: bool = False,
+    area_resource: bool = False, preparation_route: bool = False,
 ) -> bytes:
     workbook = load_workbook(BytesIO(deterministic_bytes()), data_only=False)
     _set_row(workbook, '01_Restaurant', (
@@ -90,6 +95,10 @@ def _workbook(
         _set_row(workbook, '05_Prep_Areas', (
             'LOC', f'AREA-{item_code}', f'Area {item_code}',
             f'RESOURCE-{item_code}' if area_resource else None, 'ACTIVE',
+        ))
+    if preparation_route:
+        _set_row(workbook, '27_Prep_Routes', (
+            f'PROD-{item_code}', 'LOC', 'AREA', f'AREA-{item_code}', 'ACTIVE',
         ))
     output = BytesIO()
     workbook.save(output)
@@ -969,3 +978,202 @@ def test_preparation_area_authority_is_scoped_convergent_and_never_creates_resou
     assert _count(connection, 'resources', scope.tenant_id) == 1
     assert _count(connection, 'preparation_areas', scope.tenant_id) == 1
     assert _count(connection, 'product_preparation_routes', scope.tenant_id) == 0
+
+
+def test_preparation_route_import_preserves_history_and_replays(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(
+        f'{prefix}-onboarding', item_code='ROUTE', category_product=True,
+        preparation_configuration=True, preparation_area=True,
+        preparation_route=True,
+    )
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    _set_row(workbook, '05_Prep_Areas', (
+        'LOC', 'AREA-SECOND', 'Second Area', None, 'ACTIVE',
+    ), row=3)
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    content = output.getvalue()
+    fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
+
+    response = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert result['groups']['preparation_routes'] == {
+        'classification': 'IMPORTABLE_NOW',
+        'authority': (
+            'restaurant.preparation.route_provisioning.provision_route_binding'
+        ),
+        'required_for_stage0': True,
+        'planned': 1, 'created': 1, 'updated': 0, 'unchanged': 0,
+        'deferred': 0, 'failed': 0,
+    }
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT r.id,r.policy,r.status,r.active_slot,a.code AS area_code '
+            'FROM product_preparation_routes r '
+            'LEFT JOIN preparation_areas a ON a.id=r.preparation_area_id '
+            'WHERE r.tenant_id=%s ORDER BY r.id', (scope.tenant_id,),
+        )
+        first_routes = cursor.fetchall()
+    assert len(first_routes) == 1
+    assert first_routes[0] == {
+        'id': first_routes[0]['id'], 'policy': 'AREA', 'status': 'ACTIVE',
+        'active_slot': 1, 'area_code': 'AREA-ROUTE',
+    }
+    original_route_id = first_routes[0]['id']
+    assert _count(connection, 'preparation_works', scope.tenant_id) == 0
+
+    replay = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert replay.status_code == 200
+    assert replay.json()['replay'] is True
+    assert replay.json()['import_id'] == result['import_id']
+    assert _count(connection, 'product_preparation_routes', scope.tenant_id) == 1
+
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    workbook['05_Prep_Areas']['C2'] = 'Renamed Route Area'
+    unchanged_output = BytesIO()
+    workbook.save(unchanged_output)
+    workbook.close()
+    unchanged_content = unchanged_output.getvalue()
+    unchanged_fingerprint = _analyze(
+        client, headers, unchanged_content,
+    ).json()['dataset_fingerprint']
+    unchanged = _confirm(
+        client, headers, unchanged_content, scope.location_id,
+        unchanged_fingerprint,
+    )
+    assert unchanged.status_code == 201, unchanged.text
+    assert unchanged.json()['groups']['preparation_routes']['unchanged'] == 1
+    assert _count(connection, 'product_preparation_routes', scope.tenant_id) == 1
+
+    workbook = load_workbook(BytesIO(unchanged_content), data_only=False)
+    workbook['27_Prep_Routes']['D2'] = 'AREA-SECOND'
+    changed_output = BytesIO()
+    workbook.save(changed_output)
+    workbook.close()
+    changed = changed_output.getvalue()
+    changed_fingerprint = _analyze(client, headers, changed).json()['dataset_fingerprint']
+    updated = _confirm(
+        client, headers, changed, scope.location_id, changed_fingerprint,
+    )
+    assert updated.status_code == 201, updated.text
+    assert updated.json()['groups']['preparation_routes']['updated'] == 1
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT r.id,r.policy,r.status,r.active_slot,a.code AS area_code '
+            'FROM product_preparation_routes r '
+            'LEFT JOIN preparation_areas a ON a.id=r.preparation_area_id '
+            'WHERE r.tenant_id=%s ORDER BY r.id', (scope.tenant_id,),
+        )
+        routes = cursor.fetchall()
+    assert len(routes) == 2
+    assert routes[0] == {
+        'id': original_route_id, 'policy': 'AREA', 'status': 'INACTIVE',
+        'active_slot': None, 'area_code': 'AREA-ROUTE',
+    }
+    assert routes[1]['policy'] == 'AREA'
+    assert routes[1]['status'] == 'ACTIVE'
+    assert routes[1]['active_slot'] == 1
+    assert routes[1]['area_code'] == 'AREA-SECOND'
+    assert _count(connection, 'preparation_works', scope.tenant_id) == 0
+
+
+def test_preparation_route_bindings_are_scoped_and_concurrency_safe(
+    client, sql_connection, integration_settings,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(
+        f'{prefix}-onboarding', item_code='CONCURRENT',
+        category_product=True, preparation_area=True,
+    )
+    fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
+    prepared = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert prepared.status_code == 201, prepared.text
+    assert _count(connection, 'product_preparation_routes', scope.tenant_id) == 0
+
+    async def exercise() -> tuple[int, int, set[str]]:
+        from app.db.session import DatabaseManager
+
+        database = DatabaseManager(integration_settings)
+        namespace = product_provisioning.onboarding_binding_namespace(
+            contract_version=CONTRACT_VERSION,
+            organization_id=scope.organization_id,
+        )
+        arguments = {
+            'tenant_id': scope.tenant_id,
+            'organization_id': scope.organization_id,
+            'location_id': scope.location_id,
+            'binding_namespace': namespace,
+            'product_key': 'PROD-CONCURRENT',
+            'policy': 'AREA',
+            'preparation_area_code': 'AREA-CONCURRENT',
+            'status': 'ACTIVE',
+        }
+        try:
+            async with database.session_factory() as db:
+                with pytest.raises(
+                    route_provisioning.PreparationRouteScopeNotFoundError
+                ):
+                    await route_provisioning.plan_route_binding(
+                        db, **{**arguments, 'product_key': 'UNKNOWN'},
+                    )
+                with pytest.raises(
+                    route_provisioning.PreparationRouteScopeNotFoundError
+                ):
+                    await route_provisioning.plan_route_binding(
+                        db, **{**arguments,
+                               'location_id': scope.location_id + 999999},
+                    )
+                with pytest.raises(
+                    route_provisioning.PreparationRouteScopeNotFoundError
+                ):
+                    await route_provisioning.plan_route_binding(
+                        db, **{**arguments,
+                               'preparation_area_code': 'UNKNOWN'},
+                    )
+                with pytest.raises(
+                    route_provisioning.PreparationRouteConflictError
+                ):
+                    await route_provisioning.plan_route_binding(
+                        db, **{**arguments, 'status': 'INACTIVE'},
+                    )
+                with pytest.raises(
+                    route_provisioning.PreparationRouteProvisioningError
+                ):
+                    await route_provisioning.plan_route_binding(
+                        db, **{**arguments, 'policy': 'COMPONENTS'},
+                    )
+            async with (
+                database.session_factory() as first_db,
+                database.session_factory() as second_db,
+            ):
+                first, second = await asyncio.gather(
+                    route_provisioning.provision_route_binding(
+                        first_db, **arguments,
+                    ),
+                    route_provisioning.provision_route_binding(
+                        second_db, **arguments,
+                    ),
+                )
+            return (
+                first.route.id, second.route.id,
+                {first.operation, second.operation},
+            )
+        finally:
+            await database.dispose()
+
+    first_id, second_id, operations = asyncio.run(exercise())
+    assert first_id == second_id
+    assert operations == {'CREATE', 'UNCHANGED'}
+    assert _count(connection, 'products', scope.tenant_id) == 1
+    assert _count(connection, 'preparation_areas', scope.tenant_id) == 1
+    assert _count(connection, 'product_preparation_routes', scope.tenant_id) == 1
+    assert _count(connection, 'preparation_works', scope.tenant_id) == 0

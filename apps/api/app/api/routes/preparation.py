@@ -8,7 +8,6 @@ from typing import Annotated, Literal
 from fastapi import APIRouter, Depends, Header, HTTPException, Path, Query, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
@@ -27,13 +26,13 @@ from app.models import (
     PreparationArea,
     PreparationWork,
     PreparationWorkItem,
-    Product,
     ProductPreparationRoute,
 )
 from app.restaurant.preparation import (
     area_provisioning,
     configuration_provisioning,
     errors,
+    route_provisioning,
     service,
 )
 
@@ -327,47 +326,20 @@ async def put_product_route(
     context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.configure'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> ProductPreparationRoute:
-    location = await _location(db, context.tenant_id, location_id, lock=True)
-    product = await db.scalar(select(Product).where(
-        Product.id == product_id, Product.tenant_id == context.tenant_id,
-        Product.organization_id == location.organization_id,
-    ))
-    if product is None:
-        raise _not_found('Product not found in this Location Organization')
-    if payload.preparation_area_id is not None:
-        area = await db.scalar(select(PreparationArea).where(
-            PreparationArea.id == payload.preparation_area_id,
-            PreparationArea.tenant_id == context.tenant_id,
-            PreparationArea.organization_id == location.organization_id,
-            PreparationArea.location_id == location.id,
-            PreparationArea.status == 'ACTIVE',
-        ))
-        if area is None:
-            raise _not_found('Active Preparation Area not found in this Location')
-    current = await db.scalar(select(ProductPreparationRoute).where(
-        ProductPreparationRoute.tenant_id == context.tenant_id,
-        ProductPreparationRoute.location_id == location.id,
-        ProductPreparationRoute.product_id == product.id,
-        ProductPreparationRoute.status == 'ACTIVE',
-        ProductPreparationRoute.active_slot == 1,
-    ).with_for_update())
-    if current is not None:
-        current.status = 'INACTIVE'
-        current.active_slot = None
-        await db.flush()
-    value = ProductPreparationRoute(
-        tenant_id=context.tenant_id, organization_id=location.organization_id,
-        location_id=location.id, product_id=product.id, policy=payload.policy,
-        preparation_area_id=payload.preparation_area_id, status='ACTIVE', active_slot=1,
-    )
-    db.add(value)
     try:
-        await db.commit()
-    except IntegrityError as exc:
-        await db.rollback()
-        raise _conflict('Product Preparation Route update conflicted') from exc
-    await db.refresh(value)
-    return value
+        location = await _location(db, context.tenant_id, location_id)
+        route = await route_provisioning.revise_route(
+            db, tenant_id=context.tenant_id,
+            organization_id=location.organization_id,
+            location_id=location.id, product_id=product_id,
+            policy=payload.policy,
+            preparation_area_id=payload.preparation_area_id,
+        )
+    except route_provisioning.PreparationRouteScopeNotFoundError as exc:
+        raise _not_found(str(exc)) from exc
+    except route_provisioning.PreparationRouteConflictError as exc:
+        raise _conflict(str(exc)) from exc
+    return route
 
 
 class PosPreparationBehaviorRequest(BaseModel):

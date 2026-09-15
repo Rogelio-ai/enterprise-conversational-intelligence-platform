@@ -32,13 +32,17 @@ from app.restaurant.catalog import provisioning as product_provisioning
 from app.restaurant import resource_provisioning
 from app.restaurant.inventory import receiving
 from app.restaurant.inventory import service as inventory_service
-from app.restaurant.preparation import area_provisioning, configuration_provisioning
+from app.restaurant.preparation import (
+    area_provisioning,
+    configuration_provisioning,
+    route_provisioning,
+)
 
 
 IMPORTABLE_NOW = frozenset({
     'restaurant_profile', 'inventory_items', 'uom_conversions', 'suppliers',
     'supplier_offerings', 'resources', 'preparation_configuration',
-    'preparation_areas', 'categories', 'products',
+    'preparation_areas', 'categories', 'products', 'preparation_routes',
 })
 OPERATIONAL_NOT_CATALOG_IMPORT = frozenset({'payment_methods'})
 DEFERRED_PROVISIONING = frozenset(
@@ -62,6 +66,9 @@ AUTHORITY_BY_GROUP = {
     ),
     'preparation_areas': (
         'restaurant.preparation.area_provisioning.provision_area'
+    ),
+    'preparation_routes': (
+        'restaurant.preparation.route_provisioning.provision_route_binding'
     ),
     'categories': 'restaurant.catalog.category_provisioning.provision_category',
     'products': 'restaurant.catalog.provisioning.provision_product',
@@ -281,7 +288,9 @@ async def build_import_plan(
     if 'resources' in populated and 'resource.manage' not in permissions:
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'resource.manage permission is required')
     if (
-        populated & {'preparation_configuration', 'preparation_areas'}
+        populated & {
+            'preparation_configuration', 'preparation_areas', 'preparation_routes',
+        }
         and 'preparation.configure' not in permissions
     ):
         raise ImportRejectedError(
@@ -318,6 +327,14 @@ async def build_import_plan(
     resource_keys = {
         row.values['resource_code'] for row in ordered_rows
         if row.group == 'resources'
+    }
+    product_keys = {
+        row.values['product_key'] for row in ordered_rows
+        if row.group == 'products'
+    }
+    area_keys = {
+        row.values['preparation_area_code'] for row in ordered_rows
+        if row.group == 'preparation_areas'
     }
     for row in ordered_rows:
         if row.group == 'restaurant_profile':
@@ -385,6 +402,33 @@ async def build_import_plan(
                 )
                 operation, current_id = area_plan.operation, area_plan.area_id
             except area_provisioning.PreparationAreaProvisioningError as exc:
+                operation, current_id, blocker = 'CREATE', None, str(exc)
+            items.append(PlanItem(
+                row.group, row.row, row.business_key, operation,
+                AUTHORITY_BY_GROUP[row.group], value, current_id,
+                blocking_error=blocker,
+            ))
+        elif row.group == 'preparation_routes':
+            blocker = None
+            try:
+                route_plan = await route_provisioning.plan_route_binding(
+                    db, tenant_id=tenant_id,
+                    organization_id=organization.id,
+                    location_id=location.id,
+                    binding_namespace=product_namespace,
+                    product_key=value['product_key'], policy=value['policy'],
+                    preparation_area_code=value['preparation_area_code'],
+                    status=value['status'],
+                    allow_unresolved_product=(
+                        value['product_key'] in product_keys
+                    ),
+                    allow_unresolved_area=(
+                        value['preparation_area_code'] in area_keys
+                    ),
+                )
+                operation = route_plan.operation
+                current_id = route_plan.current_route_id
+            except route_provisioning.PreparationRouteProvisioningError as exc:
                 operation, current_id, blocker = 'CREATE', None, str(exc)
             items.append(PlanItem(
                 row.group, row.row, row.business_key, operation,
@@ -679,6 +723,20 @@ async def confirm_import(
                     area_code=value['preparation_area_code'],
                     resource_code=value['resource_code'],
                     name=value['name'], status=value['status'],
+                )
+                actual_operation = result.operation
+            elif item.group == 'preparation_routes':
+                result = await route_provisioning.provision_route_binding(
+                    db, tenant_id=tenant_id,
+                    organization_id=plan.scope.organization_id,
+                    location_id=location_id,
+                    binding_namespace=product_provisioning.onboarding_binding_namespace(
+                        contract_version=CONTRACT_VERSION,
+                        organization_id=plan.scope.organization_id,
+                    ),
+                    product_key=value['product_key'], policy=value['policy'],
+                    preparation_area_code=value['preparation_area_code'],
+                    status=value['status'],
                 )
                 actual_operation = result.operation
             elif item.group == 'categories':
