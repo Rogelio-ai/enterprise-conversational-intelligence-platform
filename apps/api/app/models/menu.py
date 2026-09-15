@@ -268,6 +268,41 @@ class Menu(TimestampMixin, Base):
     )
 
 
+class MenuExternalMapping(Base):
+    __tablename__ = 'menu_external_mappings'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['tenant_id'], ['tenants.id'],
+            name='fk_menu_external_mappings_tenant', ondelete='RESTRICT',
+        ),
+        ForeignKeyConstraint(
+            ['menu_id', 'tenant_id', 'organization_id'],
+            ['menus.id', 'menus.tenant_id', 'menus.organization_id'],
+            name='fk_menu_external_mappings_menu_scope', ondelete='RESTRICT',
+        ),
+        UniqueConstraint(
+            'tenant_id', 'organization_id', 'connector_key', 'external_menu_id',
+            name='uq_menu_external_mapping_source',
+        ),
+        Index(
+            'ix_menu_external_mappings_menu',
+            'tenant_id', 'organization_id', 'menu_id', 'id',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    organization_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    menu_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    connector_key: Mapped[str] = mapped_column(String(128), nullable=False)
+    external_menu_id: Mapped[str] = mapped_column(
+        String(200, collation='utf8mb4_bin'), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.current_timestamp()
+    )
+
+
 class MenuLocation(TimestampMixin, Base):
     __tablename__ = 'menu_locations'
     __table_args__ = (

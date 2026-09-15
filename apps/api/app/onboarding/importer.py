@@ -29,7 +29,7 @@ from app.onboarding.analyzer import AnalysisResult, AnalyzedRow
 from app.onboarding.contract import CONTRACT_VERSION, ONBOARDING_CONTRACT
 from app.restaurant.catalog import category_provisioning
 from app.restaurant.catalog import provisioning as product_provisioning
-from app.restaurant import resource_provisioning
+from app.restaurant import menu_provisioning, resource_provisioning
 from app.restaurant.inventory import receiving
 from app.restaurant.inventory import service as inventory_service
 from app.restaurant.preparation import (
@@ -43,6 +43,7 @@ IMPORTABLE_NOW = frozenset({
     'restaurant_profile', 'inventory_items', 'uom_conversions', 'suppliers',
     'supplier_offerings', 'resources', 'preparation_configuration',
     'preparation_areas', 'categories', 'products', 'preparation_routes',
+    'menus',
 })
 OPERATIONAL_NOT_CATALOG_IMPORT = frozenset({'payment_methods'})
 DEFERRED_PROVISIONING = frozenset(
@@ -72,6 +73,7 @@ AUTHORITY_BY_GROUP = {
     ),
     'categories': 'restaurant.catalog.category_provisioning.provision_category',
     'products': 'restaurant.catalog.provisioning.provision_product',
+    'menus': 'restaurant.menu_provisioning.provision_menu',
 }
 
 
@@ -299,10 +301,25 @@ async def build_import_plan(
         )
     if populated & {'categories', 'products'} and 'product.manage' not in permissions:
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'product.manage permission is required')
+    if 'menus' in populated and 'menu.manage' not in permissions:
+        raise ImportRejectedError(
+            'INSUFFICIENT_PERMISSION', 'menu.manage permission is required'
+        )
 
     product_namespace = product_provisioning.onboarding_binding_namespace(
         contract_version=CONTRACT_VERSION, organization_id=organization.id,
     )
+    menu_namespace = menu_provisioning.onboarding_binding_namespace(
+        contract_version=CONTRACT_VERSION, organization_id=organization.id,
+    )
+    menu_definition_error = None
+    try:
+        menu_provisioning.validate_menu_definitions(tuple(
+            (row.values['menu_key'], row.values['name'])
+            for row in ordered_rows if row.group == 'menus'
+        ))
+    except menu_provisioning.MenuProvisioningError as exc:
+        menu_definition_error = str(exc)
 
     existing_items = {
         value.code: value for value in (
@@ -469,6 +486,26 @@ async def build_import_plan(
                 operation, current_id = product_plan.operation, product_plan.product_id
             except product_provisioning.ProductProvisioningError as exc:
                 operation, current_id, blocker = 'CREATE', None, str(exc)
+            items.append(PlanItem(
+                row.group, row.row, row.business_key, operation,
+                AUTHORITY_BY_GROUP[row.group], value, current_id,
+                blocking_error=blocker,
+            ))
+        elif row.group == 'menus':
+            blocker = menu_definition_error
+            try:
+                menu_plan = await menu_provisioning.plan_menu(
+                    db, tenant_id=tenant_id,
+                    organization_id=organization.id,
+                    location_id=location.id,
+                    binding_namespace=menu_namespace,
+                    menu_key=value['menu_key'], name=value['name'],
+                    status=value['status'],
+                )
+                operation, current_id = menu_plan.operation, menu_plan.menu_id
+            except menu_provisioning.MenuProvisioningError as exc:
+                operation, current_id = 'CREATE', None
+                blocker = blocker or str(exc)
             items.append(PlanItem(
                 row.group, row.row, row.business_key, operation,
                 AUTHORITY_BY_GROUP[row.group], value, current_id,
@@ -764,6 +801,19 @@ async def confirm_import(
                     product_key=value['product_key'],
                     category_key=value['category_key'], name=value['name'],
                     description=value['description'], status=value['status'],
+                )
+                actual_operation = result.operation
+            elif item.group == 'menus':
+                result = await menu_provisioning.provision_menu(
+                    db, tenant_id=tenant_id,
+                    organization_id=plan.scope.organization_id,
+                    location_id=location_id,
+                    binding_namespace=menu_provisioning.onboarding_binding_namespace(
+                        contract_version=CONTRACT_VERSION,
+                        organization_id=plan.scope.organization_id,
+                    ),
+                    menu_key=value['menu_key'], name=value['name'],
+                    status=value['status'],
                 )
                 actual_operation = result.operation
             elif item.group == 'inventory_items':

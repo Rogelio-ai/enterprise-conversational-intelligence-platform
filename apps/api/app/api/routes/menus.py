@@ -23,6 +23,7 @@ from app.models import (
     Product,
 )
 from app.restaurant.catalog.queries import load_menu_graph, menu_statement
+from app.restaurant import menu_provisioning
 
 
 Lifecycle = Literal['ACTIVE', 'INACTIVE']
@@ -368,18 +369,13 @@ async def create_menu(
     context: Annotated[AuthenticatedContext, Depends(require_permission('menu.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Menu:
-    await _get_organization(
-        db, tenant_id=context.tenant_id, organization_id=payload.organization_id
-    )
-    menu = Menu(
-        tenant_id=context.tenant_id,
-        organization_id=payload.organization_id,
-        name=payload.name,
-        status='ACTIVE',
-    )
-    db.add(menu)
-    await db.commit()
-    await db.refresh(menu)
+    try:
+        menu = await menu_provisioning.create_menu(
+            db, tenant_id=context.tenant_id,
+            organization_id=payload.organization_id, name=payload.name,
+        )
+    except menu_provisioning.MenuScopeNotFoundError as exc:
+        raise _not_found('Organization') from exc
     _log_mutation('menu_created', 'create', context, menu)
     return menu
 
@@ -431,13 +427,13 @@ async def update_menu(
     context: Annotated[AuthenticatedContext, Depends(require_permission('menu.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Menu:
-    menu = await _get_menu(
-        db, tenant_id=context.tenant_id, menu_id=menu_id, for_update=True
-    )
-    for field, value in payload.model_dump(exclude_unset=True).items():
-        setattr(menu, field, value)
-    await db.commit()
-    await db.refresh(menu)
+    try:
+        menu = await menu_provisioning.update_menu(
+            db, tenant_id=context.tenant_id, menu_id=menu_id,
+            changes=payload.model_dump(exclude_unset=True),
+        )
+    except menu_provisioning.MenuScopeNotFoundError as exc:
+        raise _not_found('Menu') from exc
     _log_mutation('menu_updated', 'update', context, menu)
     return menu
 
@@ -453,29 +449,16 @@ async def assign_menu_location(
     context: Annotated[AuthenticatedContext, Depends(require_permission('menu.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> MenuLocation:
-    menu = await _get_menu(db, tenant_id=context.tenant_id, menu_id=menu_id)
-    await _get_location(
-        db,
-        tenant_id=context.tenant_id,
-        location_id=payload.location_id,
-        organization_id=menu.organization_id,
-    )
-    assignment = MenuLocation(
-        tenant_id=context.tenant_id,
-        organization_id=menu.organization_id,
-        menu_id=menu.id,
-        location_id=payload.location_id,
-        status='ACTIVE',
-    )
-    db.add(assignment)
     try:
-        await db.commit()
-    except IntegrityError as exc:
-        await db.rollback()
-        if _is_constraint(exc, 'uq_menu_locations_tenant_menu_location'):
-            raise _conflict('Menu is already assigned to this Location') from exc
-        raise
-    await db.refresh(assignment)
+        assignment = await menu_provisioning.assign_menu_location(
+            db, tenant_id=context.tenant_id, menu_id=menu_id,
+            location_id=payload.location_id,
+        )
+    except menu_provisioning.MenuScopeNotFoundError as exc:
+        raise _not_found(str(exc).removesuffix(' not found')) from exc
+    except menu_provisioning.MenuConflictError as exc:
+        raise _conflict(str(exc)) from exc
+    menu = await _get_menu(db, tenant_id=context.tenant_id, menu_id=menu_id)
     _log_mutation(
         'menu_location_updated',
         'assign',
@@ -495,21 +478,14 @@ async def update_menu_location(
     context: Annotated[AuthenticatedContext, Depends(require_permission('menu.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> MenuLocation:
-    menu = await _get_menu(db, tenant_id=context.tenant_id, menu_id=menu_id)
-    assignment = await db.scalar(
-        select(MenuLocation)
-        .where(
-            MenuLocation.tenant_id == context.tenant_id,
-            MenuLocation.menu_id == menu.id,
-            MenuLocation.location_id == location_id,
+    try:
+        assignment = await menu_provisioning.update_menu_location(
+            db, tenant_id=context.tenant_id, menu_id=menu_id,
+            location_id=location_id, status=payload.status,
         )
-        .with_for_update()
-    )
-    if assignment is None:
-        raise _not_found('Menu Location')
-    assignment.status = payload.status
-    await db.commit()
-    await db.refresh(assignment)
+    except menu_provisioning.MenuScopeNotFoundError as exc:
+        raise _not_found(str(exc).removesuffix(' not found')) from exc
+    menu = await _get_menu(db, tenant_id=context.tenant_id, menu_id=menu_id)
     _log_mutation(
         'menu_location_updated',
         'update',

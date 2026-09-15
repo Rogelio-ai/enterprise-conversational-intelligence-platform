@@ -69,6 +69,7 @@ from app.models.inventory import (
 )
 from app.models.menu import (
     Menu,
+    MenuExternalMapping,
     MenuItem,
     MenuLocation,
     MenuSection,
@@ -159,6 +160,7 @@ __all__ = [
     'MembershipRole',
     'MembershipLocationGrant',
     'Menu',
+    'MenuExternalMapping',
     'MenuItem',
     'MenuLocation',
     'MenuSection',
