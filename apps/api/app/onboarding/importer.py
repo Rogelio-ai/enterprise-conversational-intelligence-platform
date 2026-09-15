@@ -37,6 +37,7 @@ from app.restaurant import (
 )
 from app.restaurant.inventory import receiving
 from app.restaurant.inventory import service as inventory_service
+from app.restaurant.inventory import warehouse_provisioning
 from app.restaurant.preparation import (
     area_provisioning,
     configuration_provisioning,
@@ -53,6 +54,7 @@ IMPORTABLE_NOW = frozenset({
     'menu_sections',
     'menu_items',
     'prices',
+    'warehouses',
 })
 OPERATIONAL_NOT_CATALOG_IMPORT = frozenset({'payment_methods'})
 DEFERRED_PROVISIONING = frozenset(
@@ -88,6 +90,9 @@ AUTHORITY_BY_GROUP = {
     ),
     'menu_items': 'restaurant.menu_item_provisioning.provision_menu_item',
     'prices': 'restaurant.pricing.provisioning.provision_price',
+    'warehouses': (
+        'restaurant.inventory.warehouse_provisioning.provision_warehouse'
+    ),
 }
 
 
@@ -297,7 +302,10 @@ async def build_import_plan(
 
     ordered_rows = _dependency_ordered_rows(analysis.rows)
     populated = {row.group for row in ordered_rows}
-    if populated & {'inventory_items', 'uom_conversions'} and 'inventory.manage' not in permissions:
+    if (
+        populated & {'warehouses', 'inventory_items', 'uom_conversions'}
+        and 'inventory.manage' not in permissions
+    ):
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'inventory.manage permission is required')
     if populated & {'suppliers', 'supplier_offerings'} and 'inventory.supplier.manage' not in permissions:
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'inventory.supplier.manage permission is required')
@@ -610,6 +618,34 @@ async def build_import_plan(
                 row.group, row.row, row.business_key, operation,
                 AUTHORITY_BY_GROUP[row.group], value, current_id,
                 blocking_error=blocker,
+            ))
+        elif row.group == 'warehouses':
+            blocker = None
+            try:
+                warehouse_plan = await warehouse_provisioning.plan_warehouse(
+                    db, tenant_id=tenant_id,
+                    organization_id=organization.id,
+                    location_id=location.id,
+                    warehouse_code=value['warehouse_code'],
+                    name=value['name'],
+                    is_default=value['is_default'] == 'YES',
+                    negative_stock_policy=value['negative_stock_policy'],
+                    status=value['status'],
+                )
+                operation = warehouse_plan.operation
+                current_id = warehouse_plan.warehouse_id
+                version = (
+                    None if warehouse_plan.observed_state is None
+                    else warehouse_plan.observed_state[-1]
+                )
+            except warehouse_provisioning.WarehouseProvisioningError as exc:
+                operation, current_id, version, blocker = (
+                    'CREATE', None, None, str(exc)
+                )
+            items.append(PlanItem(
+                row.group, row.row, row.business_key, operation,
+                AUTHORITY_BY_GROUP[row.group], value, current_id, version,
+                blocker,
             ))
         elif row.group == 'inventory_items':
             current = existing_items.get(value['inventory_item_code'])
@@ -956,6 +992,18 @@ async def confirm_import(
                     ),
                     product_key=value['product_key'], amount=_decimal(value['amount']),
                     currency=value['currency'], status=value['status'],
+                )
+                actual_operation = result.operation
+            elif item.group == 'warehouses':
+                result = await warehouse_provisioning.provision_warehouse(
+                    db, tenant_id=tenant_id,
+                    organization_id=plan.scope.organization_id,
+                    location_id=location_id,
+                    warehouse_code=value['warehouse_code'],
+                    name=value['name'],
+                    is_default=value['is_default'] == 'YES',
+                    negative_stock_policy=value['negative_stock_policy'],
+                    status=value['status'],
                 )
                 actual_operation = result.operation
             elif item.group == 'inventory_items':

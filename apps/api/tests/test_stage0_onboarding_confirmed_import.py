@@ -27,6 +27,7 @@ from app.restaurant.preparation import (
 )
 from app.restaurant.pricing import provisioning as price_provisioning
 from app.restaurant.inventory import service as inventory_service
+from app.restaurant.inventory import warehouse_provisioning
 from test_inventory_recipe_stock_foundation import _headers, _permission, _scope
 
 
@@ -51,7 +52,7 @@ def test_all_contract_groups_have_one_explicit_import_classification() -> None:
     assert by_group['prices']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['staff']['classification'] == 'DEFERRED_PROVISIONING'
     assert by_group['tax_rules']['classification'] == 'DEFERRED_PROVISIONING'
-    assert by_group['warehouses']['classification'] == 'DEFERRED_PROVISIONING'
+    assert by_group['warehouses']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['payment_methods']['classification'] == 'OPERATIONAL_NOT_CATALOG_IMPORT'
     assert all(value['authority'] and value['business_key'] for value in values)
 
@@ -68,6 +69,7 @@ def _workbook(
     area_resource: bool = False, preparation_route: bool = False,
     menu: bool = False, menu_section: bool = False, menu_item: bool = False,
     price: bool = False,
+    inventory: bool = True, warehouse: bool = False,
 ) -> bytes:
     workbook = load_workbook(BytesIO(deterministic_bytes()), data_only=False)
     _set_row(workbook, '01_Restaurant', (
@@ -75,19 +77,20 @@ def _workbook(
         'Inventory Location', 'America/Mexico_City', None, None, None, None,
         None, 'MX', None, None, 'ACTIVE',
     ))
-    _set_row(workbook, '19_Inventory_Items', (
-        'LOC', item_code, f'Item {item_code}', 'G', '0.010000', 'MXN',
-        'OPTIONAL', 'NONE', 'ACTIVE',
-    ))
-    _set_row(workbook, '20_UOM_Conversions', (
-        'LOC', item_code, 'BAG', '1000', None, 'approved capture',
-    ))
-    _set_row(workbook, '21_Suppliers', (
-        'ORG', f'SUP-{item_code}', f'Supplier {item_code}', None, 'LOC', 'ACTIVE',
-    ))
-    _set_row(workbook, '22_Supplier_Offers', (
-        f'SUP-{item_code}', 'LOC', item_code, None, 'G', 'ACTIVE',
-    ))
+    if inventory:
+        _set_row(workbook, '19_Inventory_Items', (
+            'LOC', item_code, f'Item {item_code}', 'G', '0.010000', 'MXN',
+            'OPTIONAL', 'NONE', 'ACTIVE',
+        ))
+        _set_row(workbook, '20_UOM_Conversions', (
+            'LOC', item_code, 'BAG', '1000', None, 'approved capture',
+        ))
+        _set_row(workbook, '21_Suppliers', (
+            'ORG', f'SUP-{item_code}', f'Supplier {item_code}', None, 'LOC', 'ACTIVE',
+        ))
+        _set_row(workbook, '22_Supplier_Offers', (
+            f'SUP-{item_code}', 'LOC', item_code, None, 'G', 'ACTIVE',
+        ))
     if category_product:
         _set_row(workbook, '06_Categories', (
             f'CAT-{item_code}', 'ORG', f'Category {item_code}', None, 0, 'ACTIVE',
@@ -130,6 +133,11 @@ def _workbook(
     if price:
         _set_row(workbook, '11_Prices', (
             f'PROD-{item_code}', 'LOC', '12.3400', 'MXN', 'ACTIVE',
+        ))
+    if warehouse:
+        _set_row(workbook, '18_Warehouses', (
+            'LOC', f'WH-{item_code}', f'Warehouse {item_code}',
+            'YES', 'ALLOW', 'ACTIVE',
         ))
     output = BytesIO()
     workbook.save(output)
@@ -1941,3 +1949,206 @@ def test_price_authority_validates_scope_source_and_converges_concurrently(
     asyncio.run(reject_pos())
     assert _count(connection, 'restaurant_tax_rules', scope.tenant_id) == 0
     assert _count(connection, 'product_fiscal_classifications', scope.tenant_id) == 0
+
+
+def test_warehouse_import_updates_replays_and_creates_no_inventory_evidence(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(
+        f'{prefix}-onboarding', item_code='WAREHOUSE',
+        inventory=False, warehouse=True,
+    )
+    fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
+
+    first = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert first.status_code == 201, first.text
+    result = first.json()
+    assert not result['errors'], result['errors']
+    assert result['groups']['warehouses'] == {
+        'classification': 'IMPORTABLE_NOW',
+        'authority': (
+            'restaurant.inventory.warehouse_provisioning.provision_warehouse'
+        ),
+        'required_for_stage0': True,
+        'planned': 1, 'created': 1, 'updated': 0, 'unchanged': 0,
+        'deferred': 0, 'failed': 0,
+    }
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT id,organization_id,location_id,code,name,status,default_slot,'
+            'negative_stock_policy,version FROM warehouses WHERE tenant_id=%s',
+            (scope.tenant_id,),
+        )
+        warehouse = cursor.fetchone()
+    assert warehouse == {
+        'id': warehouse['id'], 'organization_id': scope.organization_id,
+        'location_id': scope.location_id, 'code': 'WH-WAREHOUSE',
+        'name': 'Warehouse WAREHOUSE', 'status': 'ACTIVE',
+        'default_slot': 1, 'negative_stock_policy': 'ALLOW', 'version': 1,
+    }
+
+    replay = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert replay.status_code == 200 and replay.json()['replay'] is True
+    assert _count(connection, 'warehouses', scope.tenant_id) == 1
+
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    workbook['18_Warehouses']['C2'] = 'Updated Warehouse'
+    workbook['18_Warehouses']['E2'] = 'BLOCK'
+    workbook['18_Warehouses']['F2'] = 'INACTIVE'
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    changed = output.getvalue()
+    changed_fingerprint = _analyze(client, headers, changed).json()['dataset_fingerprint']
+    updated = _confirm(client, headers, changed, scope.location_id, changed_fingerprint)
+    assert updated.status_code == 201, updated.text
+    assert updated.json()['groups']['warehouses']['updated'] == 1
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT id,name,status,default_slot,negative_stock_policy,version '
+            'FROM warehouses WHERE tenant_id=%s', (scope.tenant_id,),
+        )
+        current = cursor.fetchone()
+    assert current == {
+        'id': warehouse['id'], 'name': 'Updated Warehouse',
+        'status': 'INACTIVE', 'default_slot': 1,
+        'negative_stock_policy': 'BLOCK', 'version': 2,
+    }
+    for table in (
+        'inventory_items', 'stock_movements', 'inventory_lots',
+        'inventory_cost_layers', 'inventory_transfers', 'goods_receipts',
+        'inventory_losses', 'physical_counts', 'preparation_batches',
+        'inventory_valuation_snapshots',
+    ):
+        assert _count(connection, table, scope.tenant_id) == 0, table
+
+
+def test_warehouse_authority_rejects_scope_identity_and_conflicting_races(
+    sql_connection, integration_settings, monkeypatch,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+
+    async def exercise() -> tuple[int, int, set[str]]:
+        from app.db.session import DatabaseManager
+
+        database = DatabaseManager(integration_settings)
+        arguments = {
+            'tenant_id': scope.tenant_id,
+            'organization_id': scope.organization_id,
+            'location_id': scope.location_id,
+            'warehouse_code': 'WH-RACE', 'name': 'Race Warehouse',
+            'is_default': False, 'negative_stock_policy': 'WARN',
+            'status': 'ACTIVE',
+        }
+        original_plan = warehouse_provisioning.plan_warehouse
+
+        def synchronized_plan():
+            arrived = 0
+            gate = asyncio.Event()
+
+            async def value(*args, **kwargs):
+                nonlocal arrived
+                plan = await original_plan(*args, **kwargs)
+                arrived += 1
+                if arrived == 2:
+                    gate.set()
+                await asyncio.wait_for(gate.wait(), timeout=5)
+                return plan
+
+            return value
+
+        try:
+            async with database.session_factory() as db:
+                with pytest.raises(
+                    warehouse_provisioning.WarehouseScopeNotFoundError
+                ):
+                    await original_plan(
+                        db, **{**arguments,
+                               'organization_id': scope.organization_id + 999999},
+                    )
+                for changes in (
+                    {'status': 'BROKEN'},
+                    {'negative_stock_policy': 'IGNORE'},
+                    {'warehouse_code': 'invalid code'},
+                ):
+                    with pytest.raises(
+                        warehouse_provisioning.WarehouseProvisioningError
+                    ):
+                        await original_plan(db, **{**arguments, **changes})
+
+            monkeypatch.setattr(
+                warehouse_provisioning, 'plan_warehouse', synchronized_plan(),
+            )
+            async with (
+                database.session_factory() as first_db,
+                database.session_factory() as second_db,
+            ):
+                first, second = await asyncio.gather(
+                    warehouse_provisioning.provision_warehouse(
+                        first_db, **arguments,
+                    ),
+                    warehouse_provisioning.provision_warehouse(
+                        second_db, **arguments,
+                    ),
+                )
+
+            monkeypatch.setattr(
+                warehouse_provisioning, 'plan_warehouse', synchronized_plan(),
+            )
+            conflict_arguments = {
+                **arguments, 'warehouse_code': 'WH-CONFLICT',
+            }
+            async with (
+                database.session_factory() as first_db,
+                database.session_factory() as second_db,
+            ):
+                conflicts = await asyncio.gather(
+                    warehouse_provisioning.provision_warehouse(
+                        first_db, **conflict_arguments,
+                    ),
+                    warehouse_provisioning.provision_warehouse(
+                        second_db, **{
+                            **conflict_arguments, 'name': 'Different Warehouse',
+                        },
+                    ),
+                    return_exceptions=True,
+                )
+            assert sum(
+                isinstance(value, warehouse_provisioning.WarehouseConflictError)
+                for value in conflicts
+            ) == 1
+
+            monkeypatch.setattr(
+                warehouse_provisioning, 'plan_warehouse', original_plan,
+            )
+            async with database.session_factory() as db:
+                with pytest.raises(
+                    warehouse_provisioning.WarehouseConflictError
+                ):
+                    await original_plan(
+                        db, **{**arguments, 'is_default': True},
+                    )
+            return first.warehouse.id, second.warehouse.id, {
+                first.operation, second.operation,
+            }
+        finally:
+            monkeypatch.setattr(
+                warehouse_provisioning, 'plan_warehouse', original_plan,
+            )
+            await database.dispose()
+
+    first_id, second_id, operations = asyncio.run(exercise())
+    assert first_id == second_id
+    assert operations == {'CREATE', 'UNCHANGED'}
+    assert _count(connection, 'warehouses', scope.tenant_id) == 2
+    for table in (
+        'stock_movements', 'inventory_lots', 'inventory_cost_layers',
+        'inventory_transfers', 'goods_receipts', 'inventory_losses',
+        'physical_counts', 'preparation_batches',
+        'inventory_valuation_snapshots',
+    ):
+        assert _count(connection, table, scope.tenant_id) == 0, table
