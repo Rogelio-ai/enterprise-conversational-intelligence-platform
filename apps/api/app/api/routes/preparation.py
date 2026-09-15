@@ -29,9 +29,13 @@ from app.models import (
     PreparationWorkItem,
     Product,
     ProductPreparationRoute,
-    Resource,
 )
-from app.restaurant.preparation import configuration_provisioning, errors, service
+from app.restaurant.preparation import (
+    area_provisioning,
+    configuration_provisioning,
+    errors,
+    service,
+)
 
 
 router = APIRouter(tags=['preparation'])
@@ -202,17 +206,6 @@ class PreparationAreaList(BaseModel):
     items: list[PreparationAreaResponse]
 
 
-async def _resource(db: AsyncSession, tenant_id: int, location_id: int, resource_id: int | None) -> None:
-    if resource_id is None:
-        return
-    value = await db.scalar(select(Resource.id).where(
-        Resource.id == resource_id, Resource.tenant_id == tenant_id,
-        Resource.location_id == location_id,
-    ))
-    if value is None:
-        raise _not_found('Resource not found in this Location')
-
-
 @router.get('/preparation-areas', response_model=PreparationAreaList)
 async def list_areas(
     context: Annotated[
@@ -236,21 +229,19 @@ async def create_area(
     context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.configure'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> PreparationArea:
-    location = await _location(db, context.tenant_id, payload.location_id, lock=True)
-    await _resource(db, context.tenant_id, location.id, payload.resource_id)
-    value = PreparationArea(
-        tenant_id=context.tenant_id, organization_id=location.organization_id,
-        location_id=location.id, resource_id=payload.resource_id,
-        code=payload.code, name=payload.name, status='ACTIVE',
-    )
-    db.add(value)
     try:
-        await db.commit()
-    except IntegrityError as exc:
-        await db.rollback()
-        raise _conflict('Preparation Area code already exists in this Location') from exc
-    await db.refresh(value)
-    return value
+        location = await _location(db, context.tenant_id, payload.location_id)
+        area = await area_provisioning.create_area(
+            db, tenant_id=context.tenant_id,
+            organization_id=location.organization_id,
+            location_id=location.id, resource_id=payload.resource_id,
+            code=payload.code, name=payload.name,
+        )
+    except area_provisioning.PreparationAreaScopeNotFoundError as exc:
+        raise _not_found(str(exc)) from exc
+    except area_provisioning.PreparationAreaConflictError as exc:
+        raise _conflict(str(exc)) from exc
+    return area
 
 
 @router.get('/preparation-areas/{area_id}', response_model=PreparationAreaResponse)
@@ -274,19 +265,14 @@ async def patch_area(
     context: Annotated[AuthenticatedContext, Depends(require_permission('preparation.configure'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> PreparationArea:
-    value = await db.scalar(select(PreparationArea).where(
-        PreparationArea.id == area_id, PreparationArea.tenant_id == context.tenant_id,
-    ).with_for_update())
-    if value is None:
-        raise _not_found('Preparation Area not found')
-    updates = payload.model_dump(exclude_unset=True)
-    if 'resource_id' in updates:
-        await _resource(db, context.tenant_id, value.location_id, updates['resource_id'])
-    for key, item in updates.items():
-        setattr(value, key, item)
-    await db.commit()
-    await db.refresh(value)
-    return value
+    try:
+        area = await area_provisioning.update_area(
+            db, tenant_id=context.tenant_id, area_id=area_id,
+            changes=payload.model_dump(exclude_unset=True),
+        )
+    except area_provisioning.PreparationAreaScopeNotFoundError as exc:
+        raise _not_found(str(exc)) from exc
+    return area
 
 
 class ProductRouteRequest(BaseModel):
