@@ -1,8 +1,7 @@
 from __future__ import annotations
 
 import logging
-import re
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
@@ -19,6 +18,7 @@ from app.api.deps import (
 )
 from app.core.middleware import get_correlation_id
 from app.models import Location, Resource
+from app.restaurant import resource_provisioning
 
 
 ResourceType = Literal[
@@ -29,16 +29,10 @@ ResourceStatus = Literal['ACTIVE', 'INACTIVE']
 
 router = APIRouter(prefix='/resources', tags=['resources'])
 logger = logging.getLogger('ecip.resources')
-_CODE_PATTERN = re.compile(r'^[A-Z0-9][A-Z0-9_-]{0,63}$')
-_DUPLICATE_KEY_PATTERN = re.compile(r"for key [`'\"]([^`'\"]+)[`'\"]", re.IGNORECASE)
-_CODE_CONSTRAINT = 'uq_resources_location_code'
 
 
 def normalize_code(value: str) -> str:
-    normalized = value.strip().upper()
-    if not _CODE_PATTERN.fullmatch(normalized):
-        raise ValueError('Code must contain only letters, numbers, underscores, or hyphens')
-    return normalized
+    return resource_provisioning.normalize_code(value)
 
 
 class ResourceCreateRequest(BaseModel):
@@ -112,11 +106,6 @@ def _inactive_parent() -> HTTPException:
     )
 
 
-def _activate_cash_management(location: Location) -> None:
-    if location.cash_management_activated_at is None:
-        location.cash_management_activated_at = datetime.now(UTC).replace(tzinfo=None)
-
-
 def _duplicate_code() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT,
@@ -125,11 +114,7 @@ def _duplicate_code() -> HTTPException:
 
 
 def _is_duplicate_code_error(exc: IntegrityError) -> bool:
-    arguments = getattr(exc.orig, 'args', ())
-    if len(arguments) < 2 or arguments[0] != 1062:
-        return False
-    match = _DUPLICATE_KEY_PATTERN.search(str(arguments[1]))
-    return match is not None and match.group(1).rsplit('.', 1)[-1] == _CODE_CONSTRAINT
+    return resource_provisioning.is_duplicate_code_error(exc)
 
 
 async def _get_location(
@@ -185,31 +170,19 @@ async def create_resource(
     context: Annotated[AuthenticatedContext, Depends(require_permission('resource.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Resource:
-    location = await _get_location(
-        db,
-        location_id=payload.location_id,
-        tenant_id=context.tenant_id,
-        for_update=True,
-    )
-    if location.status != 'ACTIVE':
-        raise _inactive_parent()
-    if payload.resource_type == 'CASH_REGISTER':
-        _activate_cash_management(location)
-
-    resource = Resource(
-        tenant_id=context.tenant_id,
-        **payload.model_dump(),
-        status='ACTIVE',
-    )
-    db.add(resource)
     try:
-        await db.commit()
-    except IntegrityError as exc:
+        resource = await resource_provisioning.create_resource(
+            db, tenant_id=context.tenant_id, location_id=payload.location_id,
+            code=payload.code, name=payload.name,
+            resource_type=payload.resource_type,
+        )
+    except resource_provisioning.ResourceScopeNotFoundError as exc:
         await db.rollback()
-        if _is_duplicate_code_error(exc):
-            raise _duplicate_code() from exc
-        raise
-    await db.refresh(resource)
+        raise _location_not_found() from exc
+    except resource_provisioning.ResourceConflictError as exc:
+        if str(exc) == 'Location must be active':
+            raise _inactive_parent() from exc
+        raise _duplicate_code() from exc
     logger.info(
         'Resource created',
         extra={
@@ -249,42 +222,19 @@ async def update_resource(
     context: Annotated[AuthenticatedContext, Depends(require_permission('resource.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Resource:
-    resource = await db.scalar(
-        select(Resource)
-        .where(
-            Resource.id == resource_id,
-            Resource.tenant_id == context.tenant_id,
-        )
-        .with_for_update()
-    )
-    if resource is None:
-        raise _resource_not_found()
-
     updates = payload.model_dump(exclude_unset=True)
-    if (
-        updates.get('status') == 'ACTIVE'
-        or updates.get('resource_type') == 'CASH_REGISTER'
-    ):
-        location = await _get_location(
-            db,
-            location_id=resource.location_id,
-            tenant_id=context.tenant_id,
-            for_update=True,
-        )
-        if location.status != 'ACTIVE':
-            raise _inactive_parent()
-        if updates.get('resource_type') == 'CASH_REGISTER':
-            _activate_cash_management(location)
-    for field, value in updates.items():
-        setattr(resource, field, value)
     try:
-        await db.commit()
-    except IntegrityError as exc:
+        resource = await resource_provisioning.update_resource(
+            db, tenant_id=context.tenant_id,
+            resource_id=resource_id, changes=updates,
+        )
+    except resource_provisioning.ResourceScopeNotFoundError as exc:
         await db.rollback()
-        if _is_duplicate_code_error(exc):
-            raise _duplicate_code() from exc
-        raise
-    await db.refresh(resource)
+        raise _resource_not_found() from exc
+    except resource_provisioning.ResourceConflictError as exc:
+        if str(exc) == 'Location must be active':
+            raise _inactive_parent() from exc
+        raise _duplicate_code() from exc
     logger.info(
         'Resource updated',
         extra={

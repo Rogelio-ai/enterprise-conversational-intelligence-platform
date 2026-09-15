@@ -13,6 +13,7 @@ from app.onboarding.contract import CONTRACT_VERSION
 from app.onboarding.xlsx import deterministic_bytes
 from app.restaurant.catalog import category_provisioning
 from app.restaurant.catalog import provisioning as product_provisioning
+from app.restaurant import resource_provisioning
 from app.restaurant.inventory import service as inventory_service
 from test_inventory_recipe_stock_foundation import _headers, _permission, _scope
 
@@ -26,6 +27,7 @@ def test_all_contract_groups_have_one_explicit_import_classification() -> None:
     by_group = {value['group']: value for value in values}
     assert len(by_group) == 32
     assert by_group['inventory_items']['classification'] == 'IMPORTABLE_NOW'
+    assert by_group['resources']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['categories']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['products']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['staff']['classification'] == 'DEFERRED_PROVISIONING'
@@ -42,7 +44,8 @@ def _set_row(workbook, sheet: str, values: tuple[object, ...], row: int = 2) -> 
 
 def _workbook(
     tenant_slug: str, *, item_code: str = 'FLOUR', product: bool = False,
-    category_product: bool = False, deferred_resource: bool = False,
+    category_product: bool = False, resource: bool = False,
+    deferred_preparation_configuration: bool = False,
 ) -> bytes:
     workbook = load_workbook(BytesIO(deterministic_bytes()), data_only=False)
     _set_row(workbook, '01_Restaurant', (
@@ -73,10 +76,12 @@ def _workbook(
             f'CAT-{item_code}' if category_product else None,
             f'Product {item_code}', None, 'ACTIVE',
         ))
-    if deferred_resource:
+    if resource:
         _set_row(workbook, '03_Resources', (
             'LOC', f'RESOURCE-{item_code}', f'Resource {item_code}', 'TABLE', 'ACTIVE',
         ))
+    if deferred_preparation_configuration:
+        _set_row(workbook, '04_Prep_Config', ('LOC', 'PLATFORM'))
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -91,6 +96,7 @@ def _prepare(connection, prefix: str):
         )
     for permission in (
         'location.manage', 'inventory.manage', 'inventory.supplier.manage', 'product.manage',
+        'resource.manage',
     ):
         _permission(connection, scope.role_id, permission)
     return scope
@@ -199,6 +205,133 @@ def test_existing_records_use_deterministic_authority_updates(client, sql_connec
     assert result['unchanged'] == 3
     assert _count(connection, 'inventory_items', scope.tenant_id) == 1
     assert _count(connection, 'inventory_cost_revisions', scope.tenant_id) == 2
+
+
+def test_resource_import_create_update_replay_and_no_operational_session(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(f'{prefix}-onboarding', item_code='TABLE', resource=True)
+    fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
+
+    first = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert first.status_code == 201, first.text
+    result = first.json()
+    assert result['groups']['resources']['classification'] == 'IMPORTABLE_NOW'
+    assert result['groups']['resources']['created'] == 1
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT id,location_id,code,name,resource_type,status FROM resources '
+            'WHERE tenant_id=%s', (scope.tenant_id,),
+        )
+        resource = cursor.fetchone()
+    assert resource['location_id'] == scope.location_id
+    assert resource['code'] == 'RESOURCE-TABLE'
+    assert (resource['resource_type'], resource['status']) == ('TABLE', 'ACTIVE')
+    assert _count(connection, 'restaurant_service_sessions', scope.tenant_id) == 0
+    assert _count(connection, 'diner_sessions', scope.tenant_id) == 0
+
+    replay = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert replay.status_code == 200 and replay.json()['replay'] is True
+    assert _count(connection, 'resources', scope.tenant_id) == 1
+
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    workbook['03_Resources']['C2'] = 'Updated Resource'
+    workbook['03_Resources']['D2'] = 'EQUIPMENT'
+    workbook['03_Resources']['E2'] = 'INACTIVE'
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    changed = output.getvalue()
+    changed_fingerprint = _analyze(client, headers, changed).json()['dataset_fingerprint']
+    updated = _confirm(client, headers, changed, scope.location_id, changed_fingerprint)
+    assert updated.status_code == 201, updated.text
+    assert updated.json()['groups']['resources']['updated'] == 1
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT name,resource_type,status FROM resources WHERE id=%s',
+            (resource['id'],),
+        )
+        current = cursor.fetchone()
+    assert current == {
+        'name': 'Updated Resource', 'resource_type': 'EQUIPMENT',
+        'status': 'INACTIVE',
+    }
+    assert _count(connection, 'restaurant_service_sessions', scope.tenant_id) == 0
+
+
+def test_concurrent_resource_code_reconciles_and_cross_location_resolution_fails(
+    sql_connection, integration_settings,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'INSERT INTO locations '
+            '(tenant_id,organization_id,code,name,timezone,status) '
+            "VALUES (%s,%s,'OTHER','Other','America/Mexico_City','ACTIVE')",
+            (scope.tenant_id, scope.organization_id),
+        )
+        other_location_id = cursor.lastrowid
+
+    async def exercise() -> tuple[int, int]:
+        from app.db.session import DatabaseManager
+
+        database = DatabaseManager(integration_settings)
+        arguments = {
+            'tenant_id': scope.tenant_id,
+            'location_id': scope.location_id,
+            'resource_code': 'CONCURRENT',
+            'name': 'Concurrent Resource',
+            'resource_type': 'TABLE',
+            'status': 'ACTIVE',
+        }
+        try:
+            async with database.session_factory() as first_db, database.session_factory() as second_db:
+                first, second = await asyncio.gather(
+                    resource_provisioning.provision_resource(first_db, **arguments),
+                    resource_provisioning.provision_resource(second_db, **arguments),
+                )
+            async with database.session_factory() as db:
+                with pytest.raises(resource_provisioning.ResourceScopeNotFoundError):
+                    await resource_provisioning.resolve_resource(
+                        db, tenant_id=scope.tenant_id,
+                        location_id=other_location_id,
+                        resource_code='CONCURRENT',
+                    )
+            return first.resource.id, second.resource.id
+        finally:
+            await database.dispose()
+
+    first_id, second_id = asyncio.run(exercise())
+    assert first_id == second_id
+    assert _count(connection, 'resources', scope.tenant_id) == 1
+
+
+def test_new_inactive_resource_is_plan_blocked_without_resource_write(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(f'{prefix}-onboarding', item_code='INACTIVE', resource=True)
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    workbook['03_Resources']['E2'] = 'INACTIVE'
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    content = output.getvalue()
+    fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
+
+    response = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert response.status_code == 201, response.text
+    result = response.json()
+    assert result['status'] == 'FAILED'
+    assert result['groups']['resources']['failed'] == 1
+    assert result['errors'][0]['message'] == 'New Resources must be ACTIVE'
+    assert _count(connection, 'resources', scope.tenant_id) == 0
 
 
 def test_product_import_binding_update_replay_and_distinct_keys(
@@ -545,7 +678,10 @@ def test_deferred_group_is_visible_and_prevents_false_success(client, sql_connec
     connection, prefix = sql_connection
     scope = _prepare(connection, prefix)
     headers = _headers(client, scope)
-    content = _workbook(f'{prefix}-onboarding', item_code='RICE', deferred_resource=True)
+    content = _workbook(
+        f'{prefix}-onboarding', item_code='RICE',
+        deferred_preparation_configuration=True,
+    )
     fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
 
     response = _confirm(client, headers, content, scope.location_id, fingerprint)
@@ -553,11 +689,11 @@ def test_deferred_group_is_visible_and_prevents_false_success(client, sql_connec
     result = response.json()
     assert result['status'] == 'PARTIAL', result
     assert result['deferred'] == 1
-    assert result['groups']['resources'] == {
+    assert result['groups']['preparation_configuration'] == {
         'classification': 'DEFERRED_PROVISIONING',
-        'authority': 'models.resource.Resource',
+        'authority': 'models.preparation.LocationPreparationConfiguration',
         'required_for_stage0': True,
         'planned': 1, 'created': 0, 'updated': 0, 'unchanged': 0,
         'deferred': 1, 'failed': 0,
     }
-    assert _count(connection, 'resources', scope.tenant_id) == 0
+    assert _count(connection, 'location_preparation_configurations', scope.tenant_id) == 0
