@@ -39,12 +39,14 @@ from app.restaurant.inventory import receiving
 from app.restaurant.inventory import service as inventory_service
 from app.restaurant.inventory import consumption_provisioning
 from app.restaurant.inventory import warehouse_provisioning
+from app.restaurant.fiscal_product import provisioning as fiscal_product_provisioning
 from app.restaurant.preparation import (
     area_provisioning,
     configuration_provisioning,
     route_provisioning,
 )
 from app.restaurant.pricing import provisioning as price_provisioning
+from app.restaurant.tax import provisioning as tax_rule_provisioning
 
 
 IMPORTABLE_NOW = frozenset({
@@ -58,6 +60,8 @@ IMPORTABLE_NOW = frozenset({
     'warehouses',
     'consumption_definitions',
     'consumption_components',
+    'tax_rules',
+    'product_fiscal_classifications',
 })
 OPERATIONAL_NOT_CATALOG_IMPORT = frozenset({'payment_methods'})
 DEFERRED_PROVISIONING = frozenset(
@@ -103,6 +107,11 @@ AUTHORITY_BY_GROUP = {
     'consumption_components': (
         'restaurant.inventory.consumption_provisioning.'
         'provision_consumption_definition'
+    ),
+    'tax_rules': 'restaurant.tax.provisioning.provision_tax_rule',
+    'product_fiscal_classifications': (
+        'restaurant.fiscal_product.provisioning.'
+        'provision_product_fiscal_classification'
     ),
 }
 
@@ -284,7 +293,10 @@ async def build_import_plan(
             raise ImportRejectedError('SCOPE_MISMATCH', f'Row {row.group}:{row.row} crosses tenant scope')
         if value.get('organization_code', organization.code) != organization.code:
             raise ImportRejectedError('SCOPE_MISMATCH', f'Row {row.group}:{row.row} crosses organization scope')
-        if value.get('location_code', location.code) != location.code:
+        if (
+            value.get('location_code') is not None
+            and value.get('location_code') != location.code
+        ):
             raise ImportRejectedError('SCOPE_MISMATCH', f'Row {row.group}:{row.row} crosses location scope')
 
     profile_fields = (
@@ -337,6 +349,14 @@ async def build_import_plan(
         )
     if populated & {'categories', 'products'} and 'product.manage' not in permissions:
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'product.manage permission is required')
+    if (
+        populated & {'tax_rules', 'product_fiscal_classifications'}
+        and 'product.manage' not in permissions
+    ):
+        raise ImportRejectedError(
+            'INSUFFICIENT_PERMISSION',
+            'product.manage permission is required for fiscal configuration',
+        )
     if 'prices' in populated and 'pricing.manage' not in permissions:
         raise ImportRejectedError(
             'INSUFFICIENT_PERMISSION', 'pricing.manage permission is required'
@@ -428,6 +448,7 @@ async def build_import_plan(
         (row.values['menu_key'], row.values['section_key'])
         for row in ordered_rows if row.group == 'menu_sections'
     }
+    pending_tax_rules: list[dict[str, Any]] = []
     for row in ordered_rows:
         if row.group == 'restaurant_profile':
             continue
@@ -743,6 +764,80 @@ async def build_import_plan(
                 consumption_plan.operation, AUTHORITY_BY_GROUP[row.group],
                 value, consumption_plan.definition_id,
                 consumption_plan.expected_version, blocker,
+            ))
+        elif row.group == 'tax_rules':
+            blocker = None
+            try:
+                tax_plan = await tax_rule_provisioning.plan_tax_rule(
+                    db, tenant_id=tenant_id, organization_id=organization.id,
+                    location_id=(
+                        None if value['location_code'] is None else location.id
+                    ),
+                    tax_classification_code=value['tax_classification_code'],
+                    jurisdiction_code=value['jurisdiction_code'],
+                    tax_category=value['tax_category'],
+                    tax_treatment=value['tax_treatment'],
+                    tax_effect=value['tax_effect'],
+                    tax_rate=_decimal(value['tax_rate']),
+                    calculation_policy=value['calculation_policy'],
+                    rounding_policy=value['rounding_policy'],
+                    effective_from=_utc_naive(value['effective_from']),
+                    effective_to=_utc_naive(value['effective_to']),
+                    status=value['status'],
+                )
+            except tax_rule_provisioning.TaxRuleProvisioningError as exc:
+                tax_plan = tax_rule_provisioning.TaxRuleProvisioningPlan(
+                    'CREATE', None, None,
+                )
+                blocker = str(exc)
+            if blocker is None:
+                pending_tax_rules.append(value)
+            items.append(PlanItem(
+                row.group, row.row, row.business_key, tax_plan.operation,
+                AUTHORITY_BY_GROUP[row.group], value, tax_plan.rule_id,
+                blocking_error=blocker,
+            ))
+        elif row.group == 'product_fiscal_classifications':
+            effective_from = _utc_naive(value['effective_from'])
+            pending_rule = any(
+                rule['tax_classification_code']
+                == value['tax_classification_code']
+                and rule['status'] == 'ACTIVE'
+                and rule['location_code'] in (None, location.code)
+                and _utc_naive(rule['effective_from']) <= effective_from
+                and (
+                    rule['effective_to'] is None
+                    or effective_from < _utc_naive(rule['effective_to'])
+                )
+                for rule in pending_tax_rules
+            )
+            blocker = None
+            try:
+                fiscal_plan = await fiscal_product_provisioning.plan_product_fiscal_classification(
+                    db, tenant_id=tenant_id, organization_id=organization.id,
+                    location_id=location.id, binding_namespace=product_namespace,
+                    product_key=value['product_key'],
+                    tax_classification_code=value['tax_classification_code'],
+                    fiscal_jurisdiction_code=value['fiscal_jurisdiction_code'],
+                    product_classification_scheme=value['product_classification_scheme'],
+                    product_classification_code=value['product_classification_code'],
+                    unit_classification_scheme=value['unit_classification_scheme'],
+                    unit_classification_code=value['unit_classification_code'],
+                    effective_from=effective_from,
+                    effective_to=_utc_naive(value['effective_to']),
+                    status=value['status'],
+                    allow_unresolved_product=value['product_key'] in product_keys,
+                    allow_unresolved_tax_rule=pending_rule,
+                )
+            except fiscal_product_provisioning.FiscalClassificationProvisioningError as exc:
+                fiscal_plan = fiscal_product_provisioning.FiscalClassificationProvisioningPlan(
+                    'CREATE', None, None, None,
+                )
+                blocker = str(exc)
+            items.append(PlanItem(
+                row.group, row.row, row.business_key, fiscal_plan.operation,
+                AUTHORITY_BY_GROUP[row.group], value,
+                fiscal_plan.classification_id, blocking_error=blocker,
             ))
         elif row.group == 'inventory_items':
             current = existing_items.get(value['inventory_item_code'])
@@ -1151,6 +1246,49 @@ async def confirm_import(
                         'Consumption Definition aggregate was not provisioned'
                     )
                 actual_operation = consumption_outcomes[key]
+            elif item.group == 'tax_rules':
+                result = await tax_rule_provisioning.provision_tax_rule(
+                    db, tenant_id=tenant_id,
+                    organization_id=plan.scope.organization_id,
+                    location_id=(
+                        None if value['location_code'] is None else location_id
+                    ),
+                    tax_classification_code=value['tax_classification_code'],
+                    jurisdiction_code=value['jurisdiction_code'],
+                    tax_category=value['tax_category'],
+                    tax_treatment=value['tax_treatment'],
+                    tax_effect=value['tax_effect'],
+                    tax_rate=_decimal(value['tax_rate']),
+                    calculation_policy=value['calculation_policy'],
+                    rounding_policy=value['rounding_policy'],
+                    effective_from=_utc_naive(value['effective_from']),
+                    effective_to=_utc_naive(value['effective_to']),
+                    status=value['status'],
+                )
+                actual_operation = result.operation
+            elif item.group == 'product_fiscal_classifications':
+                result = await fiscal_product_provisioning.provision_product_fiscal_classification(
+                    db, tenant_id=tenant_id,
+                    organization_id=plan.scope.organization_id,
+                    location_id=location_id,
+                    binding_namespace=(
+                        product_provisioning.onboarding_binding_namespace(
+                            contract_version=CONTRACT_VERSION,
+                            organization_id=plan.scope.organization_id,
+                        )
+                    ),
+                    product_key=value['product_key'],
+                    tax_classification_code=value['tax_classification_code'],
+                    fiscal_jurisdiction_code=value['fiscal_jurisdiction_code'],
+                    product_classification_scheme=value['product_classification_scheme'],
+                    product_classification_code=value['product_classification_code'],
+                    unit_classification_scheme=value['unit_classification_scheme'],
+                    unit_classification_code=value['unit_classification_code'],
+                    effective_from=_utc_naive(value['effective_from']),
+                    effective_to=_utc_naive(value['effective_to']),
+                    status=value['status'],
+                )
+                actual_operation = result.operation
             elif item.group == 'inventory_items':
                 if item.operation == 'CREATE':
                     await inventory_service.create_inventory_item(
@@ -1256,6 +1394,21 @@ async def confirm_import(
                         'message': (
                             'The parent Consumption Definition aggregate failed'
                         ),
+                    })
+        if item.group == 'tax_rules':
+            failed_classification = item.values['tax_classification_code']
+            for dependent in plan.items:
+                if (
+                    dependent.group == 'product_fiscal_classifications'
+                    and dependent.values['tax_classification_code']
+                    == failed_classification
+                ):
+                    summaries[dependent.group]['failed'] += 1
+                    errors.append({
+                        'code': 'IMPORT_FAILED',
+                        'group': dependent.group,
+                        'row': dependent.row,
+                        'message': 'The required Tax Rule provisioning failed',
                     })
         completed = sum(s['created'] + s['updated'] for s in summaries.values())
         status = 'PARTIAL' if completed else 'FAILED'

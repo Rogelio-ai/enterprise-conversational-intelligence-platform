@@ -30,6 +30,12 @@ from app.restaurant.pricing import provisioning as price_provisioning
 from app.restaurant.inventory import service as inventory_service
 from app.restaurant.inventory import consumption_provisioning
 from app.restaurant.inventory import warehouse_provisioning
+from app.restaurant.fiscal_product import provisioning as fiscal_product_provisioning
+from app.restaurant.fiscal_product.contracts import FiscalProductClassificationCandidate
+from app.restaurant.fiscal_product.service import resolve_fiscal_product_evidence
+from app.restaurant.tax import provisioning as tax_rule_provisioning
+from app.restaurant.tax.contracts import RestaurantTaxLineCandidate
+from app.restaurant.tax.service import resolve_tax_evidence
 from test_inventory_recipe_stock_foundation import _headers, _permission, _scope
 
 
@@ -55,7 +61,10 @@ def test_all_contract_groups_have_one_explicit_import_classification() -> None:
     assert by_group['consumption_definitions']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['consumption_components']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['staff']['classification'] == 'DEFERRED_PROVISIONING'
-    assert by_group['tax_rules']['classification'] == 'DEFERRED_PROVISIONING'
+    assert by_group['tax_rules']['classification'] == 'IMPORTABLE_NOW'
+    assert by_group['product_fiscal_classifications']['classification'] == (
+        'IMPORTABLE_NOW'
+    )
     assert by_group['warehouses']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['payment_methods']['classification'] == 'OPERATIONAL_NOT_CATALOG_IMPORT'
     assert all(value['authority'] and value['business_key'] for value in values)
@@ -75,6 +84,7 @@ def _workbook(
     price: bool = False,
     inventory: bool = True, warehouse: bool = False,
     consumption: bool = False,
+    fiscal: bool = False,
 ) -> bytes:
     workbook = load_workbook(BytesIO(deterministic_bytes()), data_only=False)
     _set_row(workbook, '01_Restaurant', (
@@ -100,7 +110,7 @@ def _workbook(
         _set_row(workbook, '06_Categories', (
             f'CAT-{item_code}', 'ORG', f'Category {item_code}', None, 0, 'ACTIVE',
         ))
-    if product or category_product or menu_item or price or consumption:
+    if product or category_product or menu_item or price or consumption or fiscal:
         _set_row(workbook, '07_Products', (
             f'PROD-{item_code}', 'ORG',
             f'CAT-{item_code}' if category_product else None,
@@ -150,6 +160,18 @@ def _workbook(
         ))
         _set_row(workbook, '24_Consumption_Lines', (
             f'PROD-{item_code}', 'LOC', item_code, '2.000000', 'BAG',
+        ))
+    if fiscal:
+        _set_row(workbook, '28_Tax_Rules', (
+            f'TAX-{item_code}', 'ORG', None, f'CLASS-{item_code}',
+            'MX-FEDERAL', 'IVA', 'TAXABLE', 'TRANSFERRED', '0.160000',
+            'INCLUDED_PRICE_SINGLE_TAX', 'DECIMAL_4_HALF_UP',
+            '2026-01-01T00:00:00-06:00', None, 'ACTIVE',
+        ))
+        _set_row(workbook, '29_Product_Fiscal', (
+            f'PROD-{item_code}', f'CLASS-{item_code}', 'MX', 'SAT-PRODUCT',
+            '50192701', 'SAT-UNIT', 'H87',
+            '2026-01-01T00:00:00-06:00', None, 'ACTIVE',
         ))
     output = BytesIO()
     workbook.save(output)
@@ -2434,3 +2456,394 @@ def test_consumption_authority_validates_evidence_and_converges_concurrently(
         'inventory_valuation_snapshots',
     ):
         assert _count(connection, table, scope.tenant_id) == 0, table
+
+
+def test_fiscal_import_replays_updates_and_preserves_runtime_resolution(
+    client, sql_connection, integration_settings,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(
+        f'{prefix}-onboarding', item_code='FISCAL', inventory=False,
+        fiscal=True,
+    )
+    analyzed = _analyze(client, headers, content)
+    assert analyzed.status_code == 200, analyzed.text
+    assert analyzed.json()['analysis']['status'] == 'VALID'
+    fingerprint = analyzed.json()['dataset_fingerprint']
+
+    first = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert first.status_code == 201, first.text
+    result = first.json()
+    assert not result['errors'], result['errors']
+    for group, authority in (
+        ('tax_rules', 'restaurant.tax.provisioning.provision_tax_rule'),
+        (
+            'product_fiscal_classifications',
+            'restaurant.fiscal_product.provisioning.'
+            'provision_product_fiscal_classification',
+        ),
+    ):
+        assert result['groups'][group]['classification'] == 'IMPORTABLE_NOW'
+        assert result['groups'][group]['authority'] == authority
+        assert result['groups'][group]['created'] == 1
+    assert result['required_deferred_groups'] == ['staff']
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT p.id,p.tax_classification_code FROM products p '
+            'JOIN product_external_mappings m ON m.product_id=p.id '
+            'WHERE p.tenant_id=%s AND m.external_product_id=%s',
+            (scope.tenant_id, 'PROD-FISCAL'),
+        )
+        product = cursor.fetchone()
+        cursor.execute(
+            'SELECT id,location_id,tax_rate,effective_from,effective_to,status '
+            'FROM restaurant_tax_rules WHERE tenant_id=%s',
+            (scope.tenant_id,),
+        )
+        rule = cursor.fetchone()
+        cursor.execute(
+            'SELECT id,product_id,fiscal_jurisdiction_code,'
+            'product_classification_code,unit_classification_code,status '
+            'FROM product_fiscal_classifications WHERE tenant_id=%s',
+            (scope.tenant_id,),
+        )
+        classification = cursor.fetchone()
+    assert product['tax_classification_code'] == 'CLASS-FISCAL'
+    assert rule['location_id'] is None
+    assert rule['tax_rate'] == Decimal('0.160000')
+    assert rule['effective_to'] is None and rule['status'] == 'ACTIVE'
+    assert classification == {
+        'id': classification['id'], 'product_id': product['id'],
+        'fiscal_jurisdiction_code': 'MX',
+        'product_classification_code': '50192701',
+        'unit_classification_code': 'H87', 'status': 'ACTIVE',
+    }
+
+    async def resolve_runtime() -> tuple[Decimal, str]:
+        from app.db.session import DatabaseManager
+
+        database = DatabaseManager(integration_settings)
+        try:
+            async with database.session_factory() as db:
+                tax = await resolve_tax_evidence(db, RestaurantTaxLineCandidate(
+                    tenant_id=scope.tenant_id,
+                    organization_id=scope.organization_id,
+                    location_id=scope.location_id, product_id=product['id'],
+                    product_tax_classification_code='CLASS-FISCAL',
+                    effective_at=datetime(2026, 6, 1), tax_mode='INCLUDED',
+                    quantity=Decimal('1.0000'), unit_price=Decimal('116.0000'),
+                    base_amount=Decimal('116.0000'),
+                    discount_amount=Decimal('0.0000'),
+                    commercial_amount=Decimal('116.0000'),
+                ))
+                fiscal = await resolve_fiscal_product_evidence(
+                    db, FiscalProductClassificationCandidate(
+                        tenant_id=scope.tenant_id,
+                        organization_id=scope.organization_id,
+                        product_id=product['id'], fiscal_jurisdiction_code='MX',
+                        effective_at=datetime(2026, 6, 1),
+                    ),
+                )
+                return tax.tax_rate, fiscal.product_classification_code
+        finally:
+            await database.dispose()
+
+    assert asyncio.run(resolve_runtime()) == (Decimal('0.160000'), '50192701')
+
+    replay = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert replay.status_code == 200 and replay.json()['replay'] is True
+    assert _count(connection, 'restaurant_tax_rules', scope.tenant_id) == 1
+    assert _count(connection, 'product_fiscal_classifications', scope.tenant_id) == 1
+
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    workbook['28_Tax_Rules']['I2'] = '0.100000'
+    workbook['29_Product_Fiscal']['E2'] = '50192702'
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    changed = output.getvalue()
+    changed_fingerprint = _analyze(
+        client, headers, changed,
+    ).json()['dataset_fingerprint']
+    updated = _confirm(
+        client, headers, changed, scope.location_id, changed_fingerprint,
+    )
+    assert updated.status_code == 201, updated.text
+    for group in ('tax_rules', 'product_fiscal_classifications'):
+        assert updated.json()['groups'][group]['updated'] == 1
+    assert _count(connection, 'restaurant_tax_rules', scope.tenant_id) == 1
+    assert _count(connection, 'product_fiscal_classifications', scope.tenant_id) == 1
+    assert _count(connection, 'product_prices', scope.tenant_id) == 0
+    assert _count(connection, 'restaurant_order_item_tax_snapshots', scope.tenant_id) == 0
+    assert _count(connection, 'restaurant_payments', scope.tenant_id) == 0
+
+
+def test_fiscal_authorities_reject_invalid_scope_and_converge_concurrently(
+    client, sql_connection, integration_settings, monkeypatch,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(
+        f'{prefix}-onboarding', item_code='FISCAL-RACE', inventory=False,
+        product=True,
+    )
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    _set_row(workbook, '07_Products', (
+        'PROD-FISCAL-CONFLICT', 'ORG', None, 'Fiscal Conflict', None, 'ACTIVE',
+    ), row=3)
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    content = output.getvalue()
+    fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
+    seeded = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert seeded.status_code == 201, seeded.text
+
+    async def exercise() -> tuple[set[str], int, int, int, int]:
+        from app.db.session import DatabaseManager
+
+        database = DatabaseManager(integration_settings)
+        namespace = product_provisioning.onboarding_binding_namespace(
+            contract_version=CONTRACT_VERSION,
+            organization_id=scope.organization_id,
+        )
+        tax_arguments = {
+            'tenant_id': scope.tenant_id,
+            'organization_id': scope.organization_id,
+            'location_id': None,
+            'tax_classification_code': 'CLASS-FISCAL-RACE',
+            'jurisdiction_code': 'MX-FEDERAL', 'tax_category': 'IVA',
+            'tax_treatment': 'TAXABLE', 'tax_effect': 'TRANSFERRED',
+            'tax_rate': Decimal('0.160000'),
+            'calculation_policy': 'INCLUDED_PRICE_SINGLE_TAX',
+            'rounding_policy': 'DECIMAL_4_HALF_UP',
+            'effective_from': datetime(2026, 1, 1), 'effective_to': None,
+            'status': 'ACTIVE',
+        }
+
+        def synchronize_first_pair(original):
+            arrived = 0
+            gate = asyncio.Event()
+
+            async def synchronized(*args, **kwargs):
+                nonlocal arrived
+                result = await original(*args, **kwargs)
+                if arrived >= 2:
+                    return result
+                arrived += 1
+                if arrived == 2:
+                    gate.set()
+                await asyncio.wait_for(gate.wait(), timeout=5)
+                return result
+
+            return synchronized
+
+        original_tax_plan = tax_rule_provisioning.plan_tax_rule
+        original_fiscal_plan = (
+            fiscal_product_provisioning.plan_product_fiscal_classification
+        )
+        try:
+            async with database.session_factory() as db:
+                with pytest.raises(tax_rule_provisioning.TaxRuleProvisioningError):
+                    await original_tax_plan(
+                        db, **{**tax_arguments, 'tax_rate': Decimal('0.1600001')}
+                    )
+                with pytest.raises(tax_rule_provisioning.TaxRuleProvisioningError):
+                    await original_tax_plan(
+                        db, **{**tax_arguments, 'status': 'UNKNOWN'}
+                    )
+                with pytest.raises(tax_rule_provisioning.TaxRuleProvisioningError):
+                    await original_tax_plan(
+                        db, **{
+                            **tax_arguments,
+                            'effective_to': datetime(2025, 12, 31),
+                        },
+                    )
+                with pytest.raises(tax_rule_provisioning.TaxRuleScopeError):
+                    await original_tax_plan(
+                        db, **{
+                            **tax_arguments,
+                            'organization_id': scope.organization_id + 999999,
+                        },
+                    )
+
+            monkeypatch.setattr(
+                tax_rule_provisioning, 'plan_tax_rule',
+                synchronize_first_pair(original_tax_plan),
+            )
+            async with (
+                database.session_factory() as first_db,
+                database.session_factory() as second_db,
+            ):
+                first_tax, second_tax = await asyncio.gather(
+                    tax_rule_provisioning.provision_tax_rule(
+                        first_db, **tax_arguments,
+                    ),
+                    tax_rule_provisioning.provision_tax_rule(
+                        second_db, **tax_arguments,
+                    ),
+                )
+            monkeypatch.setattr(
+                tax_rule_provisioning, 'plan_tax_rule', original_tax_plan,
+            )
+
+            fiscal_arguments = {
+                'tenant_id': scope.tenant_id,
+                'organization_id': scope.organization_id,
+                'location_id': scope.location_id,
+                'binding_namespace': namespace,
+                'product_key': 'PROD-FISCAL-RACE',
+                'tax_classification_code': 'CLASS-FISCAL-RACE',
+                'fiscal_jurisdiction_code': 'MX',
+                'product_classification_scheme': 'SAT-PRODUCT',
+                'product_classification_code': '50192701',
+                'unit_classification_scheme': 'SAT-UNIT',
+                'unit_classification_code': 'H87',
+                'effective_from': datetime(2026, 1, 1),
+                'effective_to': None, 'status': 'ACTIVE',
+            }
+            async with database.session_factory() as db:
+                with pytest.raises(
+                    fiscal_product_provisioning.FiscalClassificationScopeError
+                ):
+                    await original_fiscal_plan(
+                        db, **{
+                            **fiscal_arguments, 'product_key': 'UNKNOWN-PRODUCT',
+                        },
+                    )
+                with pytest.raises(
+                    fiscal_product_provisioning.FiscalClassificationScopeError
+                ):
+                    await original_fiscal_plan(
+                        db, **{
+                            **fiscal_arguments,
+                            'tax_classification_code': 'UNKNOWN-TAX',
+                        },
+                    )
+
+            monkeypatch.setattr(
+                fiscal_product_provisioning,
+                'plan_product_fiscal_classification',
+                synchronize_first_pair(original_fiscal_plan),
+            )
+            async with (
+                database.session_factory() as first_db,
+                database.session_factory() as second_db,
+            ):
+                first_fiscal, second_fiscal = await asyncio.gather(
+                    fiscal_product_provisioning.provision_product_fiscal_classification(
+                        first_db, **fiscal_arguments,
+                    ),
+                    fiscal_product_provisioning.provision_product_fiscal_classification(
+                        second_db, **fiscal_arguments,
+                    ),
+                )
+            async with database.session_factory() as db:
+                with pytest.raises(tax_rule_provisioning.TaxRuleConflictError):
+                    await original_tax_plan(
+                        db, **{
+                            **tax_arguments,
+                            'effective_from': datetime(2026, 6, 1),
+                        },
+                    )
+                with pytest.raises(
+                    fiscal_product_provisioning.FiscalClassificationConflictError
+                ):
+                    await original_fiscal_plan(
+                        db, **{
+                            **fiscal_arguments,
+                            'effective_from': datetime(2026, 6, 1),
+                        },
+                    )
+
+            monkeypatch.setattr(
+                tax_rule_provisioning, 'plan_tax_rule',
+                synchronize_first_pair(original_tax_plan),
+            )
+            conflicting_tax = {
+                **tax_arguments,
+                'tax_classification_code': 'CLASS-FISCAL-CONFLICT',
+            }
+            async with (
+                database.session_factory() as first_db,
+                database.session_factory() as second_db,
+            ):
+                tax_conflicts = await asyncio.gather(
+                    tax_rule_provisioning.provision_tax_rule(
+                        first_db, **conflicting_tax,
+                    ),
+                    tax_rule_provisioning.provision_tax_rule(
+                        second_db, **{
+                            **conflicting_tax, 'tax_rate': Decimal('0.100000'),
+                        },
+                    ),
+                    return_exceptions=True,
+                )
+            monkeypatch.setattr(
+                tax_rule_provisioning, 'plan_tax_rule', original_tax_plan,
+            )
+
+            monkeypatch.setattr(
+                fiscal_product_provisioning,
+                'plan_product_fiscal_classification',
+                synchronize_first_pair(original_fiscal_plan),
+            )
+            conflicting_fiscal = {
+                **fiscal_arguments, 'product_key': 'PROD-FISCAL-CONFLICT',
+            }
+            async with (
+                database.session_factory() as first_db,
+                database.session_factory() as second_db,
+            ):
+                fiscal_conflicts = await asyncio.gather(
+                    fiscal_product_provisioning.provision_product_fiscal_classification(
+                        first_db, **conflicting_fiscal,
+                    ),
+                    fiscal_product_provisioning.provision_product_fiscal_classification(
+                        second_db, **{
+                            **conflicting_fiscal,
+                            'product_classification_code': '50192702',
+                        },
+                    ),
+                    return_exceptions=True,
+                )
+            return (
+                {first_tax.operation, second_tax.operation},
+                first_fiscal.classification.id,
+                second_fiscal.classification.id,
+                sum(
+                    isinstance(value, tax_rule_provisioning.TaxRuleConflictError)
+                    for value in tax_conflicts
+                ),
+                sum(
+                    isinstance(
+                        value,
+                        fiscal_product_provisioning.
+                        FiscalClassificationConflictError,
+                    )
+                    for value in fiscal_conflicts
+                ),
+            )
+        finally:
+            monkeypatch.setattr(
+                tax_rule_provisioning, 'plan_tax_rule', original_tax_plan,
+            )
+            monkeypatch.setattr(
+                fiscal_product_provisioning,
+                'plan_product_fiscal_classification', original_fiscal_plan,
+            )
+            await database.dispose()
+
+    tax_operations, first_id, second_id, tax_conflicts, fiscal_conflicts = (
+        asyncio.run(exercise())
+    )
+    assert tax_operations == {'CREATE', 'UNCHANGED'}
+    assert first_id == second_id
+    assert tax_conflicts == fiscal_conflicts == 1
+    assert _count(connection, 'restaurant_tax_rules', scope.tenant_id) == 2
+    assert _count(connection, 'product_fiscal_classifications', scope.tenant_id) == 2
+    assert _count(connection, 'product_prices', scope.tenant_id) == 0
