@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import logging
-import re
 from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from sqlalchemy import select
-from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthenticatedContext, get_db, require_permission
@@ -20,16 +18,18 @@ from app.models import (
     MenuLocation,
     MenuSection,
     Organization,
-    Product,
 )
 from app.restaurant.catalog.queries import load_menu_graph, menu_statement
-from app.restaurant import menu_provisioning, menu_section_provisioning
+from app.restaurant import (
+    menu_item_provisioning,
+    menu_provisioning,
+    menu_section_provisioning,
+)
 
 
 Lifecycle = Literal['ACTIVE', 'INACTIVE']
 router = APIRouter(prefix='/menus', tags=['menus'])
 logger = logging.getLogger('ecip.menus')
-_DUPLICATE_KEY_PATTERN = re.compile(r"for key [`'\"]([^`'\"]+)[`'\"]", re.IGNORECASE)
 
 
 class MenuCreateRequest(BaseModel):
@@ -207,14 +207,6 @@ def _not_found(entity: str) -> HTTPException:
 
 def _conflict(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_409_CONFLICT, detail=detail)
-
-
-def _is_constraint(exc: IntegrityError, constraint_name: str) -> bool:
-    arguments = getattr(exc.orig, 'args', ())
-    if len(arguments) < 2 or arguments[0] != 1062:
-        return False
-    match = _DUPLICATE_KEY_PATTERN.search(str(arguments[1]))
-    return match is not None and match.group(1).rsplit('.', 1)[-1] == constraint_name
 
 
 async def _get_organization(
@@ -564,40 +556,17 @@ async def create_menu_item(
     context: Annotated[AuthenticatedContext, Depends(require_permission('menu.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> MenuItem:
-    menu = await _get_menu(db, tenant_id=context.tenant_id, menu_id=menu_id)
-    await _get_section(
-        db,
-        tenant_id=context.tenant_id,
-        menu_id=menu.id,
-        section_id=payload.section_id,
-    )
-    product = await db.scalar(
-        select(Product).where(
-            Product.id == payload.product_id,
-            Product.tenant_id == context.tenant_id,
-            Product.organization_id == menu.organization_id,
-        )
-    )
-    if product is None:
-        raise _not_found('Product')
-    item = MenuItem(
-        tenant_id=context.tenant_id,
-        organization_id=menu.organization_id,
-        menu_id=menu.id,
-        section_id=payload.section_id,
-        product_id=payload.product_id,
-        display_order=payload.display_order,
-        status=payload.status,
-    )
-    db.add(item)
     try:
-        await db.commit()
-    except IntegrityError as exc:
-        await db.rollback()
-        if _is_constraint(exc, 'uq_menu_items_tenant_menu_product'):
-            raise _conflict('Product is already placed in this Menu') from exc
-        raise
-    await db.refresh(item)
+        item = await menu_item_provisioning.create_menu_item(
+            db, tenant_id=context.tenant_id, menu_id=menu_id,
+            section_id=payload.section_id, product_id=payload.product_id,
+            display_order=payload.display_order, status=payload.status,
+        )
+    except menu_item_provisioning.MenuItemScopeNotFoundError as exc:
+        raise _not_found(str(exc).removesuffix(' not found')) from exc
+    except menu_item_provisioning.MenuItemConflictError as exc:
+        raise _conflict(str(exc)) from exc
+    menu = await _get_menu(db, tenant_id=context.tenant_id, menu_id=menu_id)
     _log_mutation('menu_item_created', 'create', context, menu, menu_item_id=item.id)
     return item
 
@@ -610,25 +579,14 @@ async def update_menu_item(
     context: Annotated[AuthenticatedContext, Depends(require_permission('menu.manage'))],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> MenuItem:
-    menu = await _get_menu(db, tenant_id=context.tenant_id, menu_id=menu_id)
-    item = await _get_item(
-        db,
-        tenant_id=context.tenant_id,
-        menu_id=menu.id,
-        item_id=item_id,
-        for_update=True,
-    )
-    updates = payload.model_dump(exclude_unset=True)
-    if 'section_id' in updates:
-        await _get_section(
-            db,
-            tenant_id=context.tenant_id,
-            menu_id=menu.id,
-            section_id=updates['section_id'],
+    try:
+        item = await menu_item_provisioning.update_menu_item(
+            db, tenant_id=context.tenant_id, menu_id=menu_id,
+            menu_item_id=item_id,
+            changes=payload.model_dump(exclude_unset=True),
         )
-    for field, value in updates.items():
-        setattr(item, field, value)
-    await db.commit()
-    await db.refresh(item)
+    except menu_item_provisioning.MenuItemScopeNotFoundError as exc:
+        raise _not_found(str(exc).removesuffix(' not found')) from exc
+    menu = await _get_menu(db, tenant_id=context.tenant_id, menu_id=menu_id)
     _log_mutation('menu_item_updated', 'update', context, menu, menu_item_id=item.id)
     return item

@@ -30,6 +30,7 @@ from app.onboarding.contract import CONTRACT_VERSION, ONBOARDING_CONTRACT
 from app.restaurant.catalog import category_provisioning
 from app.restaurant.catalog import provisioning as product_provisioning
 from app.restaurant import (
+    menu_item_provisioning,
     menu_provisioning,
     menu_section_provisioning,
     resource_provisioning,
@@ -49,6 +50,7 @@ IMPORTABLE_NOW = frozenset({
     'preparation_areas', 'categories', 'products', 'preparation_routes',
     'menus',
     'menu_sections',
+    'menu_items',
 })
 OPERATIONAL_NOT_CATALOG_IMPORT = frozenset({'payment_methods'})
 DEFERRED_PROVISIONING = frozenset(
@@ -82,6 +84,7 @@ AUTHORITY_BY_GROUP = {
     'menu_sections': (
         'restaurant.menu_section_provisioning.provision_menu_section'
     ),
+    'menu_items': 'restaurant.menu_item_provisioning.provision_menu_item',
 }
 
 
@@ -309,7 +312,10 @@ async def build_import_plan(
         )
     if populated & {'categories', 'products'} and 'product.manage' not in permissions:
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'product.manage permission is required')
-    if populated & {'menus', 'menu_sections'} and 'menu.manage' not in permissions:
+    if (
+        populated & {'menus', 'menu_sections', 'menu_items'}
+        and 'menu.manage' not in permissions
+    ):
         raise ImportRejectedError(
             'INSUFFICIENT_PERMISSION', 'menu.manage permission is required'
         )
@@ -363,6 +369,10 @@ async def build_import_plan(
     }
     menu_keys = {
         row.values['menu_key'] for row in ordered_rows if row.group == 'menus'
+    }
+    section_keys = {
+        (row.values['menu_key'], row.values['section_key'])
+        for row in ordered_rows if row.group == 'menu_sections'
     }
     for row in ordered_rows:
         if row.group == 'restaurant_profile':
@@ -540,6 +550,33 @@ async def build_import_plan(
             except (
                 menu_section_provisioning.MenuSectionProvisioningError
             ) as exc:
+                operation, current_id, blocker = 'CREATE', None, str(exc)
+            items.append(PlanItem(
+                row.group, row.row, row.business_key, operation,
+                AUTHORITY_BY_GROUP[row.group], value, current_id,
+                blocking_error=blocker,
+            ))
+        elif row.group == 'menu_items':
+            blocker = None
+            try:
+                item_plan = await menu_item_provisioning.plan_menu_item(
+                    db, tenant_id=tenant_id,
+                    organization_id=organization.id,
+                    binding_namespace=menu_namespace,
+                    menu_key=value['menu_key'],
+                    section_key=value['section_key'],
+                    product_key=value['product_key'],
+                    display_order=value['display_order'],
+                    status=value['status'],
+                    allow_unresolved_menu=value['menu_key'] in menu_keys,
+                    allow_unresolved_section=(
+                        value['menu_key'], value['section_key']
+                    ) in section_keys,
+                    allow_unresolved_product=value['product_key'] in product_keys,
+                )
+                operation = item_plan.operation
+                current_id = item_plan.menu_item_id
+            except menu_item_provisioning.MenuItemProvisioningError as exc:
                 operation, current_id, blocker = 'CREATE', None, str(exc)
             items.append(PlanItem(
                 row.group, row.row, row.business_key, operation,
@@ -861,6 +898,21 @@ async def confirm_import(
                     ),
                     menu_key=value['menu_key'],
                     section_key=value['section_key'], name=value['name'],
+                    display_order=value['display_order'],
+                    status=value['status'],
+                )
+                actual_operation = result.operation
+            elif item.group == 'menu_items':
+                result = await menu_item_provisioning.provision_menu_item(
+                    db, tenant_id=tenant_id,
+                    organization_id=plan.scope.organization_id,
+                    binding_namespace=menu_provisioning.onboarding_binding_namespace(
+                        contract_version=CONTRACT_VERSION,
+                        organization_id=plan.scope.organization_id,
+                    ),
+                    menu_key=value['menu_key'],
+                    section_key=value['section_key'],
+                    product_key=value['product_key'],
                     display_order=value['display_order'],
                     status=value['status'],
                 )

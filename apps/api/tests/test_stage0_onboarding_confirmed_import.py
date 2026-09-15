@@ -14,6 +14,7 @@ from app.onboarding.xlsx import deterministic_bytes
 from app.restaurant.catalog import category_provisioning
 from app.restaurant.catalog import provisioning as product_provisioning
 from app.restaurant import (
+    menu_item_provisioning,
     menu_provisioning,
     menu_section_provisioning,
     resource_provisioning,
@@ -44,6 +45,7 @@ def test_all_contract_groups_have_one_explicit_import_classification() -> None:
     assert by_group['products']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['menus']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['menu_sections']['classification'] == 'IMPORTABLE_NOW'
+    assert by_group['menu_items']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['staff']['classification'] == 'DEFERRED_PROVISIONING'
     assert by_group['tax_rules']['classification'] == 'DEFERRED_PROVISIONING'
     assert by_group['warehouses']['classification'] == 'DEFERRED_PROVISIONING'
@@ -61,7 +63,7 @@ def _workbook(
     category_product: bool = False, resource: bool = False,
     preparation_configuration: bool = False, preparation_area: bool = False,
     area_resource: bool = False, preparation_route: bool = False,
-    menu: bool = False, menu_section: bool = False,
+    menu: bool = False, menu_section: bool = False, menu_item: bool = False,
 ) -> bytes:
     workbook = load_workbook(BytesIO(deterministic_bytes()), data_only=False)
     _set_row(workbook, '01_Restaurant', (
@@ -86,7 +88,7 @@ def _workbook(
         _set_row(workbook, '06_Categories', (
             f'CAT-{item_code}', 'ORG', f'Category {item_code}', None, 0, 'ACTIVE',
         ))
-    if product or category_product:
+    if product or category_product or menu_item:
         _set_row(workbook, '07_Products', (
             f'PROD-{item_code}', 'ORG',
             f'CAT-{item_code}' if category_product else None,
@@ -107,14 +109,19 @@ def _workbook(
         _set_row(workbook, '27_Prep_Routes', (
             f'PROD-{item_code}', 'LOC', 'AREA', f'AREA-{item_code}', 'ACTIVE',
         ))
-    if menu or menu_section:
+    if menu or menu_section or menu_item:
         _set_row(workbook, '08_Menus', (
             f'MENU-{item_code}', 'ORG', f'Menu {item_code}', 'LOC', 'ACTIVE',
         ))
-    if menu_section:
+    if menu_section or menu_item:
         _set_row(workbook, '09_Menu_Sections', (
             f'SECTION-{item_code}', f'MENU-{item_code}',
             f'Section {item_code}', 10, 'ACTIVE',
+        ))
+    if menu_item:
+        _set_row(workbook, '10_Menu_Items', (
+            f'MENU-{item_code}', f'SECTION-{item_code}',
+            f'PROD-{item_code}', 20, 'ACTIVE',
         ))
     output = BytesIO()
     workbook.save(output)
@@ -1570,4 +1577,186 @@ def test_menu_section_binding_is_menu_scoped_and_concurrency_safe(
     assert _count(connection, 'menu_sections', scope.tenant_id) == 2
     assert _count(connection, 'menu_section_external_mappings', scope.tenant_id) == 2
     assert _count(connection, 'menu_items', scope.tenant_id) == 0
+    assert _count(connection, 'product_prices', scope.tenant_id) == 0
+
+
+def test_menu_item_import_uses_existing_identity_updates_and_never_prices(
+    client, sql_connection, integration_settings,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(
+        f'{prefix}-onboarding', item_code='PLACEMENT', menu_item=True,
+    )
+    fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
+
+    first = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert first.status_code == 201, first.text
+    result = first.json()
+    assert result['groups']['products']['created'] == 1
+    assert result['groups']['menus']['created'] == 1
+    assert result['groups']['menu_sections']['created'] == 1
+    assert result['groups']['menu_items']['classification'] == 'IMPORTABLE_NOW'
+    assert result['groups']['menu_items']['authority'] == (
+        'restaurant.menu_item_provisioning.provision_menu_item'
+    )
+    assert result['groups']['menu_items']['created'] == 1
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT id,organization_id,menu_id,section_id,product_id,'
+            'display_order,status FROM menu_items WHERE tenant_id=%s',
+            (scope.tenant_id,),
+        )
+        item = cursor.fetchone()
+    assert item['organization_id'] == scope.organization_id
+    assert (item['display_order'], item['status']) == (20, 'ACTIVE')
+    assert _count(connection, 'menu_items', scope.tenant_id) == 1
+    assert _count(connection, 'product_prices', scope.tenant_id) == 0
+
+    async def resolve() -> int:
+        from app.db.session import DatabaseManager
+
+        database = DatabaseManager(integration_settings)
+        namespace = menu_provisioning.onboarding_binding_namespace(
+            contract_version=CONTRACT_VERSION,
+            organization_id=scope.organization_id,
+        )
+        try:
+            async with database.session_factory() as db:
+                resolved = await menu_item_provisioning.resolve_menu_item(
+                    db, tenant_id=scope.tenant_id,
+                    organization_id=scope.organization_id,
+                    binding_namespace=namespace, menu_key='MENU-PLACEMENT',
+                    section_key='SECTION-PLACEMENT',
+                    product_key='PROD-PLACEMENT',
+                )
+                return resolved.id
+        finally:
+            await database.dispose()
+
+    assert asyncio.run(resolve()) == item['id']
+    replay = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert replay.status_code == 200 and replay.json()['replay'] is True
+    assert _count(connection, 'menu_items', scope.tenant_id) == 1
+    assert _count(connection, 'product_prices', scope.tenant_id) == 0
+
+    workbook = load_workbook(BytesIO(content), data_only=False)
+    _set_row(workbook, '09_Menu_Sections', (
+        'SECTION-SECOND', 'MENU-PLACEMENT', 'Second Section', 30, 'ACTIVE',
+    ), row=3)
+    workbook['10_Menu_Items']['B2'] = 'SECTION-SECOND'
+    workbook['10_Menu_Items']['D2'] = 40
+    workbook['10_Menu_Items']['E2'] = 'INACTIVE'
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    changed = output.getvalue()
+    changed_fingerprint = _analyze(client, headers, changed).json()['dataset_fingerprint']
+    updated = _confirm(client, headers, changed, scope.location_id, changed_fingerprint)
+    assert updated.status_code == 201, updated.text
+    assert updated.json()['groups']['menu_sections']['created'] == 1
+    assert updated.json()['groups']['menu_items']['updated'] == 1
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT section_id,display_order,status FROM menu_items WHERE id=%s',
+            (item['id'],),
+        )
+        current = cursor.fetchone()
+        cursor.execute(
+            'SELECT id FROM menu_sections WHERE tenant_id=%s AND name=%s',
+            (scope.tenant_id, 'Second Section'),
+        )
+        second_section = cursor.fetchone()
+    assert current == {
+        'section_id': second_section['id'], 'display_order': 40,
+        'status': 'INACTIVE',
+    }
+    assert _count(connection, 'menu_items', scope.tenant_id) == 1
+    assert _count(connection, 'product_prices', scope.tenant_id) == 0
+
+
+def test_menu_item_authority_rejects_foreign_section_and_converges_concurrently(
+    client, sql_connection, integration_settings,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    headers = _headers(client, scope)
+    content = _workbook(
+        f'{prefix}-onboarding', item_code='CONCURRENT-ITEM',
+        product=True, menu_section=True,
+    )
+    fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
+    seeded = _confirm(client, headers, content, scope.location_id, fingerprint)
+    assert seeded.status_code == 201, seeded.text
+    assert _count(connection, 'menu_items', scope.tenant_id) == 0
+
+    async def exercise() -> tuple[int, int, set[str]]:
+        from app.db.session import DatabaseManager
+
+        database = DatabaseManager(integration_settings)
+        namespace = menu_provisioning.onboarding_binding_namespace(
+            contract_version=CONTRACT_VERSION,
+            organization_id=scope.organization_id,
+        )
+        arguments = {
+            'tenant_id': scope.tenant_id,
+            'organization_id': scope.organization_id,
+            'binding_namespace': namespace,
+            'menu_key': 'MENU-CONCURRENT-ITEM',
+            'section_key': 'SECTION-CONCURRENT-ITEM',
+            'product_key': 'PROD-CONCURRENT-ITEM',
+            'display_order': 5, 'status': 'ACTIVE',
+        }
+        try:
+            async with database.session_factory() as db:
+                await menu_provisioning.provision_menu(
+                    db, tenant_id=scope.tenant_id,
+                    organization_id=scope.organization_id,
+                    location_id=scope.location_id,
+                    binding_namespace=namespace, menu_key='OTHER-MENU',
+                    name='Other Menu', status='ACTIVE',
+                )
+                await menu_section_provisioning.provision_menu_section(
+                    db, tenant_id=scope.tenant_id,
+                    organization_id=scope.organization_id,
+                    binding_namespace=namespace, menu_key='OTHER-MENU',
+                    section_key='FOREIGN-SECTION', name='Foreign Section',
+                    display_order=0, status='ACTIVE',
+                )
+                with pytest.raises(
+                    menu_item_provisioning.MenuItemScopeNotFoundError
+                ):
+                    await menu_item_provisioning.plan_menu_item(
+                        db, **{**arguments, 'section_key': 'FOREIGN-SECTION'},
+                    )
+                with pytest.raises(
+                    menu_item_provisioning.MenuItemScopeNotFoundError
+                ):
+                    await menu_item_provisioning.plan_menu_item(
+                        db, **{**arguments,
+                               'organization_id': scope.organization_id + 999999},
+                    )
+            async with (
+                database.session_factory() as first_db,
+                database.session_factory() as second_db,
+            ):
+                first, second = await asyncio.gather(
+                    menu_item_provisioning.provision_menu_item(
+                        first_db, **arguments,
+                    ),
+                    menu_item_provisioning.provision_menu_item(
+                        second_db, **arguments,
+                    ),
+                )
+            return first.menu_item.id, second.menu_item.id, {
+                first.operation, second.operation,
+            }
+        finally:
+            await database.dispose()
+
+    first_id, second_id, operations = asyncio.run(exercise())
+    assert first_id == second_id
+    assert operations == {'CREATE', 'UNCHANGED'}
+    assert _count(connection, 'menu_items', scope.tenant_id) == 1
     assert _count(connection, 'product_prices', scope.tenant_id) == 0
