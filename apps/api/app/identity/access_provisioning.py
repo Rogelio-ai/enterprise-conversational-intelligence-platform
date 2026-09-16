@@ -22,7 +22,9 @@ from app.models import (
 )
 
 
-_REQUIRED_PERMISSIONS = frozenset({'user.manage', 'role.manage', 'location.manage'})
+REQUIRED_ACCESS_PROVISIONING_PERMISSIONS = frozenset({
+    'user.manage', 'role.manage', 'location.manage',
+})
 
 
 class AccessProvisioningError(ValueError):
@@ -64,6 +66,10 @@ def can_assign_role(
 ) -> bool:
     """An actor may delegate no permission they do not currently possess."""
     return target_permissions <= actor_permissions
+
+
+def can_provision_access(actor_permissions: frozenset[str]) -> bool:
+    return REQUIRED_ACCESS_PROVISIONING_PERMISSIONS <= actor_permissions
 
 
 async def _locked_permissions_for_roles(
@@ -133,8 +139,7 @@ async def _authorize_actor(
     permissions = await _locked_permissions_for_roles(
         db, role_ids=tuple(value.id for value in active_roles),
     )
-    missing = _REQUIRED_PERMISSIONS - permissions
-    if missing:
+    if not can_provision_access(permissions):
         raise AccessProvisioningAuthorizationError(
             'Access provisioning authority is required'
         )

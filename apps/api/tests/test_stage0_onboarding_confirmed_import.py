@@ -60,7 +60,7 @@ def test_all_contract_groups_have_one_explicit_import_classification() -> None:
     assert by_group['prices']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['consumption_definitions']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['consumption_components']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['staff']['classification'] == 'DEFERRED_PROVISIONING'
+    assert by_group['staff']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['tax_rules']['classification'] == 'IMPORTABLE_NOW'
     assert by_group['product_fiscal_classifications']['classification'] == (
         'IMPORTABLE_NOW'
@@ -252,7 +252,7 @@ def test_confirmation_binding_authorities_replay_and_no_inventory_history(client
     first = _confirm(client, headers, content, scope.location_id, fingerprint)
     assert first.status_code == 201, first.text
     result = first.json()
-    assert result['status'] == 'PARTIAL' and result['replay'] is False, result
+    assert result['status'] == 'SUCCESS' and result['replay'] is False, result
     assert 'products' not in result['required_deferred_groups']
     assert (result['total_planned_rows'], result['created'], result['unchanged']) == (5, 4, 1)
     assert [result['groups'][key]['created'] for key in (
@@ -278,7 +278,7 @@ def test_existing_records_use_deterministic_authority_updates(client, sql_connec
     content = _workbook(f'{prefix}-onboarding', item_code='BEANS')
     fingerprint = _analyze(client, headers, content).json()['dataset_fingerprint']
     first = _confirm(client, headers, content, scope.location_id, fingerprint)
-    assert first.status_code == 201 and first.json()['status'] == 'PARTIAL'
+    assert first.status_code == 201 and first.json()['status'] == 'SUCCESS'
 
     workbook = load_workbook(BytesIO(content), data_only=False)
     workbook['19_Inventory_Items']['C2'] = 'Updated Beans'
@@ -293,7 +293,7 @@ def test_existing_records_use_deterministic_authority_updates(client, sql_connec
     updated = _confirm(client, headers, changed, scope.location_id, changed_fingerprint)
     assert updated.status_code == 201, updated.text
     result = updated.json()
-    assert result['status'] == 'PARTIAL'
+    assert result['status'] == 'SUCCESS'
     assert result['updated'] == 2
     assert result['unchanged'] == 3
     assert _count(connection, 'inventory_items', scope.tenant_id) == 1
@@ -2488,7 +2488,7 @@ def test_fiscal_import_replays_updates_and_preserves_runtime_resolution(
         assert result['groups'][group]['classification'] == 'IMPORTABLE_NOW'
         assert result['groups'][group]['authority'] == authority
         assert result['groups'][group]['created'] == 1
-    assert result['required_deferred_groups'] == ['staff']
+    assert result['required_deferred_groups'] == []
 
     with connection.cursor() as cursor:
         cursor.execute(

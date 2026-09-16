@@ -14,11 +14,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.config import Settings
 from app.models import (
     InventoryItem,
     ItemUomConversion,
     Location,
     OnboardingImport,
+    OnboardingStaffContinuation,
     Organization,
     Supplier,
     SupplierLocation,
@@ -27,6 +29,8 @@ from app.models import (
 )
 from app.onboarding.analyzer import AnalysisResult, AnalyzedRow
 from app.onboarding.contract import CONTRACT_VERSION, ONBOARDING_CONTRACT
+from app.onboarding import staff_provisioning
+from app.identity import access_provisioning
 from app.restaurant.catalog import category_provisioning
 from app.restaurant.catalog import provisioning as product_provisioning
 from app.restaurant import (
@@ -62,6 +66,7 @@ IMPORTABLE_NOW = frozenset({
     'consumption_components',
     'tax_rules',
     'product_fiscal_classifications',
+    'staff',
 })
 OPERATIONAL_NOT_CATALOG_IMPORT = frozenset({'payment_methods'})
 DEFERRED_PROVISIONING = frozenset(
@@ -75,6 +80,10 @@ REQUIRED_DEFERRED_GROUPS = tuple(
 
 AUTHORITY_BY_GROUP = {
     'restaurant_profile': 'authorized Tenant/Organization/Location scope verification',
+    'staff': (
+        'onboarding.staff_provisioning over identity invitations and '
+        'identity access provisioning'
+    ),
     'inventory_items': 'restaurant.inventory.service.create/update_inventory_item',
     'uom_conversions': 'restaurant.inventory.service.append_item_uom_conversion',
     'suppliers': 'restaurant.inventory.receiving.create/update_supplier',
@@ -368,6 +377,14 @@ async def build_import_plan(
         raise ImportRejectedError(
             'INSUFFICIENT_PERMISSION', 'menu.manage permission is required'
         )
+    if (
+        'staff' in populated
+        and not access_provisioning.can_provision_access(permissions)
+    ):
+        raise ImportRejectedError(
+            'INSUFFICIENT_PERMISSION',
+            'Staff provisioning requires user, Role, and Location management authority',
+        )
 
     product_namespace = product_provisioning.onboarding_binding_namespace(
         contract_version=CONTRACT_VERSION, organization_id=organization.id,
@@ -463,7 +480,25 @@ async def build_import_plan(
             ))
             continue
         value = row.values
-        if row.group == 'resources':
+        if row.group == 'staff':
+            blocker = None
+            try:
+                staff_plan = await staff_provisioning.plan_staff_request(
+                    db, values=value, tenant_id=tenant_id,
+                    organization_id=organization.id, location_id=location.id,
+                    actor_permissions=permissions,
+                )
+                operation, planned_values = (
+                    staff_plan.operation, staff_plan.values,
+                )
+            except staff_provisioning.StaffProvisioningError as exc:
+                operation, planned_values, blocker = 'INVITE', value, str(exc)
+            items.append(PlanItem(
+                row.group, row.row, row.business_key, operation,
+                AUTHORITY_BY_GROUP[row.group], planned_values,
+                blocking_error=blocker,
+            ))
+        elif row.group == 'resources':
             blocker = None
             try:
                 resource_plan = await resource_provisioning.plan_resource(
@@ -934,7 +969,7 @@ def _classification(group_key: str) -> str:
 
 
 def _empty_summaries(plan: ImportPlan) -> dict[str, dict[str, Any]]:
-    return {
+    values = {
         group.key: {
             'classification': _classification(group.key),
             'authority': AUTHORITY_BY_GROUP.get(group.key, group.authority),
@@ -944,15 +979,35 @@ def _empty_summaries(plan: ImportPlan) -> dict[str, dict[str, Any]]:
         }
         for group in ONBOARDING_CONTRACT
     }
+    values['staff']['pending'] = 0
+    return values
+
+
+def _continuation_evidence(
+    value: OnboardingStaffContinuation,
+) -> dict[str, Any]:
+    return {
+        'continuation_id': value.continuation_id,
+        'staff_key': value.staff_key,
+        'email': value.normalized_email,
+        'role_name': value.role_name,
+        'organization_id': value.organization_id,
+        'location_id': value.location_id,
+        'status': value.status,
+        'completion_operation': value.completion_operation,
+        'error_code': value.error_code,
+    }
 
 
 def _result(
     *, evidence: OnboardingImport, plan: ImportPlan, status: str, replay: bool,
     summaries: dict[str, dict[str, Any]], errors: list[dict[str, Any]],
+    staff_continuations: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
     totals = {key: sum(value[key] for value in summaries.values()) for key in (
         'created', 'updated', 'unchanged', 'deferred', 'failed'
     )}
+    totals['pending'] = summaries['staff'].get('pending', 0)
     return {
         'import_id': evidence.import_id,
         'contract_version': evidence.contract_version,
@@ -965,7 +1020,114 @@ def _result(
         **totals,
         'groups': summaries,
         'errors': errors,
+        'staff_continuations': staff_continuations or [],
     }
+
+
+async def _resume_staff_replay(
+    db: AsyncSession, *, evidence: OnboardingImport, plan: ImportPlan,
+) -> dict[str, Any]:
+    persisted = dict(evidence.result_json or {})
+    entries = list(persisted.get('staff_continuations', []))
+    if not entries or all(value.get('status') == 'COMPLETE' for value in entries):
+        persisted['replay'] = True
+        return persisted
+    ids = tuple(value['continuation_id'] for value in entries)
+    continuations = tuple((await db.scalars(
+        select(OnboardingStaffContinuation)
+        .where(
+            OnboardingStaffContinuation.tenant_id == evidence.tenant_id,
+            OnboardingStaffContinuation.continuation_id.in_(ids),
+        )
+        .order_by(OnboardingStaffContinuation.id)
+    )).all())
+    if len(continuations) != len(ids):
+        persisted['replay'] = True
+        persisted['status'] = 'PARTIAL'
+        persisted['errors'] = [
+            *persisted.get('errors', []),
+            {
+                'code': 'STAFF_CONTINUATION_MISSING', 'group': 'staff',
+                'message': 'Durable Staff continuation evidence is incomplete',
+            },
+        ]
+        return persisted
+    for continuation in continuations:
+        if continuation.status != 'COMPLETE':
+            await staff_provisioning.resume_continuation(
+                db, continuation=continuation,
+            )
+    refreshed = tuple((await db.scalars(
+        select(OnboardingStaffContinuation)
+        .where(OnboardingStaffContinuation.continuation_id.in_(ids))
+        .order_by(OnboardingStaffContinuation.id)
+    )).all())
+    summaries = dict(persisted['groups'])
+    staff_summary = dict(summaries['staff'])
+    staff_summary.update({
+        'created': sum(
+            value.status == 'COMPLETE'
+            and value.completion_operation == 'CREATE'
+            for value in refreshed
+        ),
+        'updated': 0,
+        'unchanged': sum(
+            value.status == 'COMPLETE'
+            and value.completion_operation == 'UNCHANGED'
+            for value in refreshed
+        ),
+        'deferred': 0,
+        'failed': sum(
+            value.status in {'SECURITY_CONFLICT', 'TERMINAL_FAILURE'}
+            for value in refreshed
+        ),
+        'pending': sum(value.status == 'PENDING_ACCEPTANCE' for value in refreshed),
+    })
+    summaries['staff'] = staff_summary
+    errors = [
+        value for value in persisted.get('errors', [])
+        if value.get('code') not in {
+            'STAFF_ACCESS_REVALIDATION_FAILED',
+            'STAFF_CONTINUATION_TERMINAL_FAILURE',
+        }
+    ]
+    errors.extend({
+        'code': (
+            'STAFF_ACCESS_REVALIDATION_FAILED'
+            if value.status == 'SECURITY_CONFLICT'
+            else 'STAFF_CONTINUATION_TERMINAL_FAILURE'
+        ),
+        'group': 'staff',
+        'message': (
+            'P2 rejected Staff access during continuation revalidation'
+            if value.status == 'SECURITY_CONFLICT'
+            else 'Staff identity invitation can no longer be continued'
+        ),
+        'continuation_id': value.continuation_id,
+    } for value in refreshed if value.status in {
+        'SECURITY_CONFLICT', 'TERMINAL_FAILURE',
+    })
+    has_pending = bool(staff_summary['pending'])
+    has_failed = any(value['failed'] for value in summaries.values())
+    has_deferred = any(value['deferred'] for value in summaries.values())
+    completed = sum(
+        value['created'] + value['updated'] + value['unchanged']
+        for value in summaries.values()
+    )
+    status = (
+        'PARTIAL' if has_pending or has_deferred
+        else ('PARTIAL' if has_failed and completed else ('FAILED' if has_failed else 'SUCCESS'))
+    )
+    result = _result(
+        evidence=evidence, plan=plan, status=status, replay=True,
+        summaries=summaries, errors=errors,
+        staff_continuations=[_continuation_evidence(value) for value in refreshed],
+    )
+    evidence.status = status
+    evidence.result_json = {**result, 'replay': False}
+    evidence.completed_at = datetime.now(UTC).replace(tzinfo=None)
+    await db.commit()
+    return result
 
 
 async def _existing_replay(
@@ -984,6 +1146,7 @@ async def confirm_import(
     db: AsyncSession, *, analysis: AnalysisResult, expected_fingerprint: str,
     tenant_id: int, tenant_slug: str, membership_id: int, location_id: int,
     authorized_location_ids: tuple[int, ...], permissions: frozenset[str],
+    settings: Settings,
 ) -> dict[str, Any]:
     fingerprint = dataset_fingerprint(analysis)
     if expected_fingerprint != fingerprint:
@@ -996,9 +1159,9 @@ async def confirm_import(
     previous = await _existing_replay(db, scope=plan.scope, fingerprint=fingerprint)
     if previous is not None:
         if previous.result_json is not None:
-            replay = dict(previous.result_json)
-            replay['replay'] = True
-            return replay
+            return await _resume_staff_replay(
+                db, evidence=previous, plan=plan,
+            )
         return {
             'import_id': previous.import_id, 'contract_version': CONTRACT_VERSION,
             'dataset_fingerprint': fingerprint, 'scope': asdict(plan.scope),
@@ -1025,9 +1188,9 @@ async def confirm_import(
         if previous is None:
             raise
         if previous.result_json is not None:
-            replay = dict(previous.result_json)
-            replay['replay'] = True
-            return replay
+            return await _resume_staff_replay(
+                db, evidence=previous, plan=plan,
+            )
         return {
             'import_id': previous.import_id, 'contract_version': CONTRACT_VERSION,
             'dataset_fingerprint': fingerprint, 'scope': asdict(plan.scope),
@@ -1043,6 +1206,8 @@ async def confirm_import(
     for item in plan.items:
         summaries[item.group]['planned'] += 1
     errors: list[dict[str, Any]] = []
+    staff_continuations: list[dict[str, Any]] = []
+    invitation_deliveries: list[dict[str, Any]] = []
     if plan.blocking_errors:
         for item in plan.items:
             if item.blocking_error:
@@ -1083,7 +1248,44 @@ async def confirm_import(
                 continue
             value = item.values
             actual_operation = item.operation
-            if item.group == 'resources':
+            if item.group == 'staff':
+                outcome = await staff_provisioning.provision_staff_request(
+                    db, settings=settings, evidence=evidence,
+                    actor_membership_id=membership_id, values=value,
+                )
+                staff_continuations.append(
+                    _continuation_evidence(outcome.continuation)
+                )
+                if outcome.delivery is not None:
+                    invitation_deliveries.append({
+                        'staff_key': outcome.delivery.staff_key,
+                        'email': outcome.delivery.email,
+                        'invitation_id': outcome.delivery.invitation_id,
+                        'acceptance_token': outcome.delivery.acceptance_token,
+                        'expires_at': outcome.delivery.expires_at.isoformat(),
+                    })
+                if outcome.status == 'PENDING_ACCEPTANCE':
+                    summary['pending'] += 1
+                    continue
+                if outcome.status in {'SECURITY_CONFLICT', 'TERMINAL_FAILURE'}:
+                    summary['failed'] += 1
+                    errors.append({
+                        'code': (
+                            'STAFF_ACCESS_REVALIDATION_FAILED'
+                            if outcome.status == 'SECURITY_CONFLICT'
+                            else 'STAFF_CONTINUATION_TERMINAL_FAILURE'
+                        ),
+                        'group': item.group, 'row': item.row,
+                        'message': (
+                            'P2 rejected Staff access during authorization revalidation'
+                            if outcome.status == 'SECURITY_CONFLICT'
+                            else 'Staff identity invitation can no longer be continued'
+                        ),
+                        'continuation_id': outcome.continuation.continuation_id,
+                    })
+                    continue
+                actual_operation = outcome.operation or 'UNCHANGED'
+            elif item.group == 'resources':
                 result = await resource_provisioning.provision_resource(
                     db, tenant_id=tenant_id, location_id=location_id,
                     resource_code=value['resource_code'], name=value['name'],
@@ -1410,18 +1612,34 @@ async def confirm_import(
                         'row': dependent.row,
                         'message': 'The required Tax Rule provisioning failed',
                     })
-        completed = sum(s['created'] + s['updated'] for s in summaries.values())
-        status = 'PARTIAL' if completed else 'FAILED'
+        completed = sum(
+            s['created'] + s['updated'] + s['unchanged']
+            for s in summaries.values()
+        )
+        status = (
+            'PARTIAL'
+            if completed or summaries['staff']['pending']
+            else 'FAILED'
+        )
     else:
-        status = 'PARTIAL' if REQUIRED_DEFERRED_GROUPS or any(
-            s['deferred'] for s in summaries.values()
+        status = 'PARTIAL' if (
+            REQUIRED_DEFERRED_GROUPS
+            or any(s['deferred'] for s in summaries.values())
+            or summaries['staff']['pending']
+            or any(s['failed'] for s in summaries.values())
         ) else 'SUCCESS'
 
     evidence = await db.scalar(
         select(OnboardingImport).where(OnboardingImport.id == evidence_id).with_for_update()
     )
-    result = _result(evidence=evidence, plan=plan, status=status, replay=False, summaries=summaries, errors=errors)
+    result = _result(
+        evidence=evidence, plan=plan, status=status, replay=False,
+        summaries=summaries, errors=errors,
+        staff_continuations=staff_continuations,
+    )
     evidence.status, evidence.result_json = status, result
     evidence.completed_at = datetime.now(UTC).replace(tzinfo=None)
     await db.commit()
+    if invitation_deliveries:
+        return {**result, 'invitation_deliveries': invitation_deliveries}
     return result

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Annotated, Literal
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Response, status
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request, Response, status
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthenticatedContext, get_authenticated_context, get_db
@@ -33,6 +33,7 @@ async def analyze(
 
 @router.post('/confirm')
 async def confirm(
+    request: Request,
     response: Response,
     content: Annotated[bytes, Body(media_type=XLSX_MEDIA_TYPE, max_length=10 * 1024 * 1024)],
     context: Annotated[AuthenticatedContext, Depends(get_authenticated_context)],
@@ -51,6 +52,7 @@ async def confirm(
             membership_id=context.membership_id, location_id=location_id,
             authorized_location_ids=context.authorized_location_ids,
             permissions=context.permissions,
+            settings=request.app.state.settings,
         )
     except ImportRejectedError as exc:
         code = status.HTTP_403_FORBIDDEN if exc.code in {
