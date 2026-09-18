@@ -45,6 +45,10 @@ import type {
   PhysicalCount,
   PurchaseOrder,
   InventoryTransfer,
+  TableWaiterAssignmentSet,
+  EligibleWaiterListResponse,
+  ServiceResponsibility,
+  ServiceResponsibilityHistory,
 } from './contracts';
 import { readCredential } from '../session/storage';
 
@@ -198,6 +202,27 @@ export const staffApi = {
     });
     return request(`/resources?${query.toString()}`);
   },
+  tableWaiterAssignments(locationId: number, tableId: number): Promise<TableWaiterAssignmentSet> {
+    return request(`/locations/${locationId}/tables/${tableId}/waiter-assignments`);
+  },
+  eligibleTableWaiters(locationId: number): Promise<EligibleWaiterListResponse> {
+    return request(`/locations/${locationId}/tables/eligible-waiters`);
+  },
+  assignTableWaiter(locationId: number, tableId: number, membershipId: number, expectedVersion: number): Promise<TableWaiterAssignmentSet> {
+    return request(`/locations/${locationId}/tables/${tableId}/waiter-assignments`, {
+      method: 'POST', body: JSON.stringify({ waiter_membership_id: membershipId, expected_version: expectedVersion }),
+    });
+  },
+  updateResponsibleWaiters(locationId: number, tableId: number, membershipIds: number[], expectedVersion: number): Promise<TableWaiterAssignmentSet> {
+    return request(`/locations/${locationId}/tables/${tableId}/responsible-waiters`, {
+      method: 'PUT', body: JSON.stringify({ responsible_membership_ids: membershipIds, expected_version: expectedVersion }),
+    });
+  },
+  unassignTableWaiter(locationId: number, tableId: number, membershipId: number, replacementIds: number[], expectedVersion: number): Promise<TableWaiterAssignmentSet> {
+    return request(`/locations/${locationId}/tables/${tableId}/waiter-assignments/${membershipId}:unassign`, {
+      method: 'POST', body: JSON.stringify({ replacement_responsible_membership_ids: replacementIds, expected_version: expectedVersion }),
+    });
+  },
   cashRegisters(locationId: number): Promise<ResourceListResponse> {
     const query = new URLSearchParams({
       location_id: String(locationId), resource_type: 'CASH_REGISTER',
@@ -336,6 +361,24 @@ export const staffApi = {
   closeServiceSession(sessionId: number): Promise<ClosedServiceSessionResponse> {
     return request(`/restaurant-service-sessions/${sessionId}/close`, { method: 'POST' });
   },
+  serviceResponsibility(locationId: number, sessionId: number): Promise<ServiceResponsibility> {
+    return request(`/locations/${locationId}/restaurant-service-sessions/${sessionId}/responsibility`);
+  },
+  replaceServiceResponsibility(
+    locationId: number, sessionId: number, membershipIds: number[],
+    expectedVersion: number, key: string,
+  ): Promise<ServiceResponsibility> {
+    return request(`/locations/${locationId}/restaurant-service-sessions/${sessionId}/responsibility`, {
+      method: 'PUT', headers: { 'Idempotency-Key': key },
+      body: JSON.stringify({
+        responsible_membership_ids: membershipIds,
+        expected_version: expectedVersion,
+      }),
+    });
+  },
+  serviceResponsibilityHistory(locationId: number, sessionId: number): Promise<ServiceResponsibilityHistory> {
+    return request(`/locations/${locationId}/restaurant-service-sessions/${sessionId}/responsibility/history`);
+  },
   operationalRequests(
     locationId: number,
     filters: { status?: OperationalRequestStatus; requestType?: OperationalRequestType },
@@ -364,6 +407,37 @@ export const staffApi = {
   ): Promise<StaffOperationalRequest> {
     const query = new URLSearchParams({ location_id: String(locationId) });
     return request(`/staff/operational-requests/${requestId}/complete?${query.toString()}`, {
+      method: 'POST',
+    });
+  },
+  waiterOperationalRequests(
+    locationId: number,
+    filters: { status?: OperationalRequestStatus; requestType?: OperationalRequestType },
+  ): Promise<StaffOperationalRequestListResponse> {
+    const query = new URLSearchParams({
+      location_id: String(locationId),
+      limit: '100',
+      offset: '0',
+    });
+    if (filters.status) query.set('status', filters.status);
+    if (filters.requestType) query.set('request_type', filters.requestType);
+    return request(`/waiter/operational-requests?${query.toString()}`);
+  },
+  acknowledgeWaiterOperationalRequest(
+    requestId: number,
+    locationId: number,
+  ): Promise<StaffOperationalRequest> {
+    const query = new URLSearchParams({ location_id: String(locationId) });
+    return request(`/waiter/operational-requests/${requestId}/acknowledge?${query.toString()}`, {
+      method: 'POST',
+    });
+  },
+  completeWaiterOperationalRequest(
+    requestId: number,
+    locationId: number,
+  ): Promise<StaffOperationalRequest> {
+    const query = new URLSearchParams({ location_id: String(locationId) });
+    return request(`/waiter/operational-requests/${requestId}/complete?${query.toString()}`, {
       method: 'POST',
     });
   },

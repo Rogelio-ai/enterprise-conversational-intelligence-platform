@@ -12,6 +12,7 @@ from test_canonical_order_commercial_acceptance import (
     _preview,
     _product,
     _scope,
+    _staff_table,
     _staff_headers,
 )
 
@@ -733,6 +734,7 @@ def test_multi_table_check_balance_continuation_and_multiple_cycles(integration_
             (scope.tenant_id, scope.location_id, f'{prefix}-T2'),
         )
         second_resource_id = int(cursor.lastrowid)
+    _staff_table(connection, scope, second_resource_id)
     with _client(integration_settings) as client:
         opened1, first_headers = _open_and_join(client, scope, name='Table One')
         opened2_response = client.post(

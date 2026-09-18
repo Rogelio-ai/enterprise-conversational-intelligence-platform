@@ -143,6 +143,10 @@ POST_0026_APPLICATION_TABLES = {
     'supplier_offerings',
     'suppliers',
     'warehouses',
+    'table_waiter_assignments',
+    'table_waiter_assignment_audits',
+    'service_responsible_waiters',
+    'service_responsibility_transitions',
 }
 MODEL_APPLICATION_TABLES = APPLICATION_TABLES | POST_0026_APPLICATION_TABLES
 
@@ -4534,6 +4538,432 @@ def test_0027_upgrade_downgrade_reupgrade_is_portable(
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         _assert_database_contract(connection)
+    finally:
+        connection.close()
+
+
+def test_0058_table_waiter_assignment_migration_is_portable_and_reversible(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    tables = ('table_waiter_assignments', 'table_waiter_assignment_audits')
+    _run_alembic(database_name, '0057_staff_onboarding_continuation')
+
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME FROM information_schema.TABLES '
+                'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s)', tables,
+            )
+            assert cursor.fetchall() == ()
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, '0058_table_waiter_assignment_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION FROM information_schema.TABLES '
+                'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s) ORDER BY TABLE_NAME',
+                tables,
+            )
+            rows = cursor.fetchall()
+            assert [row['TABLE_NAME'] for row in rows] == sorted(tables)
+            assert {row['ENGINE'] for row in rows} == {'InnoDB'}
+            assert {row['TABLE_COLLATION'] for row in rows} == {'utf8mb4_unicode_ci'}
+            cursor.execute(
+                'SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS '
+                'WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s)', tables,
+            )
+            constraints = {row['CONSTRAINT_NAME'] for row in cursor.fetchall()}
+            assert {
+                'fk_table_waiter_assignments_table_scope',
+                'fk_table_waiter_assignments_waiter_tenant',
+                'fk_table_waiter_assignments_waiter_location',
+                'uq_table_waiter_assignments_table_waiter',
+                'fk_table_waiter_audits_table_scope',
+                'fk_table_waiter_audits_waiter_tenant',
+                'fk_table_waiter_audits_actor_tenant',
+                'uq_table_waiter_audits_table_version',
+            } <= constraints
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0057_staff_onboarding_continuation')
+    _run_alembic(database_name, '0058_table_waiter_assignment_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME FROM information_schema.TABLES '
+                'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s)', tables,
+            )
+            assert {row['TABLE_NAME'] for row in cursor.fetchall()} == set(tables)
+    finally:
+        connection.close()
+
+
+def test_0059_service_responsibility_migration_is_portable_and_reversible(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    tables = ('service_responsible_waiters', 'service_responsibility_transitions')
+    _run_alembic(database_name, '0058_table_waiter_assignment_foundation')
+
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME FROM information_schema.TABLES '
+                'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s)', tables,
+            )
+            assert cursor.fetchall() == ()
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, '0059_service_responsibility_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION FROM information_schema.TABLES '
+                'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s) ORDER BY TABLE_NAME',
+                tables,
+            )
+            rows = cursor.fetchall()
+            assert [row['TABLE_NAME'] for row in rows] == sorted(tables)
+            assert {row['ENGINE'] for row in rows} == {'InnoDB'}
+            assert {row['TABLE_COLLATION'] for row in rows} == {'utf8mb4_unicode_ci'}
+            cursor.execute(
+                'SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS '
+                'WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s)', tables,
+            )
+            constraints = {row['CONSTRAINT_NAME'] for row in cursor.fetchall()}
+            assert {
+                'fk_service_responsible_waiters_service_scope',
+                'fk_service_responsible_waiters_waiter_tenant',
+                'uq_service_responsible_waiters_service_waiter',
+                'fk_service_responsibility_transitions_service_scope',
+                'fk_service_responsibility_transitions_actor_tenant',
+                'uq_service_responsibility_transitions_service_version',
+                'uq_service_responsibility_transitions_idempotency',
+            } <= constraints
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, '0058_table_waiter_assignment_foundation')
+    _run_alembic(database_name, '0059_service_responsibility_foundation')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME FROM information_schema.TABLES '
+                'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN (%s,%s)', tables,
+            )
+            assert {row['TABLE_NAME'] for row in cursor.fetchall()} == set(tables)
+    finally:
+        connection.close()
+
+
+def test_0060_preparation_handoff_migration_is_portable_and_reversible(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    revision = '0060_preparation_handoff_foundation'
+    previous_revision = '0059_service_responsibility_foundation'
+    handoff_columns = {
+        'picked_up_by_membership_id',
+        'picked_up_at',
+        'delivered_by_membership_id',
+        'delivered_at',
+    }
+    expected_constraints = {
+        'uq_preparation_works_id_tenant',
+        'fk_preparation_works_pickup_actor_tenant',
+        'fk_preparation_works_delivery_actor_tenant',
+        'ck_preparation_works_pickup_pair',
+        'ck_preparation_works_delivery_pair',
+        'ck_preparation_works_delivery_requires_pickup',
+    }
+
+    _run_alembic(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='preparation_works' "
+                'AND COLUMN_NAME IN (%s,%s,%s,%s)',
+                tuple(sorted(handoff_columns)),
+            )
+            assert cursor.fetchall() == ()
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT ENGINE,TABLE_COLLATION FROM information_schema.TABLES '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='preparation_works'"
+            )
+            assert cursor.fetchone() == {
+                'ENGINE': 'InnoDB',
+                'TABLE_COLLATION': 'utf8mb4_unicode_ci',
+            }
+            cursor.execute(
+                'SELECT COLUMN_NAME,IS_NULLABLE,DATA_TYPE '
+                'FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='preparation_works' "
+                'AND COLUMN_NAME IN (%s,%s,%s,%s)',
+                tuple(sorted(handoff_columns)),
+            )
+            columns = {row['COLUMN_NAME']: row for row in cursor.fetchall()}
+            assert set(columns) == handoff_columns
+            assert {row['IS_NULLABLE'] for row in columns.values()} == {'YES'}
+            assert columns['picked_up_by_membership_id']['DATA_TYPE'] == 'bigint'
+            assert columns['delivered_by_membership_id']['DATA_TYPE'] == 'bigint'
+            assert columns['picked_up_at']['DATA_TYPE'] == 'datetime'
+            assert columns['delivered_at']['DATA_TYPE'] == 'datetime'
+
+            cursor.execute(
+                'SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS '
+                "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='preparation_works'"
+            )
+            constraints = {row['CONSTRAINT_NAME'] for row in cursor.fetchall()}
+            assert expected_constraints <= constraints
+
+            cursor.execute(
+                'SELECT INDEX_NAME,COLUMN_NAME,SEQ_IN_INDEX,NON_UNIQUE '
+                'FROM information_schema.STATISTICS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='preparation_works' "
+                "AND INDEX_NAME='uq_preparation_works_id_tenant' "
+                'ORDER BY SEQ_IN_INDEX'
+            )
+            assert cursor.fetchall() == [
+                {
+                    'INDEX_NAME': 'uq_preparation_works_id_tenant',
+                    'COLUMN_NAME': 'id',
+                    'SEQ_IN_INDEX': 1,
+                    'NON_UNIQUE': 0,
+                },
+                {
+                    'INDEX_NAME': 'uq_preparation_works_id_tenant',
+                    'COLUMN_NAME': 'tenant_id',
+                    'SEQ_IN_INDEX': 2,
+                    'NON_UNIQUE': 0,
+                },
+            ]
+
+            cursor.execute(
+                'CREATE TABLE preparation_work_referenceability_probe ('
+                'preparation_work_id BIGINT NOT NULL,tenant_id BIGINT NOT NULL,'
+                'CONSTRAINT fk_probe_work_tenant FOREIGN KEY '
+                '(preparation_work_id,tenant_id) REFERENCES '
+                'preparation_works(id,tenant_id)) ENGINE=InnoDB'
+            )
+            cursor.execute('DROP TABLE preparation_work_referenceability_probe')
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == revision
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='preparation_works' "
+                'AND COLUMN_NAME IN (%s,%s,%s,%s)',
+                tuple(sorted(handoff_columns)),
+            )
+            assert cursor.fetchall() == ()
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == revision
+            cursor.execute(
+                'SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS '
+                "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='preparation_works'"
+            )
+            constraints = {row['CONSTRAINT_NAME'] for row in cursor.fetchall()}
+            assert expected_constraints <= constraints
+    finally:
+        connection.close()
+
+
+def test_0061_operational_message_center_migration_is_portable_and_reversible(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    revision = '0061_operational_message_center_foundation'
+    previous_revision = '0060_preparation_handoff_foundation'
+    request_columns = {
+        'acknowledged_by_membership_id',
+        'acknowledged_at',
+        'preparation_work_id',
+    }
+    request_constraints = {
+        'fk_diner_operational_requests_acknowledger',
+        'fk_diner_operational_requests_preparation_work',
+        'uq_diner_operational_requests_preparation_work',
+        'ck_diner_operational_requests_acknowledgement_pair',
+        'ck_diner_operational_requests_ownership',
+        'ck_diner_operational_requests_type',
+    }
+    waiter_constraints = {
+        'fk_operational_request_waiter_states_request_tenant',
+        'fk_operational_request_waiter_states_waiter_tenant',
+        'uq_operational_request_waiter_states_request_waiter',
+    }
+
+    _run_alembic(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='diner_operational_requests' "
+                'AND COLUMN_NAME IN (%s,%s,%s)',
+                tuple(sorted(request_columns)),
+            )
+            assert cursor.fetchall() == ()
+            cursor.execute(
+                'SELECT IS_NULLABLE FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='diner_operational_requests' "
+                "AND COLUMN_NAME='diner_session_id'"
+            )
+            assert cursor.fetchone()['IS_NULLABLE'] == 'NO'
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION FROM information_schema.TABLES '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN "
+                "('diner_operational_requests','operational_request_waiter_states') "
+                'ORDER BY TABLE_NAME'
+            )
+            assert cursor.fetchall() == [
+                {
+                    'TABLE_NAME': 'diner_operational_requests',
+                    'ENGINE': 'InnoDB',
+                    'TABLE_COLLATION': 'utf8mb4_unicode_ci',
+                },
+                {
+                    'TABLE_NAME': 'operational_request_waiter_states',
+                    'ENGINE': 'InnoDB',
+                    'TABLE_COLLATION': 'utf8mb4_unicode_ci',
+                },
+            ]
+            cursor.execute(
+                'SELECT COLUMN_NAME,IS_NULLABLE,DATA_TYPE FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='diner_operational_requests' "
+                "AND COLUMN_NAME IN ('acknowledged_by_membership_id','acknowledged_at',"
+                "'preparation_work_id','diner_session_id')"
+            )
+            columns = {row['COLUMN_NAME']: row for row in cursor.fetchall()}
+            assert set(columns) == request_columns | {'diner_session_id'}
+            assert {row['IS_NULLABLE'] for row in columns.values()} == {'YES'}
+            assert columns['acknowledged_by_membership_id']['DATA_TYPE'] == 'bigint'
+            assert columns['preparation_work_id']['DATA_TYPE'] == 'bigint'
+            assert columns['acknowledged_at']['DATA_TYPE'] == 'datetime'
+
+            cursor.execute(
+                'SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS '
+                "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='diner_operational_requests'"
+            )
+            assert request_constraints <= {
+                row['CONSTRAINT_NAME'] for row in cursor.fetchall()
+            }
+            cursor.execute(
+                'SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS '
+                "WHERE CONSTRAINT_SCHEMA=DATABASE() "
+                "AND TABLE_NAME='operational_request_waiter_states'"
+            )
+            assert waiter_constraints <= {
+                row['CONSTRAINT_NAME'] for row in cursor.fetchall()
+            }
+            cursor.execute(
+                'SELECT COLUMN_NAME,IS_NULLABLE FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() "
+                "AND TABLE_NAME='operational_request_waiter_states' "
+                "AND COLUMN_NAME IN ('entered_at','hidden_at') ORDER BY COLUMN_NAME"
+            )
+            assert cursor.fetchall() == [
+                {'COLUMN_NAME': 'entered_at', 'IS_NULLABLE': 'YES'},
+                {'COLUMN_NAME': 'hidden_at', 'IS_NULLABLE': 'YES'},
+            ]
+            cursor.execute(
+                'SELECT INDEX_NAME,COLUMN_NAME,SEQ_IN_INDEX FROM information_schema.STATISTICS '
+                "WHERE TABLE_SCHEMA=DATABASE() "
+                "AND TABLE_NAME='operational_request_waiter_states' "
+                "AND INDEX_NAME='ix_operational_request_waiter_states_waiter_view' "
+                'ORDER BY SEQ_IN_INDEX'
+            )
+            assert [row['COLUMN_NAME'] for row in cursor.fetchall()] == [
+                'tenant_id', 'waiter_membership_id', 'hidden_at',
+                'operational_request_id',
+            ]
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == revision
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME FROM information_schema.TABLES '
+                "WHERE TABLE_SCHEMA=DATABASE() "
+                "AND TABLE_NAME='operational_request_waiter_states'"
+            )
+            assert cursor.fetchone() is None
+            cursor.execute(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='diner_operational_requests' "
+                'AND COLUMN_NAME IN (%s,%s,%s)',
+                tuple(sorted(request_columns)),
+            )
+            assert cursor.fetchall() == ()
+            cursor.execute(
+                'SELECT IS_NULLABLE FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='diner_operational_requests' "
+                "AND COLUMN_NAME='diner_session_id'"
+            )
+            assert cursor.fetchone()['IS_NULLABLE'] == 'NO'
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == revision
+            cursor.execute(
+                'SELECT TABLE_NAME FROM information_schema.TABLES '
+                "WHERE TABLE_SCHEMA=DATABASE() "
+                "AND TABLE_NAME='operational_request_waiter_states'"
+            )
+            assert cursor.fetchone()['TABLE_NAME'] == 'operational_request_waiter_states'
     finally:
         connection.close()
 

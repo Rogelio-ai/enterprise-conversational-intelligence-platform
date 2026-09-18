@@ -121,11 +121,17 @@ class PreparationWork(TimestampMixin, Base):
         ForeignKeyConstraint(['tenant_id'], ['tenants.id'], name='fk_preparation_works_tenant', ondelete='RESTRICT'),
         ForeignKeyConstraint(['routing_id', 'tenant_id', 'restaurant_order_id'], ['preparation_routings.id', 'preparation_routings.tenant_id', 'preparation_routings.restaurant_order_id'], name='fk_preparation_works_routing_scope', ondelete='RESTRICT'),
         ForeignKeyConstraint(['preparation_area_id', 'tenant_id', 'organization_id', 'location_id'], ['preparation_areas.id', 'preparation_areas.tenant_id', 'preparation_areas.organization_id', 'preparation_areas.location_id'], name='fk_preparation_works_area_scope', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['picked_up_by_membership_id', 'tenant_id'], ['tenant_memberships.id', 'tenant_memberships.tenant_id'], name='fk_preparation_works_pickup_actor_tenant', ondelete='RESTRICT'),
+        ForeignKeyConstraint(['delivered_by_membership_id', 'tenant_id'], ['tenant_memberships.id', 'tenant_memberships.tenant_id'], name='fk_preparation_works_delivery_actor_tenant', ondelete='RESTRICT'),
         UniqueConstraint('tenant_id', 'restaurant_order_id', 'preparation_area_id', name='uq_preparation_works_order_area'),
+        UniqueConstraint('id', 'tenant_id', name='uq_preparation_works_id_tenant'),
         UniqueConstraint('id', 'tenant_id', 'restaurant_order_id', name='uq_preparation_works_scope'),
         UniqueConstraint('id', 'tenant_id', 'organization_id', 'location_id', 'restaurant_order_id', 'preparation_area_id', name='uq_preparation_works_dispatch_scope'),
         CheckConstraint("preparation_owner = 'PLATFORM'", name='ck_preparation_works_owner'),
         CheckConstraint('routing_schema_version >= 1', name='ck_preparation_works_version'),
+        CheckConstraint('(picked_up_by_membership_id IS NULL AND picked_up_at IS NULL) OR (picked_up_by_membership_id IS NOT NULL AND picked_up_at IS NOT NULL)', name='ck_preparation_works_pickup_pair'),
+        CheckConstraint('(delivered_by_membership_id IS NULL AND delivered_at IS NULL) OR (delivered_by_membership_id IS NOT NULL AND delivered_at IS NOT NULL)', name='ck_preparation_works_delivery_pair'),
+        CheckConstraint('delivered_by_membership_id IS NULL OR picked_up_by_membership_id IS NOT NULL', name='ck_preparation_works_delivery_requires_pickup'),
         Index('ix_preparation_works_area', 'tenant_id', 'location_id', 'preparation_area_id', 'id'),
         OPTIONS,
     )
@@ -142,6 +148,10 @@ class PreparationWork(TimestampMixin, Base):
     routing_schema_version: Mapped[int] = mapped_column(Integer, nullable=False)
     routing_fingerprint: Mapped[str] = mapped_column(String(64, collation='ascii_bin'), nullable=False)
     routed_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
+    picked_up_by_membership_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    picked_up_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
+    delivered_by_membership_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    delivered_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
 
 
 class PreparationWorkItem(Base):

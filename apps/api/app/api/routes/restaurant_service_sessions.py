@@ -3,13 +3,21 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Path, Request, status
+from fastapi import APIRouter, Depends, Header, HTTPException, Path, Request, status
 from pydantic import BaseModel, ConfigDict, Field
+from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.deps import AuthenticatedContext, get_db, require_permission
+from app.api.deps import (
+    AuthenticatedContext,
+    get_db,
+    require_location_permission,
+    require_permission,
+)
 from app.core.middleware import get_correlation_id
+from app.models import RestaurantServiceSession, TenantMembership, User
 from app.restaurant.service_sessions import errors, service
+from app.restaurant.service_sessions import responsibility as responsibility_service
 
 
 router = APIRouter(tags=['restaurant-service'])
@@ -60,6 +68,44 @@ class ClosedServiceSessionResponse(BaseModel):
     closed_at: datetime
 
 
+class ServiceResponsibleWaiterResponse(BaseModel):
+    membership_id: int
+    display_name: str
+    email: str
+
+
+class CurrentServiceResponsibilityResponse(BaseModel):
+    service_session_id: int
+    status: str
+    initialized: bool
+    version: int | None
+    responsible_membership_ids: list[int]
+    responsible_waiters: list[ServiceResponsibleWaiterResponse]
+    replayed: bool = False
+
+
+class ReplaceServiceResponsibilityRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    responsible_membership_ids: list[int] = Field(max_length=100)
+    expected_version: int
+
+
+class ServiceResponsibilityTransitionResponse(BaseModel):
+    operation: str
+    version: int
+    before_responsible_membership_ids: list[int]
+    after_responsible_membership_ids: list[int]
+    actor_membership_id: int
+    recorded_at: datetime
+    correlation_id: str | None
+
+
+class ServiceResponsibilityHistoryResponse(BaseModel):
+    service_session_id: int
+    items: list[ServiceResponsibilityTransitionResponse]
+
+
 def _error(exc: Exception) -> HTTPException:
     from app.restaurant.checks.errors import RestaurantCheckError
     if isinstance(exc, RestaurantCheckError):
@@ -70,12 +116,87 @@ def _error(exc: Exception) -> HTTPException:
         exc,
         (
             errors.ResourceAlreadyOccupiedError,
+            errors.ServiceStaffingConflictError,
             errors.ServiceSessionClosedError,
             errors.PartySizeConflictError,
         ),
     ):
         return HTTPException(status.HTTP_409_CONFLICT, str(exc))
     raise exc
+
+
+def _responsibility_error(
+    exc: responsibility_service.ServiceResponsibilityError,
+) -> HTTPException:
+    if isinstance(exc, responsibility_service.ServiceResponsibilityNotFoundError):
+        return HTTPException(
+            status.HTTP_404_NOT_FOUND,
+            {'code': 'SERVICE_RESPONSIBILITY_NOT_FOUND', 'message': str(exc)},
+        )
+    code = 'SERVICE_RESPONSIBILITY_CONFLICT'
+    if isinstance(exc, responsibility_service.ServiceResponsibilityNotInitializedError):
+        code = exc.code
+    elif isinstance(exc, responsibility_service.ServiceResponsibilityVersionConflictError):
+        code = 'SERVICE_RESPONSIBILITY_VERSION_CONFLICT'
+    elif isinstance(exc, responsibility_service.ServiceResponsibilityIdempotencyConflictError):
+        code = 'SERVICE_RESPONSIBILITY_IDEMPOTENCY_CONFLICT'
+    elif isinstance(exc, responsibility_service.ServiceResponsibilityValidationError):
+        code = 'SERVICE_RESPONSIBILITY_VALIDATION_FAILED'
+    return HTTPException(
+        status.HTTP_409_CONFLICT, {'code': code, 'message': str(exc)},
+    )
+
+
+async def _scoped_service_session(
+    db: AsyncSession, *, tenant_id: int, location_id: int, session_id: int,
+) -> RestaurantServiceSession:
+    value = await db.scalar(select(RestaurantServiceSession).where(
+        RestaurantServiceSession.id == session_id,
+        RestaurantServiceSession.tenant_id == tenant_id,
+        RestaurantServiceSession.location_id == location_id,
+    ))
+    if value is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, 'Restaurant Service Session not found')
+    return value
+
+
+async def _waiter_projection(
+    db: AsyncSession, *, tenant_id: int, membership_ids: tuple[int, ...],
+) -> list[ServiceResponsibleWaiterResponse]:
+    if not membership_ids:
+        return []
+    rows = (await db.execute(
+        select(TenantMembership.id, User.display_name, User.email)
+        .join(User, User.id == TenantMembership.user_id)
+        .where(
+            TenantMembership.tenant_id == tenant_id,
+            TenantMembership.id.in_(membership_ids),
+        )
+    )).all()
+    by_id = {int(row.id): row for row in rows}
+    return [ServiceResponsibleWaiterResponse(
+        membership_id=membership_id,
+        display_name=by_id[membership_id].display_name,
+        email=by_id[membership_id].email,
+    ) for membership_id in membership_ids if membership_id in by_id]
+
+
+async def _responsibility_response(
+    db: AsyncSession, *, session: RestaurantServiceSession,
+    value: responsibility_service.ServiceResponsibilityValue,
+) -> CurrentServiceResponsibilityResponse:
+    return CurrentServiceResponsibilityResponse(
+        service_session_id=session.id,
+        status=session.status,
+        initialized=True,
+        version=value.version,
+        responsible_membership_ids=list(value.responsible_membership_ids),
+        responsible_waiters=await _waiter_projection(
+            db, tenant_id=session.tenant_id,
+            membership_ids=value.responsible_membership_ids,
+        ),
+        replayed=value.replayed,
+    )
 
 
 @router.post(
@@ -139,6 +260,123 @@ async def get_current_service_session(
         join_context_key=value.join_context_key,
         access_code_version=value.access_code_version,
         opened_at=value.opened_at,
+    )
+
+
+@router.get(
+    '/locations/{location_id}/restaurant-service-sessions/{session_id}/responsibility',
+    response_model=CurrentServiceResponsibilityResponse,
+)
+async def get_current_service_responsibility(
+    location_id: Annotated[int, Path(gt=0)],
+    session_id: Annotated[int, Path(gt=0)],
+    context: Annotated[
+        AuthenticatedContext,
+        Depends(require_location_permission('restaurant_service.read')),
+    ],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CurrentServiceResponsibilityResponse:
+    session = await _scoped_service_session(
+        db, tenant_id=context.tenant_id, location_id=location_id,
+        session_id=session_id,
+    )
+    try:
+        value = await responsibility_service.get_current_service_responsibility(
+            db, tenant_id=context.tenant_id, service_session_id=session.id,
+        )
+    except responsibility_service.ServiceResponsibilityNotInitializedError:
+        return CurrentServiceResponsibilityResponse(
+            service_session_id=session.id,
+            status=session.status,
+            initialized=False,
+            version=None,
+            responsible_membership_ids=[],
+            responsible_waiters=[],
+        )
+    except responsibility_service.ServiceResponsibilityError as exc:
+        raise _responsibility_error(exc) from exc
+    return await _responsibility_response(db, session=session, value=value)
+
+
+@router.put(
+    '/locations/{location_id}/restaurant-service-sessions/{session_id}/responsibility',
+    response_model=CurrentServiceResponsibilityResponse,
+)
+async def replace_service_responsibility(
+    payload: ReplaceServiceResponsibilityRequest,
+    location_id: Annotated[int, Path(gt=0)],
+    session_id: Annotated[int, Path(gt=0)],
+    idempotency_key: Annotated[
+        str,
+        Header(
+            alias='Idempotency-Key', min_length=1, max_length=128,
+            pattern=r'^[\x21-\x7e]+$',
+        ),
+    ],
+    context: Annotated[
+        AuthenticatedContext,
+        Depends(require_location_permission('restaurant_service.manage')),
+    ],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> CurrentServiceResponsibilityResponse:
+    session = await _scoped_service_session(
+        db, tenant_id=context.tenant_id, location_id=location_id,
+        session_id=session_id,
+    )
+    try:
+        value = await responsibility_service.replace_service_responsibility(
+            db,
+            tenant_id=context.tenant_id,
+            service_session_id=session.id,
+            responsible_membership_ids=payload.responsible_membership_ids,
+            expected_version=payload.expected_version,
+            actor_membership_id=context.membership_id,
+            idempotency_key=idempotency_key,
+            correlation_id=get_correlation_id(),
+        )
+    except responsibility_service.ServiceResponsibilityError as exc:
+        raise _responsibility_error(exc) from exc
+    return await _responsibility_response(db, session=session, value=value)
+
+
+@router.get(
+    '/locations/{location_id}/restaurant-service-sessions/{session_id}/responsibility/history',
+    response_model=ServiceResponsibilityHistoryResponse,
+)
+async def get_service_responsibility_history(
+    location_id: Annotated[int, Path(gt=0)],
+    session_id: Annotated[int, Path(gt=0)],
+    context: Annotated[
+        AuthenticatedContext,
+        Depends(require_location_permission('restaurant_service.read')),
+    ],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> ServiceResponsibilityHistoryResponse:
+    session = await _scoped_service_session(
+        db, tenant_id=context.tenant_id, location_id=location_id,
+        session_id=session_id,
+    )
+    try:
+        values = await responsibility_service.get_service_responsibility_history(
+            db, tenant_id=context.tenant_id, service_session_id=session.id,
+        )
+    except responsibility_service.ServiceResponsibilityError as exc:
+        raise _responsibility_error(exc) from exc
+    return ServiceResponsibilityHistoryResponse(
+        service_session_id=session.id,
+        items=[ServiceResponsibilityTransitionResponse(
+            operation=value.operation,
+            version=value.result_version,
+            before_responsible_membership_ids=list(
+                value.before_responsible_membership_ids
+            ),
+            after_responsible_membership_ids=list(
+                value.after_responsible_membership_ids
+            ),
+            actor_membership_id=value.actor_membership_id,
+            recorded_at=value.recorded_at,
+            correlation_id=value.correlation_id,
+        ) for value in values],
     )
 
 

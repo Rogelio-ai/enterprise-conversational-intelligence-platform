@@ -1,55 +1,24 @@
 from __future__ import annotations
 
-from datetime import datetime
 from typing import Annotated, Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
-from pydantic import BaseModel, ConfigDict
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthenticatedContext, get_db, require_location_permission
+from app.api.routes.staff_operational_requests import (
+    RequestStatus,
+    RequestType,
+    StaffOperationalRequestListResponse,
+    StaffOperationalRequestResponse,
+)
 from app.restaurant.operational_requests import service
 
 
-router = APIRouter(prefix='/staff/operational-requests', tags=['staff-operational-requests'])
-RequestStatus = Literal['PENDING', 'ACKNOWLEDGED', 'COMPLETED', 'CANCELLED']
-RequestType = Literal[
-    'HUMAN_ASSISTANCE',
-    'CASH_PAYMENT_ASSISTANCE',
-    'INVOICE_ASSISTANCE',
-    'PAID_CHECK_PRINT',
-    'PREPARATION_READY',
-]
-
-
-class StaffOperationalRequestResponse(BaseModel):
-    model_config = ConfigDict(from_attributes=True)
-
-    id: int
-    organization_id: int
-    location_id: int
-    resource_id: int
-    resource_code: str
-    resource_name: str
-    service_session_id: int
-    diner_session_id: int | None
-    diner_display_name: str | None
-    request_type: str
-    status: str
-    related_restaurant_check_id: int | None
-    preparation_work_id: int | None
-    acknowledged_by_membership_id: int | None
-    acknowledged_at: datetime | None
-    resolved_by_membership_id: int | None
-    resolved_at: datetime | None
-    created_at: datetime
-    updated_at: datetime
-
-
-class StaffOperationalRequestListResponse(BaseModel):
-    items: list[StaffOperationalRequestResponse]
-    limit: int
-    offset: int
+router = APIRouter(
+    prefix='/waiter/operational-requests',
+    tags=['waiter-operational-requests'],
+)
 
 
 def _error(exc: Exception) -> HTTPException:
@@ -64,7 +33,7 @@ def _error(exc: Exception) -> HTTPException:
 
 
 @router.get('', response_model=StaffOperationalRequestListResponse)
-async def list_operational_requests(
+async def list_waiter_operational_requests(
     location_id: Annotated[int, Query(gt=0)],
     context: Annotated[
         AuthenticatedContext,
@@ -76,10 +45,11 @@ async def list_operational_requests(
     limit: Annotated[int, Query(ge=1, le=100)] = 50,
     offset: Annotated[int, Query(ge=0)] = 0,
 ) -> StaffOperationalRequestListResponse:
-    values = await service.list_operational_requests(
+    values = await service.list_waiter_operational_requests(
         db,
         tenant_id=context.tenant_id,
         location_id=location_id,
+        membership_id=context.membership_id,
         request_status=request_status,
         request_type=request_type,
         limit=limit,
@@ -89,7 +59,7 @@ async def list_operational_requests(
 
 
 @router.get('/{request_id}', response_model=StaffOperationalRequestResponse)
-async def read_operational_request(
+async def read_waiter_operational_request(
     request_id: Annotated[int, Path(gt=0)],
     location_id: Annotated[int, Query(gt=0)],
     context: Annotated[
@@ -99,10 +69,11 @@ async def read_operational_request(
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> object:
     try:
-        return await service.get_operational_request(
+        return await service.get_waiter_operational_request(
             db,
             tenant_id=context.tenant_id,
             location_id=location_id,
+            membership_id=context.membership_id,
             request_id=request_id,
         )
     except Exception as exc:
@@ -117,25 +88,21 @@ async def _transition(
     context: AuthenticatedContext,
     db: AsyncSession,
 ) -> object:
-    transition = (
-        service.acknowledge_operational_request
-        if action == 'acknowledge'
-        else service.complete_operational_request
-    )
     try:
-        return await transition(
+        return await service.transition_waiter_operational_request(
             db,
             tenant_id=context.tenant_id,
             location_id=location_id,
-            request_id=request_id,
             membership_id=context.membership_id,
+            request_id=request_id,
+            target_status='ACKNOWLEDGED' if action == 'acknowledge' else 'COMPLETED',
         )
     except Exception as exc:
         raise _error(exc) from exc
 
 
 @router.post('/{request_id}/acknowledge', response_model=StaffOperationalRequestResponse)
-async def acknowledge_operational_request(
+async def acknowledge_waiter_operational_request(
     request_id: Annotated[int, Path(gt=0)],
     location_id: Annotated[int, Query(gt=0)],
     context: Annotated[
@@ -154,7 +121,7 @@ async def acknowledge_operational_request(
 
 
 @router.post('/{request_id}/complete', response_model=StaffOperationalRequestResponse)
-async def complete_operational_request(
+async def complete_waiter_operational_request(
     request_id: Annotated[int, Path(gt=0)],
     location_id: Annotated[int, Query(gt=0)],
     context: Annotated[

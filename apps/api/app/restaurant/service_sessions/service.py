@@ -26,6 +26,8 @@ from app.models import (
 )
 from app.restaurant.customers.service import normalize_email
 from app.restaurant.service_sessions import errors
+from app.restaurant.service_sessions import responsibility as responsibility_service
+from app.restaurant import table_waiter_assignments as table_waiter_service
 
 
 logger = logging.getLogger('ecip.restaurant_service')
@@ -150,6 +152,17 @@ async def open_service_session(
         )
         if current is not None:
             raise errors.ResourceAlreadyOccupiedError('Resource already has an open Service Session')
+        try:
+            staffing = await table_waiter_service.get_locked_service_opening_responsibility_source(
+                db,
+                tenant_id=tenant_id,
+                location_id=location.id,
+                table_resource_id=resource.id,
+            )
+        except table_waiter_service.TableWaiterAssignmentError as exc:
+            raise errors.ServiceStaffingConflictError(
+                'Table staffing is not ready for service opening',
+            ) from exc
         code = generate_access_code()
         now = _now()
         session = RestaurantServiceSession(
@@ -173,7 +186,22 @@ async def open_service_session(
             version=1,
         )
         db.add(session)
-        await db.commit()
+        await db.flush()
+        try:
+            await responsibility_service.initialize_service_responsibility(
+                db,
+                tenant_id=tenant_id,
+                service_session_id=session.id,
+                responsible_membership_ids=staffing.responsible_membership_ids,
+                actor_membership_id=membership_id,
+                idempotency_key=f'SERVICE_OPEN:{session.id}',
+                correlation_id=correlation_id,
+                source_table_assignment_version=staffing.assignment_version,
+            )
+        except responsibility_service.ServiceResponsibilityError as exc:
+            raise errors.ServiceStaffingConflictError(
+                'Table staffing is not ready for service opening',
+            ) from exc
         await db.refresh(session)
     except IntegrityError as exc:
         await db.rollback()

@@ -11,7 +11,10 @@ from app.models.billing import (
 )
 from app.models.cash_management import CashCount, CashMovement, CashSession
 from app.models.customer import Customer, CustomerExternalIdentity
-from app.models.diner_operational_request import DinerOperationalRequest
+from app.models.diner_operational_request import (
+    DinerOperationalRequest,
+    OperationalRequestWaiterState,
+)
 from app.models.fiscal_product import (
     ProductFiscalClassification,
     RestaurantOrderItemFiscalSnapshot,
@@ -93,6 +96,14 @@ from app.models.product_structure import (
 )
 from app.models.product_resolution import ProductAlias
 from app.models.resource import Resource
+from app.models.service_responsibility import (
+    ServiceResponsibleWaiter,
+    ServiceResponsibilityTransition,
+)
+from app.models.table_waiter_assignment import (
+    TableWaiterAssignment,
+    TableWaiterAssignmentAudit,
+)
 from app.models.restaurant_service import DinerSession, RestaurantServiceSession
 from app.models.restaurant_order import (
     RestaurantOrder,
@@ -158,6 +169,7 @@ __all__ = [
     'CustomerExternalIdentity',
     'CustomerFiscalProfile',
     'DinerOperationalRequest',
+    'OperationalRequestWaiterState',
     'Conversation',
     'ConversationMessage',
     'ConversationParticipant',
@@ -227,6 +239,10 @@ __all__ = [
     'Role',
     'RolePermission',
     'Resource',
+    'ServiceResponsibleWaiter',
+    'ServiceResponsibilityTransition',
+    'TableWaiterAssignment',
+    'TableWaiterAssignmentAudit',
     'RestaurantServiceSession',
     'RestaurantOrder',
     'RestaurantOrderConsumption',

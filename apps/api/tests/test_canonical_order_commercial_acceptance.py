@@ -30,6 +30,36 @@ def _execute(connection, statement: str, parameters=()) -> int:
         return int(cursor.lastrowid)
 
 
+def _staff_table(connection, scope, table_resource_id: int) -> None:
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT tm.id FROM tenant_memberships tm '
+            'JOIN users u ON u.id=tm.user_id '
+            'WHERE tm.tenant_id=%s AND u.email=%s',
+            (scope.tenant_id, scope.email),
+        )
+        membership_id = int(cursor.fetchone()['id'])
+    _execute(
+        connection,
+        'INSERT INTO table_waiter_assignments '
+        '(tenant_id,location_id,table_resource_id,waiter_membership_id,is_responsible) '
+        'VALUES (%s,%s,%s,%s,1)',
+        (scope.tenant_id, scope.location_id, table_resource_id, membership_id),
+    )
+    _execute(
+        connection,
+        'INSERT INTO table_waiter_assignment_audits '
+        '(tenant_id,location_id,table_resource_id,waiter_membership_id,operation,'
+        'actor_membership_id,result_version,assigned_membership_ids,'
+        'responsible_membership_ids,correlation_id) '
+        "VALUES (%s,%s,%s,%s,'ASSIGN',%s,1,%s,%s,'test-fixture')",
+        (
+            scope.tenant_id, scope.location_id, table_resource_id, membership_id,
+            membership_id, f'[{membership_id}]', f'[{membership_id}]',
+        ),
+    )
+
+
 def _scope(connection, prefix: str, *, order_read: bool = True) -> Scope:
     tenant_id = _execute(connection, "INSERT INTO tenants (name,slug,status) VALUES ('Order Tenant',%s,'ACTIVE')", (prefix,))
     email = f'{prefix}@example.test'
@@ -53,7 +83,9 @@ def _scope(connection, prefix: str, *, order_read: bool = True) -> Scope:
     location_id = _execute(connection, "INSERT INTO locations (tenant_id,organization_id,code,name,timezone,country_code,status) VALUES (%s,%s,%s,'Location','America/Mexico_City','MX','ACTIVE')", (tenant_id, organization_id, f'LOC-{uuid4().hex[:12]}'))
     _execute(connection, 'INSERT INTO membership_location_grants (tenant_id,membership_id,location_id) VALUES (%s,%s,%s)', (tenant_id, membership_id, location_id))
     resource_id = _execute(connection, "INSERT INTO resources (tenant_id,location_id,code,name,resource_type,status) VALUES (%s,%s,%s,'Table','TABLE','ACTIVE')", (tenant_id, location_id, f'T-{uuid4().hex[:12]}'))
-    return Scope(tenant_id, organization_id, location_id, resource_id, email)
+    scope = Scope(tenant_id, organization_id, location_id, resource_id, email)
+    _staff_table(connection, scope, resource_id)
+    return scope
 
 
 def _staff_headers(client: TestClient, scope: Scope) -> dict[str, str]:

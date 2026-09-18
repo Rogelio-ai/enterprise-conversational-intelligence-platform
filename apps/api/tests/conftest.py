@@ -158,6 +158,11 @@ def sql_connection(integration_settings: Settings):
                 (f'{prefix}%',),
             )
             cursor.execute(
+                'DELETE FROM operational_request_waiter_states WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
                 'DELETE FROM diner_operational_requests WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),
@@ -275,6 +280,15 @@ def sql_connection(integration_settings: Settings):
                     (f'{prefix}%',),
                 )
             for table in ('conversation_messages', 'conversation_participants', 'conversations'):
+                cursor.execute(
+                    f'DELETE FROM {table} WHERE tenant_id IN '
+                    '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                    (f'{prefix}%',),
+                )
+            for table in (
+                'service_responsibility_transitions',
+                'service_responsible_waiters',
+            ):
                 cursor.execute(
                     f'DELETE FROM {table} WHERE tenant_id IN '
                     '(SELECT id FROM tenants WHERE slug LIKE %s)',
@@ -425,6 +439,16 @@ def sql_connection(integration_settings: Settings):
             )
             cursor.execute(
                 'DELETE FROM customers WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM table_waiter_assignment_audits WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM table_waiter_assignments WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),
             )

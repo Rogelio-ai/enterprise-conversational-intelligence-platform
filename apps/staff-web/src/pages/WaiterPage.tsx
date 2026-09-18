@@ -119,10 +119,10 @@ export function WaiterPage() {
   const [typeFilter, setTypeFilter] = useState<OperationalRequestType | ''>('');
   const [feedback, setFeedback] = useState<Feedback | null>(null);
   const submitting = useRef(false);
-  const queryKey = ['staff', 'operational-requests', location?.id, statusFilter, typeFilter];
+  const queryKey = ['waiter', 'operational-requests', location?.id, statusFilter, typeFilter];
   const requests = useQuery({
     queryKey,
-    queryFn: () => staffApi.operationalRequests(location!.id, {
+    queryFn: () => staffApi.waiterOperationalRequests(location!.id, {
       status: statusFilter || undefined,
       requestType: typeFilter || undefined,
     }),
@@ -132,8 +132,8 @@ export function WaiterPage() {
   });
   const transition = useMutation({
     mutationFn: ({ request, action }: Transition) => action === 'acknowledge'
-      ? staffApi.acknowledgeOperationalRequest(request.id, location!.id)
-      : staffApi.completeOperationalRequest(request.id, location!.id),
+      ? staffApi.acknowledgeWaiterOperationalRequest(request.id, location!.id)
+      : staffApi.completeWaiterOperationalRequest(request.id, location!.id),
     onSuccess: async (_, variables) => {
       setFeedback({
         kind: 'success',
@@ -141,7 +141,7 @@ export function WaiterPage() {
           ? 'Solicitud marcada en atención.'
           : 'Atención operativa completada.',
       });
-      await queryClient.invalidateQueries({ queryKey: ['staff', 'operational-requests'] });
+      await queryClient.invalidateQueries({ queryKey: ['waiter', 'operational-requests'] });
     },
     onError: async (error) => {
       if (error instanceof ApiError && error.status === 409) {

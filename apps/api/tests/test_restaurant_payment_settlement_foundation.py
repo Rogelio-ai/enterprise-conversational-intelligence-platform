@@ -17,6 +17,7 @@ from test_canonical_order_commercial_acceptance import (
     _preview,
     _product,
     _scope,
+    _staff_table,
     _staff_headers,
 )
 
@@ -943,6 +944,8 @@ def test_mixed_scope_no_closes_only_exact_independent_candidates(
                 ),
             )
             resource_ids.append(int(cursor.lastrowid))
+    for resource_id in resource_ids:
+        _staff_table(connection, scope, resource_id)
     with _client(integration_settings) as client:
         staff = _staff_headers(client, scope)
         opened1, diner1 = _open_and_join(client, scope, name='Table 10')

@@ -239,6 +239,60 @@ export interface ResourceListResponse {
   offset: number;
 }
 
+export interface TableWaiterAssignment {
+  membership_id: number;
+  display_name: string;
+  email: string;
+  is_responsible: boolean;
+}
+
+export interface TableWaiterAssignmentSet {
+  table_resource_id: number;
+  location_id: number;
+  configured: boolean;
+  version: number;
+  assignments: TableWaiterAssignment[];
+}
+
+export interface EligibleWaiter {
+  membership_id: number;
+  display_name: string;
+  email: string;
+}
+
+export interface EligibleWaiterListResponse { items: EligibleWaiter[] }
+
+export interface ServiceResponsibleWaiter {
+  membership_id: number;
+  display_name: string;
+  email: string;
+}
+
+export interface ServiceResponsibility {
+  service_session_id: number;
+  status: string;
+  initialized: boolean;
+  version: number | null;
+  responsible_membership_ids: number[];
+  responsible_waiters: ServiceResponsibleWaiter[];
+  replayed: boolean;
+}
+
+export interface ServiceResponsibilityTransition {
+  operation: 'INITIALIZE' | 'RESPONSIBILITY_UPDATE' | string;
+  version: number;
+  before_responsible_membership_ids: number[];
+  after_responsible_membership_ids: number[];
+  actor_membership_id: number;
+  recorded_at: string;
+  correlation_id: string | null;
+}
+
+export interface ServiceResponsibilityHistory {
+  service_session_id: number;
+  items: ServiceResponsibilityTransition[];
+}
+
 export interface CashSession {
   id: number;
   tenant_id: number;

@@ -20,6 +20,7 @@ from app.restaurant.integrations.pos.mock import (
     build_mock_pos_dataset,
 )
 from app.restaurant.pos_submissions import service as submission_service
+from test_canonical_order_commercial_acceptance import _staff_table
 
 
 PASSWORD = 'Test Password 123!'
@@ -86,7 +87,9 @@ def _scope(
         (tenant_id, organization_id, TAX_CLASSIFICATION),
     )
     resource_id = _execute(connection, "INSERT INTO resources (tenant_id,location_id,code,name,resource_type,status) VALUES (%s,%s,%s,'Table','TABLE','ACTIVE')", (tenant_id, location_id, f'T-{uuid4().hex[:12]}'))
-    return Scope(tenant_id, organization_id, location_id, resource_id, email)
+    scope = Scope(tenant_id, organization_id, location_id, resource_id, email)
+    _staff_table(connection, scope, resource_id)
+    return scope
 
 
 def _headers(client: TestClient, scope: Scope) -> dict[str, str]:

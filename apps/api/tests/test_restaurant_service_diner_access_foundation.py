@@ -57,6 +57,20 @@ def _scope(connection, prefix: str, *, resource_type: str = 'TABLE', resource_st
     organization_id = _execute(connection, "INSERT INTO organizations (tenant_id,code,name,status) VALUES (%s,%s,'Organization','ACTIVE')", (tenant_id, f'ORG-{uuid4().hex[:12]}'))
     location_id = _execute(connection, "INSERT INTO locations (tenant_id,organization_id,code,name,timezone,status) VALUES (%s,%s,%s,'Location','America/Mexico_City','ACTIVE')", (tenant_id, organization_id, f'LOC-{uuid4().hex[:12]}'))
     resource_id = _execute(connection, "INSERT INTO resources (tenant_id,location_id,code,name,resource_type,status) VALUES (%s,%s,%s,'Table',%s,%s)", (tenant_id, location_id, f'T-{uuid4().hex[:12]}', resource_type, resource_status))
+    if resource_type == 'TABLE' and resource_status == 'ACTIVE':
+        _execute(
+            connection,
+            'INSERT INTO membership_location_grants '
+            '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
+            (tenant_id, membership_id, location_id),
+        )
+        _execute(
+            connection,
+            'INSERT INTO table_waiter_assignments '
+            '(tenant_id,location_id,table_resource_id,waiter_membership_id,is_responsible) '
+            'VALUES (%s,%s,%s,%s,1)',
+            (tenant_id, location_id, resource_id, membership_id),
+        )
     return Scope(tenant_id, organization_id, location_id, resource_id, membership_id, email)
 
 

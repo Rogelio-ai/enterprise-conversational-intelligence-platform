@@ -105,6 +105,10 @@ def test_staff_location_grant_is_required_for_queue_detail_and_transition(
 
     with connection.cursor() as cursor:
         cursor.execute(
+            'DELETE FROM table_waiter_assignments WHERE table_resource_id=%s',
+            (scope.resource_id,),
+        )
+        cursor.execute(
             'DELETE FROM membership_location_grants WHERE location_id=%s',
             (scope.location_id,),
         )

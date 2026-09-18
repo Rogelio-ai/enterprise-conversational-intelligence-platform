@@ -10,6 +10,10 @@ class ResourceAlreadyOccupiedError(RestaurantServiceError):
     pass
 
 
+class ServiceStaffingConflictError(RestaurantServiceError):
+    pass
+
+
 class ServiceSessionNotFoundError(RestaurantServiceError):
     pass
 

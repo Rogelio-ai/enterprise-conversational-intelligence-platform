@@ -37,7 +37,7 @@ def _enable_staff(
     membership_id = int(authority['membership_id'])
     _execute(
         connection,
-        'INSERT INTO membership_location_grants (tenant_id,membership_id,location_id) '
+        'INSERT IGNORE INTO membership_location_grants (tenant_id,membership_id,location_id) '
         'VALUES (%s,%s,%s)',
         (scope.tenant_id, membership_id, scope.location_id),
     )

@@ -91,7 +91,7 @@ function mockWaiterApi(options: MockOptions = {}) {
     if (url.includes('/locations?')) {
       return json({ items: [location], limit: 100, offset: 0 });
     }
-    if (url.includes('/staff/operational-requests?')) {
+    if (url.includes('/waiter/operational-requests?')) {
       if (options.listResponse) return options.listResponse;
       const query = new URL(url, 'http://staff.test').searchParams;
       const status = query.get('status');
@@ -102,7 +102,7 @@ function mockWaiterApi(options: MockOptions = {}) {
       ));
       return json({ items, limit: 100, offset: 0 });
     }
-    const acknowledge = url.match(/\/staff\/operational-requests\/(\d+)\/acknowledge\?/);
+    const acknowledge = url.match(/\/waiter\/operational-requests\/(\d+)\/acknowledge\?/);
     if (acknowledge && init?.method === 'POST') {
       const id = Number(acknowledge[1]);
       if (conflictPending) {
@@ -118,7 +118,7 @@ function mockWaiterApi(options: MockOptions = {}) {
         : request);
       return json(values.find((request) => request.id === id));
     }
-    const complete = url.match(/\/staff\/operational-requests\/(\d+)\/complete\?/);
+    const complete = url.match(/\/waiter\/operational-requests\/(\d+)\/complete\?/);
     if (complete && init?.method === 'POST') {
       const id = Number(complete[1]);
       values = values.map((request) => request.id === id
@@ -129,7 +129,10 @@ function mockWaiterApi(options: MockOptions = {}) {
     return json({ detail: 'Not found' }, 404);
   });
   vi.stubGlobal('fetch', fetchMock);
-  return { calls };
+  return {
+    calls,
+    setRequests(next: StaffOperationalRequest[]) { values = next; },
+  };
 }
 
 function renderWaiter() {
@@ -169,7 +172,7 @@ describe('Waiter operational inbox', () => {
     expect(within(card).getByText('Diner seguro')).toBeVisible();
     expect(within(card).getByText('#501')).toBeVisible();
     expect(within(card).getByRole('button', { name: 'Atender' })).toBeVisible();
-    const listCall = calls.find((call) => call.url.includes('/staff/operational-requests?'));
+    const listCall = calls.find((call) => call.url.includes('/waiter/operational-requests?'));
     expect(listCall?.url).toContain('location_id=21');
     expect(listCall?.url).toContain('status=PENDING');
     expect(calls.every((call) => !call.url.includes('location_id=22'))).toBe(true);
@@ -211,10 +214,10 @@ describe('Waiter operational inbox', () => {
 
     const mutationCalls = calls.filter((call) => call.init?.method === 'POST');
     expect(mutationCalls.map((call) => call.url)).toEqual([
-      '/api/staff/operational-requests/9001/acknowledge?location_id=21',
-      '/api/staff/operational-requests/9001/complete?location_id=21',
+      '/api/waiter/operational-requests/9001/acknowledge?location_id=21',
+      '/api/waiter/operational-requests/9001/complete?location_id=21',
     ]);
-    expect(calls.filter((call) => call.url.includes('/staff/operational-requests?')).length)
+    expect(calls.filter((call) => call.url.includes('/waiter/operational-requests?')).length)
       .toBeGreaterThanOrEqual(4);
   });
 
@@ -243,8 +246,33 @@ describe('Waiter operational inbox', () => {
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Atender' }));
     expect(await screen.findByRole('alert')).toHaveTextContent('estado más reciente');
     expect((await screen.findAllByText('En atención')).length).toBeGreaterThanOrEqual(2);
-    expect(second.calls.filter((call) => call.url.includes('/staff/operational-requests?')).length)
+    expect(second.calls.filter((call) => call.url.includes('/waiter/operational-requests?')).length)
       .toBeGreaterThanOrEqual(2);
+  });
+
+  it('reflects responsibility changes and legacy fallback through the routed refetch contract', async () => {
+    const original = operationalRequest(9001);
+    const legacy = operationalRequest(9002, {
+      service_session_id: 502,
+      resource_id: 102,
+      resource_code: 'M02',
+      resource_name: 'Mesa 2',
+    });
+    const routed = mockWaiterApi({ requests: [original] });
+    renderWaiter();
+    const user = userEvent.setup();
+    expect(await screen.findByRole('heading', { name: 'Mesa 1' })).toBeVisible();
+
+    routed.setRequests([]);
+    await user.click(screen.getByRole('button', { name: 'Actualizar' }));
+    expect(await screen.findByRole('heading', { name: 'No hay solicitudes pendientes.' })).toBeVisible();
+
+    routed.setRequests([original, legacy]);
+    await user.click(screen.getByRole('button', { name: 'Actualizar' }));
+    expect(await screen.findByRole('heading', { name: 'Mesa 1' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'Mesa 2' })).toBeVisible();
+    expect(routed.calls.filter((call) => call.url.includes('/waiter/operational-requests?')).length)
+      .toBeGreaterThanOrEqual(3);
   });
 
   it('keeps terminal and non-waiter domain requests presentation-only beyond lifecycle actions', async () => {
@@ -278,7 +306,7 @@ describe('Waiter operational inbox', () => {
     const denied = mockWaiterApi({ identity: unauthorized });
     renderWaiter();
     expect(await screen.findByRole('heading', { name: 'Este espacio no está disponible' })).toBeVisible();
-    expect(denied.calls.some((call) => call.url.includes('/staff/operational-requests'))).toBe(false);
+    expect(denied.calls.some((call) => call.url.includes('/waiter/operational-requests'))).toBe(false);
 
     cleanup();
     vi.unstubAllGlobals();

@@ -173,7 +173,7 @@ async def manager_operational_overview(
     )) or 0)
 
     request_counts_by_status = await _counts(db, DinerOperationalRequest, DinerOperationalRequest.status, tenant_id=tenant_id, location_id=location_id, states=('PENDING', 'ACKNOWLEDGED', 'COMPLETED', 'CANCELLED'))
-    request_counts_by_type = await _counts(db, DinerOperationalRequest, DinerOperationalRequest.request_type, tenant_id=tenant_id, location_id=location_id, states=('HUMAN_ASSISTANCE', 'CASH_PAYMENT_ASSISTANCE', 'INVOICE_ASSISTANCE', 'PAID_CHECK_PRINT'))
+    request_counts_by_type = await _counts(db, DinerOperationalRequest, DinerOperationalRequest.request_type, tenant_id=tenant_id, location_id=location_id, states=('HUMAN_ASSISTANCE', 'CASH_PAYMENT_ASSISTANCE', 'INVOICE_ASSISTANCE', 'PAID_CHECK_PRINT', 'PREPARATION_READY'))
     preparation_item_counts = await _counts(db, PreparationWorkItem, PreparationWorkItem.execution_state, tenant_id=tenant_id, location_id=location_id, states=('NEW', 'IN_PROGRESS', 'COMPLETED'))
     dispatch_states = ('PENDING', 'IN_PROGRESS', 'DESTINATION_SUBMISSION_ACCEPTED', 'RETRYABLE_FAILURE', 'UNCERTAIN', 'ACTION_REQUIRED')
     preparation_dispatch_counts = await _counts(db, PreparationDispatch, PreparationDispatch.state, tenant_id=tenant_id, location_id=location_id, states=dispatch_states)
