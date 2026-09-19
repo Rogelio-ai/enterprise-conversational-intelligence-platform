@@ -15,6 +15,7 @@ from app.main import create_app
 from app.restaurant.preparation_delivery import errors
 from app.restaurant.preparation_delivery import service as delivery_service
 from app.restaurant.preparation_delivery.contracts import DeliveryResult
+from test_canonical_order_commercial_acceptance import _staff_table
 from test_pos_order_submission_recovery import (
     _accepted_complex_order,
     _accepted_order,
@@ -297,6 +298,7 @@ def test_no_destination_and_inactive_destination_are_valid(client, sql_connectio
         (scope.tenant_id, scope.location_id),
     )
     second_scope = replace(scope, resource_id=second_resource)
+    _staff_table(connection, second_scope, second_resource)
     second_order, second_product, _ = _accepted_order(
         client, connection, second_scope, name='Inactive',
     )
@@ -328,6 +330,7 @@ def test_no_destination_and_inactive_destination_are_valid(client, sql_connectio
         "VALUES (%s,%s,'T-THIRD','Third Table','TABLE','ACTIVE')",
         (scope.tenant_id, scope.location_id),
     )
+    _staff_table(connection, replace(scope, resource_id=third_resource), third_resource)
     third_order, third_product, _ = _accepted_order(
         client, connection, replace(scope, resource_id=third_resource), name='Inactive connector',
     )
@@ -575,6 +578,10 @@ def test_dispatch_reads_and_reprint_require_staff_location_grant(
     ).status_code == 200
 
     with connection.cursor() as cursor:
+        cursor.execute(
+            'DELETE FROM table_waiter_assignments WHERE table_resource_id=%s',
+            (scope.resource_id,),
+        )
         cursor.execute(
             'DELETE FROM membership_location_grants WHERE location_id=%s',
             (scope.location_id,),
