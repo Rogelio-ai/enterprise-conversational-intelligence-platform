@@ -39,6 +39,7 @@ from app.restaurant.preparation.contracts import (
     PreparationWorkProjection,
 )
 from app.restaurant.preparation_delivery import service as delivery_service
+from app.restaurant.operational_requests import service as operational_request_service
 
 
 ROUTING_SCHEMA_VERSION = 1
@@ -525,6 +526,72 @@ def _derived_work_state(items: tuple[PreparationWorkItem, ...]) -> str:
     return 'IN_PROGRESS'
 
 
+async def _assert_work_ready(db: AsyncSession, work: PreparationWork) -> None:
+    items = tuple((await db.scalars(
+        select(PreparationWorkItem).where(
+            PreparationWorkItem.tenant_id == work.tenant_id,
+            PreparationWorkItem.preparation_work_id == work.id,
+        ).order_by(PreparationWorkItem.id)
+    )).all())
+    if not items or any(item.execution_state != 'COMPLETED' for item in items):
+        raise errors.PreparationConflictError('Preparation Work is not fully ready')
+
+
+async def pickup_preparation_work(
+    db: AsyncSession,
+    *,
+    work: PreparationWork,
+    membership_id: int,
+    effective_at: datetime,
+) -> None:
+    await _assert_work_ready(db, work)
+    if work.delivered_by_membership_id is not None or work.delivered_at is not None:
+        raise errors.PreparationConflictError('Preparation Work is already delivered')
+    pickup_values = (work.picked_up_by_membership_id, work.picked_up_at)
+    if (pickup_values[0] is None) != (pickup_values[1] is None):
+        raise errors.PreparationConflictError('Preparation Work pickup evidence is inconsistent')
+    if pickup_values[0] is None:
+        work.picked_up_by_membership_id = membership_id
+        work.picked_up_at = effective_at
+
+
+async def deliver_preparation_work(
+    db: AsyncSession,
+    *,
+    work: PreparationWork,
+    membership_id: int,
+    effective_at: datetime,
+) -> None:
+    await _assert_work_ready(db, work)
+    if work.picked_up_by_membership_id is None or work.picked_up_at is None:
+        raise errors.PreparationConflictError('Preparation Work must be picked up first')
+    delivery_values = (work.delivered_by_membership_id, work.delivered_at)
+    if (delivery_values[0] is None) != (delivery_values[1] is None):
+        raise errors.PreparationConflictError('Preparation Work delivery evidence is inconsistent')
+    if delivery_values[0] is None:
+        work.delivered_by_membership_id = membership_id
+        work.delivered_at = effective_at
+
+
+async def _ensure_preparation_ready_request(
+    db: AsyncSession,
+    *,
+    work: PreparationWork,
+    correlation_id: str | None,
+) -> None:
+    try:
+        await operational_request_service.ensure_preparation_ready_request(
+            db, work=work, correlation_id=correlation_id,
+        )
+    except (
+        operational_request_service.OperationalRequestStateConflictError,
+        IntegrityError,
+    ) as exc:
+        raise errors.PreparationConflictError(
+            'Preparation readiness request could not be persisted'
+        ) from exc
+
+
 async def _execution_work_projection(
     db: AsyncSession, work: PreparationWork
 ) -> PreparationExecutionWorkProjection:
@@ -669,28 +736,43 @@ async def transition_work_item(
     if execution.actor_type is not ActorType.EMPLOYEE:
         raise errors.PreparationTransitionError('This preparation endpoint requires an employee actor')
     try:
+        identity = (await db.execute(select(
+            PreparationWorkItem.preparation_work_id,
+            PreparationWorkItem.restaurant_order_id,
+        ).where(
+            PreparationWorkItem.id == item_id,
+            PreparationWorkItem.tenant_id == execution.tenant_id,
+        ))).one_or_none()
+        if identity is None:
+            raise errors.PreparationNotFoundError('Preparation Work Item not found')
+        work = await db.scalar(select(PreparationWork).where(
+            PreparationWork.id == identity.preparation_work_id,
+            PreparationWork.tenant_id == execution.tenant_id,
+            PreparationWork.restaurant_order_id == identity.restaurant_order_id,
+        ).with_for_update())
+        if work is None:
+            raise errors.PreparationOwnershipError('Preparation Work is not executable')
         item = await db.scalar(select(PreparationWorkItem).where(
             PreparationWorkItem.id == item_id,
             PreparationWorkItem.tenant_id == execution.tenant_id,
+            PreparationWorkItem.preparation_work_id == work.id,
         ).with_for_update())
         if item is None:
             raise errors.PreparationNotFoundError('Preparation Work Item not found')
-        work_and_routing = (await db.execute(
-            select(PreparationWork, PreparationRouting)
-            .join(PreparationRouting, and_(
-                PreparationRouting.id == PreparationWork.routing_id,
-                PreparationRouting.tenant_id == PreparationWork.tenant_id,
-                PreparationRouting.restaurant_order_id == PreparationWork.restaurant_order_id,
-            ))
-            .where(
-                PreparationWork.id == item.preparation_work_id,
-                PreparationWork.tenant_id == item.tenant_id,
-                PreparationWork.restaurant_order_id == item.restaurant_order_id,
-            )
-        )).first()
-        if work_and_routing is None:
+        siblings = tuple((await db.execute(
+            select(PreparationWorkItem).where(
+                PreparationWorkItem.tenant_id == work.tenant_id,
+                PreparationWorkItem.preparation_work_id == work.id,
+                PreparationWorkItem.id != item.id,
+            ).order_by(PreparationWorkItem.id).with_for_update()
+        )).scalars().all())
+        routing = await db.scalar(select(PreparationRouting).where(
+            PreparationRouting.id == work.routing_id,
+            PreparationRouting.tenant_id == work.tenant_id,
+            PreparationRouting.restaurant_order_id == work.restaurant_order_id,
+        ))
+        if routing is None:
             raise errors.PreparationOwnershipError('Preparation Work is not executable')
-        work, routing = work_and_routing
         if (
             work.preparation_owner != 'PLATFORM'
             or routing.preparation_owner != 'PLATFORM'
@@ -713,6 +795,12 @@ async def transition_work_item(
                 or replay.actor_principal_reference != execution.principal_reference
             ):
                 raise errors.PreparationIdempotencyError('Idempotency key was used for a different preparation transition')
+            if item.execution_state == 'COMPLETED' and all(
+                sibling.execution_state == 'COMPLETED' for sibling in siblings
+            ):
+                await _ensure_preparation_ready_request(
+                    db, work=work, correlation_id=execution.correlation_id,
+                )
             await db.commit()
             return PreparationTransitionResult(
                 transition=_transition_projection(replay),
@@ -759,6 +847,12 @@ async def transition_work_item(
         item.execution_state = to_state
         item.execution_version = next_version
         await db.flush()
+        if to_state == 'COMPLETED' and all(
+            sibling.execution_state == 'COMPLETED' for sibling in siblings
+        ):
+            await _ensure_preparation_ready_request(
+                db, work=work, correlation_id=execution.correlation_id,
+            )
         result = PreparationTransitionResult(
             transition=_transition_projection(transition),
             current_execution_state=item.execution_state,

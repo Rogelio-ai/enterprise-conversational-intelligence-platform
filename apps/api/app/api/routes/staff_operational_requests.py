@@ -38,6 +38,14 @@ class StaffOperationalRequestResponse(BaseModel):
     status: str
     related_restaurant_check_id: int | None
     preparation_work_id: int | None
+    restaurant_order_id: int | None
+    preparation_area_id: int | None
+    preparation_area_code: str | None
+    preparation_area_name: str | None
+    picked_up_by_membership_id: int | None
+    picked_up_at: datetime | None
+    delivered_by_membership_id: int | None
+    delivered_at: datetime | None
     acknowledged_by_membership_id: int | None
     acknowledged_at: datetime | None
     resolved_by_membership_id: int | None

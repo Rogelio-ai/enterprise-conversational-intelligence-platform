@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from sqlalchemy import select
@@ -34,6 +35,33 @@ class ConversationClosedError(RuntimeError):
 
 class ConversationConflictError(RuntimeError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class ResponderMessage:
+    message_id: int
+    conversation_id: int
+    operational_request_id: int
+    participant_id: int
+    author_type: str
+    sequence_number: int
+    modality: str
+    content_text: str
+    language: str | None
+    language_source: str | None
+    created_at: datetime
+
+
+@dataclass(frozen=True, slots=True)
+class DinerTranscriptMessage:
+    message_id: int
+    author_type: str
+    sequence_number: int
+    modality: str
+    content_text: str
+    language: str | None
+    language_source: str | None
+    created_at: datetime
 
 
 async def get_conversation(
@@ -352,3 +380,125 @@ async def append_message(
     await db.commit()
     await db.refresh(message)
     return message
+
+
+def _responder_projection(message: ConversationMessage) -> ResponderMessage:
+    return ResponderMessage(
+        message_id=message.id,
+        conversation_id=message.conversation_id,
+        operational_request_id=message.operational_request_id,
+        participant_id=message.participant_id,
+        author_type='HUMAN_STAFF',
+        sequence_number=message.sequence_number,
+        modality=message.modality,
+        content_text=message.content_text,
+        language=message.language,
+        language_source=message.language_source,
+        created_at=message.created_at,
+    )
+
+
+async def stage_staff_response(
+    db: AsyncSession,
+    *,
+    conversation: Conversation,
+    operational_request_id: int,
+    membership_id: int,
+    idempotency_key: str,
+    request_fingerprint: str,
+    modality: str,
+    content_text: str,
+    language: str | None,
+    language_source: str | None,
+) -> ResponderMessage:
+    participant = await db.scalar(select(ConversationParticipant).where(
+        ConversationParticipant.tenant_id == conversation.tenant_id,
+        ConversationParticipant.conversation_id == conversation.id,
+        ConversationParticipant.tenant_membership_id == membership_id,
+    ).with_for_update())
+    if participant is None:
+        participant = ConversationParticipant(
+            tenant_id=conversation.tenant_id,
+            conversation_id=conversation.id,
+            participant_type='HUMAN_STAFF',
+            customer_id=None,
+            tenant_membership_id=membership_id,
+            preferred_language=None,
+        )
+        db.add(participant)
+        await db.flush()
+
+    existing = await db.scalar(select(ConversationMessage).where(
+        ConversationMessage.tenant_id == conversation.tenant_id,
+        ConversationMessage.operational_request_id == operational_request_id,
+        ConversationMessage.participant_id == participant.id,
+        ConversationMessage.response_idempotency_key == idempotency_key,
+    ).with_for_update())
+    if existing is not None:
+        if existing.response_request_fingerprint != request_fingerprint:
+            raise ConversationConflictError(
+                'Idempotency key was used for a different responder command'
+            )
+        return _responder_projection(existing)
+
+    message = ConversationMessage(
+        tenant_id=conversation.tenant_id,
+        conversation_id=conversation.id,
+        participant_id=participant.id,
+        sequence_number=conversation.next_message_sequence,
+        modality=modality,
+        content_text=content_text,
+        language=language,
+        language_source=language_source,
+        operational_request_id=operational_request_id,
+        response_idempotency_key=idempotency_key,
+        response_request_fingerprint=request_fingerprint,
+    )
+    conversation.next_message_sequence += 1
+    db.add(message)
+    await db.flush()
+    await db.refresh(message)
+    return _responder_projection(message)
+
+
+async def list_diner_transcript(
+    db: AsyncSession,
+    *,
+    tenant_id: int,
+    diner_session_id: int,
+    conversation_id: int,
+    limit: int,
+    offset: int,
+) -> tuple[DinerTranscriptMessage, ...]:
+    await get_conversation(
+        db,
+        tenant_id=tenant_id,
+        conversation_id=conversation_id,
+        owner_diner_session_id=diner_session_id,
+    )
+    rows = (await db.execute(
+        select(ConversationMessage, ConversationParticipant.participant_type)
+        .join(
+            ConversationParticipant,
+            (ConversationParticipant.id == ConversationMessage.participant_id)
+            & (ConversationParticipant.tenant_id == ConversationMessage.tenant_id)
+            & (ConversationParticipant.conversation_id == ConversationMessage.conversation_id),
+        )
+        .where(
+            ConversationMessage.tenant_id == tenant_id,
+            ConversationMessage.conversation_id == conversation_id,
+        )
+        .order_by(ConversationMessage.sequence_number, ConversationMessage.id)
+        .limit(limit)
+        .offset(offset)
+    )).all()
+    return tuple(DinerTranscriptMessage(
+        message_id=message.id,
+        author_type=participant_type,
+        sequence_number=message.sequence_number,
+        modality=message.modality,
+        content_text=message.content_text,
+        language=message.language,
+        language_source=message.language_source,
+        created_at=message.created_at,
+    ) for message, participant_type in rows)

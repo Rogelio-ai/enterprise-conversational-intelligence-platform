@@ -150,6 +150,11 @@ class ConversationParticipant(TimestampMixin, Base):
             'customer_id',
             name='uq_conversation_participants_conversation_customer',
         ),
+        UniqueConstraint(
+            'conversation_id',
+            'tenant_membership_id',
+            name='uq_conversation_participants_conversation_membership',
+        ),
         CheckConstraint(
             "participant_type IN ('CUSTOMER', 'DIGITAL_WAITER', 'HUMAN_STAFF', 'SYSTEM')",
             name='ck_conversation_participants_type',
@@ -216,6 +221,12 @@ class ConversationMessage(Base):
             name='fk_conversation_messages_participant_tenant_conversation',
             ondelete='RESTRICT',
         ),
+        ForeignKeyConstraint(
+            ['operational_request_id', 'tenant_id'],
+            ['diner_operational_requests.id', 'diner_operational_requests.tenant_id'],
+            name='fk_conversation_messages_operational_request_tenant',
+            ondelete='RESTRICT',
+        ),
         UniqueConstraint(
             'tenant_id',
             'conversation_id',
@@ -227,6 +238,13 @@ class ConversationMessage(Base):
             'tenant_id',
             'conversation_id',
             name='uq_conversation_messages_id_tenant_conversation',
+        ),
+        UniqueConstraint(
+            'tenant_id',
+            'operational_request_id',
+            'participant_id',
+            'response_idempotency_key',
+            name='uq_conversation_messages_responder_replay',
         ),
         CheckConstraint('sequence_number >= 1', name='ck_conversation_messages_sequence'),
         CheckConstraint(
@@ -250,7 +268,18 @@ class ConversationMessage(Base):
             'language IS NULL OR CHAR_LENGTH(language) BETWEEN 1 AND 63',
             name='ck_conversation_messages_language_length',
         ),
+        CheckConstraint(
+            '(operational_request_id IS NULL AND response_idempotency_key IS NULL '
+            'AND response_request_fingerprint IS NULL) OR '
+            '(operational_request_id IS NOT NULL AND response_idempotency_key IS NOT NULL '
+            'AND response_request_fingerprint IS NOT NULL)',
+            name='ck_conversation_messages_responder_evidence',
+        ),
         Index('ix_conversation_messages_participant', 'tenant_id', 'participant_id', 'id'),
+        Index(
+            'ix_conversation_messages_operational_request',
+            'operational_request_id', 'tenant_id', 'id',
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
@@ -262,6 +291,13 @@ class ConversationMessage(Base):
     content_text: Mapped[str] = mapped_column(Text, nullable=False)
     language: Mapped[str | None] = mapped_column(String(63), nullable=True)
     language_source: Mapped[str | None] = mapped_column(String(16), nullable=True)
+    operational_request_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    response_idempotency_key: Mapped[str | None] = mapped_column(
+        String(128, collation='ascii_bin'), nullable=True,
+    )
+    response_request_fingerprint: Mapped[str | None] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=True,
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(), nullable=False, server_default=func.current_timestamp()
     )

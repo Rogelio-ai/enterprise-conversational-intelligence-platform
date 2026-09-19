@@ -92,7 +92,10 @@ export type OperationalRequestType =
   | 'HUMAN_ASSISTANCE'
   | 'CASH_PAYMENT_ASSISTANCE'
   | 'INVOICE_ASSISTANCE'
-  | 'PAID_CHECK_PRINT';
+  | 'PAID_CHECK_PRINT'
+  | 'PREPARATION_READY';
+
+export type WaiterOperationalRequestView = 'active' | 'hidden';
 
 export interface StaffOperationalRequest {
   id: number;
@@ -102,15 +105,43 @@ export interface StaffOperationalRequest {
   resource_code: string;
   resource_name: string;
   service_session_id: number;
-  diner_session_id: number;
-  diner_display_name: string;
+  diner_session_id: number | null;
+  diner_display_name: string | null;
   request_type: OperationalRequestType;
   status: OperationalRequestStatus;
   related_restaurant_check_id: number | null;
+  preparation_work_id: number | null;
+  restaurant_order_id: number | null;
+  preparation_area_id: number | null;
+  preparation_area_code: string | null;
+  preparation_area_name: string | null;
+  picked_up_by_membership_id: number | null;
+  picked_up_at: string | null;
+  delivered_by_membership_id: number | null;
+  delivered_at: string | null;
+  acknowledged_by_membership_id: number | null;
+  acknowledged_by_display_name?: string | null;
+  acknowledged_at: string | null;
   resolved_by_membership_id: number | null;
   resolved_at: string | null;
+  current_waiter_entered_at?: string | null;
+  current_waiter_hidden_at?: string | null;
   created_at: string;
   updated_at: string;
+}
+
+export interface WaiterRespondResponse {
+  message_id: number;
+  conversation_id: number;
+  operational_request_id: number;
+  participant_id: number;
+  author_type: string;
+  sequence_number: number;
+  modality: string;
+  content_text: string;
+  language: string | null;
+  language_source: string | null;
+  created_at: string;
 }
 
 export interface StaffOperationalRequestListResponse {

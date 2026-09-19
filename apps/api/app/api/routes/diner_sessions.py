@@ -96,6 +96,24 @@ class DinerMessageCreate(BaseModel):
         return self
 
 
+class DinerTranscriptMessageResponse(BaseModel):
+    model_config = ConfigDict(from_attributes=True)
+    message_id: int
+    author_type: str
+    sequence_number: int
+    modality: str
+    content_text: str
+    language: str | None
+    language_source: str | None
+    created_at: datetime
+
+
+class DinerTranscriptResponse(BaseModel):
+    items: list[DinerTranscriptMessageResponse]
+    limit: int
+    offset: int
+
+
 def _diner_response(value: DinerSession) -> DinerSessionResponse:
     return DinerSessionResponse(
         id=value.id,
@@ -257,6 +275,27 @@ async def append_diner_message(
         )
     except Exception as exc:
         raise _conversation_error(exc) from exc
+
+
+@router.get('/diner/conversation/messages', response_model=DinerTranscriptResponse)
+async def get_diner_transcript(
+    context: Annotated[DinerAuthenticatedContext, Depends(get_diner_authenticated_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+    limit: Annotated[int, Query(ge=1, le=100)] = 50,
+    offset: Annotated[int, Query(ge=0)] = 0,
+) -> DinerTranscriptResponse:
+    try:
+        messages = await conversation_service.list_diner_transcript(
+            db,
+            tenant_id=context.tenant_id,
+            diner_session_id=context.diner_session_id,
+            conversation_id=context.conversation_id,
+            limit=limit,
+            offset=offset,
+        )
+    except Exception as exc:
+        raise _conversation_error(exc) from exc
+    return DinerTranscriptResponse(items=list(messages), limit=limit, offset=offset)
 
 
 def _owner(context: DinerAuthenticatedContext) -> dict[str, int]:

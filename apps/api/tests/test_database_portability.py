@@ -655,6 +655,7 @@ EXPECTED_DOMAIN_CHECKS = {
     ('conversation_messages', 'ck_conversation_messages_language_source'),
     ('conversation_messages', 'ck_conversation_messages_language_pair'),
     ('conversation_messages', 'ck_conversation_messages_language_length'),
+    ('conversation_messages', 'ck_conversation_messages_responder_evidence'),
     ('intelligence_derivations', 'ck_intelligence_derivations_schema_key'),
     ('intelligence_derivations', 'ck_intelligence_derivations_schema_version'),
     ('intelligence_derivations', 'ck_intelligence_derivations_producer_key'),
@@ -810,12 +811,15 @@ _index('conversations', 'ix_conversations_tenant_location_status', ('tenant_id',
 _index('conversations', 'ix_conversations_tenant_resource', ('tenant_id', 'resource_id', 'id'), 1)
 _index('conversation_participants', 'uq_conversation_participants_id_tenant_conversation', ('id', 'tenant_id', 'conversation_id'), 0)
 _index('conversation_participants', 'uq_conversation_participants_conversation_customer', ('conversation_id', 'customer_id'), 0)
+_index('conversation_participants', 'uq_conversation_participants_conversation_membership', ('conversation_id', 'tenant_membership_id'), 0)
 _index('conversation_participants', 'ix_conversation_participants_conversation_type', ('tenant_id', 'conversation_id', 'participant_type', 'id'), 1)
 _index('conversation_participants', 'ix_conversation_participants_customer', ('tenant_id', 'customer_id', 'id'), 1)
 _index('conversation_participants', 'ix_conversation_participants_membership', ('tenant_id', 'tenant_membership_id', 'id'), 1)
 _index('conversation_messages', 'uq_conversation_messages_tenant_conversation_sequence', ('tenant_id', 'conversation_id', 'sequence_number'), 0)
 _index('conversation_messages', 'uq_conversation_messages_id_tenant_conversation', ('id', 'tenant_id', 'conversation_id'), 0)
+_index('conversation_messages', 'uq_conversation_messages_responder_replay', ('tenant_id', 'operational_request_id', 'participant_id', 'response_idempotency_key'), 0)
 _index('conversation_messages', 'ix_conversation_messages_participant', ('tenant_id', 'participant_id', 'id'), 1)
+_index('conversation_messages', 'ix_conversation_messages_operational_request', ('operational_request_id', 'tenant_id', 'id'), 1)
 _index('intelligence_derivations', 'uq_intelligence_derivations_id_tenant', ('id', 'tenant_id'), 0)
 _index('intelligence_derivations', 'ix_intelligence_derivations_tenant_message_created', ('tenant_id', 'source_message_id', 'created_at', 'id'), 1)
 _index('intelligence_derivations', 'ix_intelligence_derivations_tenant_conversation', ('tenant_id', 'conversation_id', 'id'), 1)
@@ -1021,6 +1025,7 @@ for constraint, table, local_columns, target_table, target_columns in (
     ('fk_conversation_messages_tenant', 'conversation_messages', ('tenant_id',), 'tenants', ('id',)),
     ('fk_conversation_messages_conversation_tenant', 'conversation_messages', ('conversation_id', 'tenant_id'), 'conversations', ('id', 'tenant_id')),
     ('fk_conversation_messages_participant_tenant_conversation', 'conversation_messages', ('participant_id', 'tenant_id', 'conversation_id'), 'conversation_participants', ('id', 'tenant_id', 'conversation_id')),
+    ('fk_conversation_messages_operational_request_tenant', 'conversation_messages', ('operational_request_id', 'tenant_id'), 'diner_operational_requests', ('id', 'tenant_id')),
     ('fk_intelligence_derivations_tenant', 'intelligence_derivations', ('tenant_id',), 'tenants', ('id',)),
     ('fk_intelligence_derivations_conversation_tenant', 'intelligence_derivations', ('conversation_id', 'tenant_id'), 'conversations', ('id', 'tenant_id')),
     ('fk_intelligence_derivations_message_tenant_conversation', 'intelligence_derivations', ('source_message_id', 'tenant_id', 'conversation_id'), 'conversation_messages', ('id', 'tenant_id', 'conversation_id')),
@@ -4964,6 +4969,198 @@ def test_0061_operational_message_center_migration_is_portable_and_reversible(
                 "AND TABLE_NAME='operational_request_waiter_states'"
             )
             assert cursor.fetchone()['TABLE_NAME'] == 'operational_request_waiter_states'
+    finally:
+        connection.close()
+
+
+def test_0062_conversation_responder_migration_is_portable_and_reversible(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    revision = '0062_conversation_responder_foundation'
+    previous_revision = '0061_operational_message_center_foundation'
+    response_columns = {
+        'operational_request_id',
+        'response_idempotency_key',
+        'response_request_fingerprint',
+    }
+    message_constraints = {
+        'fk_conversation_messages_operational_request_tenant',
+        'ck_conversation_messages_responder_evidence',
+        'uq_conversation_messages_responder_replay',
+    }
+    participant_constraint = 'uq_conversation_participants_conversation_membership'
+
+    _run_alembic(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) "
+                "VALUES ('MP3 Legacy','mp3-legacy','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO organizations (tenant_id,code,name,status) '
+                "VALUES (%s,'ORG','Organization','ACTIVE')",
+                (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO conversations '
+                '(tenant_id,organization_id,channel,status,next_message_sequence) '
+                "VALUES (%s,%s,'PHONE','ACTIVE',2)",
+                (tenant_id, organization_id),
+            )
+            conversation_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO conversation_participants '
+                '(tenant_id,conversation_id,participant_type) '
+                "VALUES (%s,%s,'CUSTOMER')",
+                (tenant_id, conversation_id),
+            )
+            participant_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO conversation_messages '
+                '(tenant_id,conversation_id,participant_id,sequence_number,'
+                'modality,content_text) '
+                "VALUES (%s,%s,%s,1,'TEXT','legacy message')",
+                (tenant_id, conversation_id, participant_id),
+            )
+            message_id = int(cursor.lastrowid)
+            cursor.execute(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='conversation_messages' "
+                'AND COLUMN_NAME IN (%s,%s,%s)',
+                tuple(sorted(response_columns)),
+            )
+            assert cursor.fetchall() == ()
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT ENGINE,TABLE_COLLATION FROM information_schema.TABLES '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='conversation_messages'"
+            )
+            assert cursor.fetchone() == {
+                'ENGINE': 'InnoDB',
+                'TABLE_COLLATION': 'utf8mb4_unicode_ci',
+            }
+            cursor.execute(
+                'SELECT COLUMN_NAME,IS_NULLABLE,DATA_TYPE,COLLATION_NAME '
+                'FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='conversation_messages' "
+                'AND COLUMN_NAME IN (%s,%s,%s)',
+                tuple(sorted(response_columns)),
+            )
+            columns = {row['COLUMN_NAME']: row for row in cursor.fetchall()}
+            assert set(columns) == response_columns
+            assert {row['IS_NULLABLE'] for row in columns.values()} == {'YES'}
+            assert columns['operational_request_id']['DATA_TYPE'] == 'bigint'
+            assert columns['response_idempotency_key']['DATA_TYPE'] == 'varchar'
+            assert columns['response_idempotency_key']['COLLATION_NAME'] == 'ascii_bin'
+            assert columns['response_request_fingerprint']['DATA_TYPE'] == 'varchar'
+            assert columns['response_request_fingerprint']['COLLATION_NAME'] == 'ascii_bin'
+
+            cursor.execute(
+                'SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS '
+                "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='conversation_messages'"
+            )
+            assert message_constraints <= {
+                row['CONSTRAINT_NAME'] for row in cursor.fetchall()
+            }
+            cursor.execute(
+                'SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS '
+                "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='conversation_participants'"
+            )
+            assert participant_constraint in {
+                row['CONSTRAINT_NAME'] for row in cursor.fetchall()
+            }
+            cursor.execute(
+                'SELECT INDEX_NAME,COLUMN_NAME,SEQ_IN_INDEX,NON_UNIQUE '
+                'FROM information_schema.STATISTICS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='conversation_messages' "
+                "AND INDEX_NAME IN ('uq_conversation_messages_responder_replay',"
+                "'ix_conversation_messages_operational_request') "
+                'ORDER BY INDEX_NAME,SEQ_IN_INDEX'
+            )
+            indexes: dict[str, list[dict]] = {}
+            for row in cursor.fetchall():
+                indexes.setdefault(row['INDEX_NAME'], []).append(row)
+            assert [
+                row['COLUMN_NAME']
+                for row in indexes['ix_conversation_messages_operational_request']
+            ] == ['operational_request_id', 'tenant_id', 'id']
+            assert [
+                row['COLUMN_NAME']
+                for row in indexes['uq_conversation_messages_responder_replay']
+            ] == [
+                'tenant_id', 'operational_request_id', 'participant_id',
+                'response_idempotency_key',
+            ]
+            assert {
+                row['NON_UNIQUE']
+                for row in indexes['uq_conversation_messages_responder_replay']
+            } == {0}
+            cursor.execute(
+                'SELECT operational_request_id,response_idempotency_key,'
+                'response_request_fingerprint FROM conversation_messages WHERE id=%s',
+                (message_id,),
+            )
+            assert cursor.fetchone() == {
+                'operational_request_id': None,
+                'response_idempotency_key': None,
+                'response_request_fingerprint': None,
+            }
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == revision
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT COLUMN_NAME FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='conversation_messages' "
+                'AND COLUMN_NAME IN (%s,%s,%s)',
+                tuple(sorted(response_columns)),
+            )
+            assert cursor.fetchall() == ()
+            cursor.execute(
+                'SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS '
+                "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='conversation_participants' "
+                'AND CONSTRAINT_NAME=%s',
+                (participant_constraint,),
+            )
+            assert cursor.fetchone() is None
+            cursor.execute(
+                'SELECT content_text FROM conversation_messages WHERE id=%s',
+                (message_id,),
+            )
+            assert cursor.fetchone()['content_text'] == 'legacy message'
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == revision
+            cursor.execute(
+                'SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS '
+                "WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME='conversation_messages'"
+            )
+            assert message_constraints <= {
+                row['CONSTRAINT_NAME'] for row in cursor.fetchall()
+            }
     finally:
         connection.close()
 

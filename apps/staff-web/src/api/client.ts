@@ -30,6 +30,8 @@ import type {
   StaffOperationalRequestListResponse,
   OperationalRequestStatus,
   OperationalRequestType,
+  WaiterOperationalRequestView,
+  WaiterRespondResponse,
   PreparationAreaListResponse,
   PreparationDispatch,
   PreparationState,
@@ -108,6 +110,17 @@ async function request<T>(path: string, init: RequestInit = {}, authenticated = 
 
   if (response.status === 204) return undefined as T;
   return await response.json() as T;
+}
+
+function waiterRequestMutation(
+  requestId: number,
+  locationId: number,
+  action: 'entered' | 'hide' | 'show' | 'pick-up' | 'deliver',
+): Promise<StaffOperationalRequest> {
+  const query = new URLSearchParams({ location_id: String(locationId) });
+  return request(`/waiter/operational-requests/${requestId}/${action}?${query.toString()}`, {
+    method: 'POST',
+  });
 }
 
 export const staffApi = {
@@ -412,15 +425,14 @@ export const staffApi = {
   },
   waiterOperationalRequests(
     locationId: number,
-    filters: { status?: OperationalRequestStatus; requestType?: OperationalRequestType },
+    filters: { view: WaiterOperationalRequestView },
   ): Promise<StaffOperationalRequestListResponse> {
     const query = new URLSearchParams({
       location_id: String(locationId),
       limit: '100',
       offset: '0',
     });
-    if (filters.status) query.set('status', filters.status);
-    if (filters.requestType) query.set('request_type', filters.requestType);
+    query.set('view', filters.view);
     return request(`/waiter/operational-requests?${query.toString()}`);
   },
   acknowledgeWaiterOperationalRequest(
@@ -439,6 +451,31 @@ export const staffApi = {
     const query = new URLSearchParams({ location_id: String(locationId) });
     return request(`/waiter/operational-requests/${requestId}/complete?${query.toString()}`, {
       method: 'POST',
+    });
+  },
+  enterWaiterOperationalRequest(requestId: number, locationId: number): Promise<StaffOperationalRequest> {
+    return waiterRequestMutation(requestId, locationId, 'entered');
+  },
+  hideWaiterOperationalRequest(requestId: number, locationId: number): Promise<StaffOperationalRequest> {
+    return waiterRequestMutation(requestId, locationId, 'hide');
+  },
+  showWaiterOperationalRequest(requestId: number, locationId: number): Promise<StaffOperationalRequest> {
+    return waiterRequestMutation(requestId, locationId, 'show');
+  },
+  pickUpWaiterOperationalRequest(requestId: number, locationId: number): Promise<StaffOperationalRequest> {
+    return waiterRequestMutation(requestId, locationId, 'pick-up');
+  },
+  deliverWaiterOperationalRequest(requestId: number, locationId: number): Promise<StaffOperationalRequest> {
+    return waiterRequestMutation(requestId, locationId, 'deliver');
+  },
+  respondToWaiterOperationalRequest(
+    requestId: number, locationId: number, contentText: string, idempotencyKey: string,
+  ): Promise<WaiterRespondResponse> {
+    const query = new URLSearchParams({ location_id: String(locationId) });
+    return request(`/waiter/operational-requests/${requestId}/respond?${query.toString()}`, {
+      method: 'POST',
+      headers: { 'Idempotency-Key': idempotencyKey },
+      body: JSON.stringify({ content_text: contentText }),
     });
   },
   preparationAreas(locationId: number): Promise<PreparationAreaListResponse> {
