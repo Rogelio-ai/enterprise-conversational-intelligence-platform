@@ -14,6 +14,7 @@ import { storeCredential } from '../session/storage';
 import { ThemeProvider } from '../theme/ThemeContext';
 
 const kitchenIdentity: StaffIdentity = {
+  username: 'kitchen',
   user_id: 7,
   email: 'kitchen@example.test',
   display_name: 'Ana Cocina',
@@ -22,6 +23,11 @@ const kitchenIdentity: StaffIdentity = {
   authorized_location_ids: [21],
   roles: ['KITCHEN'],
   permissions: ['location.read', 'preparation.read', 'preparation.execute', 'preparation.dispatch'],
+  location_authorities: [{
+    location_id: 21,
+    roles: ['KITCHEN'],
+    permissions: ['location.read', 'preparation.read', 'preparation.execute', 'preparation.dispatch'],
+  }],
 };
 
 const location = {

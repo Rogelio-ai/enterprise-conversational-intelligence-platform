@@ -53,8 +53,9 @@ def _authority(connection, slug: str, permissions=()) -> Authority:
     email = f'{slug}@example.test'
     user_id = _execute(
         connection,
-        'INSERT INTO users (email,password_hash,display_name,status) VALUES (%s,%s,%s,%s)',
-        (email, hash_password(PASSWORD), 'Cash User', 'ACTIVE'),
+        'INSERT INTO users (username,email,password_hash,display_name,status) '
+        'VALUES (%s,%s,%s,%s,%s)',
+        (slug.casefold(), email, hash_password(PASSWORD), 'Cash User', 'ACTIVE'),
     )
     membership_id = _execute(
         connection,
@@ -101,11 +102,21 @@ def _grant_location(connection, authority: Authority, location_id: int) -> None:
         '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
         (authority.tenant_id, authority.membership_id, location_id),
     )
+    _execute(
+        connection,
+        'INSERT INTO membership_location_roles '
+        '(tenant_id,membership_id,location_id,role_id) VALUES (%s,%s,%s,%s)',
+        (
+            authority.tenant_id, authority.membership_id,
+            location_id, authority.role_id,
+        ),
+    )
 
 
 def _headers(client: TestClient, authority: Authority) -> dict[str, str]:
     response = client.post(
-        '/auth/login', json={'email': authority.email, 'password': PASSWORD}
+        '/auth/login',
+        json={'username': authority.email.partition('@')[0], 'password': PASSWORD},
     )
     assert response.status_code == 200, response.text
     return {'Authorization': f"Bearer {response.json()['access_token']}"}

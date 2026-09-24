@@ -73,11 +73,12 @@ def _scope(connection, slug: str, permissions=()) -> Scope:
         ),
     )
     email = f'{slug}@example.test'
+    username = slug.casefold()
     user_id = _execute(
         connection,
-        'INSERT INTO users (email,password_hash,display_name,status) '
-        'VALUES (%s,%s,%s,%s)',
-        (email, hash_password(PASSWORD), 'Inventory User', 'ACTIVE'),
+        'INSERT INTO users (username,email,password_hash,display_name,status) '
+        'VALUES (%s,%s,%s,%s,%s)',
+        (username, email, hash_password(PASSWORD), 'Inventory User', 'ACTIVE'),
     )
     membership_id = _execute(
         connection,
@@ -101,6 +102,12 @@ def _scope(connection, slug: str, permissions=()) -> Scope:
         '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
         (tenant_id, membership_id, location_id),
     )
+    _execute(
+        connection,
+        'INSERT INTO membership_location_roles '
+        '(tenant_id,membership_id,location_id,role_id) VALUES (%s,%s,%s,%s)',
+        (tenant_id, membership_id, location_id, role_id),
+    )
     for permission in permissions:
         _permission(connection, role_id, permission)
     return Scope(
@@ -110,7 +117,7 @@ def _scope(connection, slug: str, permissions=()) -> Scope:
 
 def _headers(client: TestClient, scope: Scope) -> dict[str, str]:
     response = client.post(
-        '/auth/login', json={'email': scope.email, 'password': PASSWORD}
+        '/auth/login', json={'username': scope.email.partition('@')[0], 'password': PASSWORD}
     )
     assert response.status_code == 200, response.text
     return {'Authorization': f"Bearer {response.json()['access_token']}"}

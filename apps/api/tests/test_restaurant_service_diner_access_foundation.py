@@ -198,7 +198,10 @@ def test_join_identity_capacity_conversation_draft_end_and_token_separation(clie
     assert replacement.status_code == 201
     with pytest.raises(TokenValidationError):
         decode_access_token(first_body['access_token'], settings=integration_settings)
-    staff_created = create_access_token(settings=integration_settings, user_id=1, tenant_id=1, membership_id=1)
+    staff_created = create_access_token(
+        settings=integration_settings, user_id=1, tenant_id=1,
+        membership_id=1, session_id='staff-session',
+    )
     with pytest.raises(TokenValidationError):
         decode_diner_access_token(staff_created, settings=integration_settings)
 

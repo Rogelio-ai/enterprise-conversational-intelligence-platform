@@ -10,6 +10,7 @@ import { storeCredential } from '../session/storage';
 import { ThemeProvider } from '../theme/ThemeContext';
 
 const hostIdentity: StaffIdentity = {
+  username: 'host',
   user_id: 7,
   email: 'host@example.test',
   display_name: 'Ana Host',
@@ -18,6 +19,11 @@ const hostIdentity: StaffIdentity = {
   authorized_location_ids: [21],
   roles: ['HOST'],
   permissions: ['location.read', 'resource.read', 'resource.manage', 'restaurant_service.read', 'restaurant_service.manage'],
+  location_authorities: [{
+    location_id: 21,
+    roles: ['HOST'],
+    permissions: ['location.read', 'resource.read', 'resource.manage', 'restaurant_service.read', 'restaurant_service.manage'],
+  }],
 };
 
 const location = { id: 21, tenant_id: 11, organization_id: 31, code: 'CENTRO', name: 'Sucursal Centro', timezone: 'America/Mexico_City', status: 'ACTIVE' };

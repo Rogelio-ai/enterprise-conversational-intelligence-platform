@@ -22,6 +22,7 @@ from app.models import (
     LocationPaymentExecutorConfiguration,
     LocationPreparationConfiguration,
     MembershipLocationGrant,
+    MembershipLocationRole,
     MembershipRole,
     Menu,
     MenuItem,
@@ -69,23 +70,61 @@ DATA_DESCRIPTION = ('Producto ficticio para recorrido local DEMO.' if DEMO_MODE
 FISCAL_PREFIX = 'DEMO' if DEMO_MODE else 'PREPILOT'
 
 
+OPERATIONAL_PROFILE_PERMISSIONS = {
+    'HOST': ('location.read', 'resource.read', 'restaurant_service.read'),
+    'WAITER': (
+        'location.read', 'order_draft.read', 'order_draft.manage',
+        'restaurant_service.read', 'restaurant_service.manage',
+        'restaurant_order.read', 'restaurant_check.read',
+        'operational_request.read',
+    ),
+    'KITCHEN': (
+        'location.read', 'preparation.read', 'preparation.execute',
+        'preparation.dispatch', 'restaurant_order.read',
+    ),
+    'CASHIER': (
+        'location.read', 'resource.read', 'restaurant_check.read',
+        'restaurant_check.manage', 'restaurant_payment.read',
+        'restaurant_payment.manage', 'restaurant_payment.recover',
+        'cash_management.read', 'cash_session.manage', 'cash_movement.manage',
+    ),
+    'INVENTORY_MANAGER': (
+        'location.read', 'inventory.read', 'inventory.count.read',
+        'inventory.count.approve', 'inventory.count.post',
+    ),
+}
+
+OPERATIONAL_ROLE_PREFIX = 'DEMO' if DEMO_MODE else 'PREPILOT'
+
+
+def operational_role_name(profile: str) -> str:
+    if profile not in OPERATIONAL_PROFILE_PERMISSIONS:
+        raise ValueError(f'unsupported operational profile: {profile}')
+    return f'{OPERATIONAL_ROLE_PREFIX}_{profile}'
+
+
+def operational_role_description(profile: str) -> str:
+    if profile not in OPERATIONAL_PROFILE_PERMISSIONS:
+        raise ValueError(f'unsupported operational profile: {profile}')
+    return f'Synthetic local pre-pilot {profile.lower()} role.'
+
+
 STAFF = (
     (
+        'HOST', ('host@restaurant.demo' if DEMO_MODE else 'host.prepilot@carnitas-munoz.invalid'), ('Host Demo' if DEMO_MODE else 'Host Pre-Pilot'),
+        OPERATIONAL_PROFILE_PERMISSIONS['HOST'],
+    ),
+    (
         'WAITER', ('waiter@restaurant.demo' if DEMO_MODE else 'waiter.prepilot@carnitas-munoz.invalid'), ('Mesero Demo' if DEMO_MODE else 'Mesero Pre-Pilot'),
-        ('order_draft.read', 'order_draft.manage', 'restaurant_service.read',
-         'restaurant_service.manage', 'restaurant_order.read', 'restaurant_check.read'),
+        OPERATIONAL_PROFILE_PERMISSIONS['WAITER'],
     ),
     (
         'KITCHEN', ('kitchen@restaurant.demo' if DEMO_MODE else 'kitchen.prepilot@carnitas-munoz.invalid'), ('Cocina Demo' if DEMO_MODE else 'Cocina Pre-Pilot'),
-        ('preparation.read', 'preparation.execute', 'preparation.dispatch',
-         'restaurant_order.read'),
+        OPERATIONAL_PROFILE_PERMISSIONS['KITCHEN'],
     ),
     (
         'CASHIER', ('cashier@restaurant.demo' if DEMO_MODE else 'cashier.prepilot@carnitas-munoz.invalid'), ('Caja Demo' if DEMO_MODE else 'Caja Pre-Pilot'),
-        ('restaurant_check.read', 'restaurant_check.manage',
-         'restaurant_payment.read', 'restaurant_payment.manage',
-         'restaurant_payment.recover', 'cash_management.read',
-         'cash_session.manage', 'cash_movement.manage'),
+        OPERATIONAL_PROFILE_PERMISSIONS['CASHIER'],
     ),
 )
 if DEMO_MODE:
@@ -93,7 +132,7 @@ if DEMO_MODE:
         (
             'INVENTORY_MANAGER', 'inventory@restaurant.demo',
             'Responsable de Inventario Demo',
-            ('inventory.count.read', 'inventory.count.approve', 'inventory.count.post'),
+            OPERATIONAL_PROFILE_PERMISSIONS['INVENTORY_MANAGER'],
         ),
     )
 
@@ -167,8 +206,8 @@ def _match(value: object, label: str, **expected: Any) -> None:
 
 async def _grant(
     session: AsyncSession, tenant_id: int, membership_id: int, location_id: int,
-    created: list[str], label: str,
-) -> MembershipLocationGrant:
+    role_id: int, created: list[str], label: str,
+) -> MembershipLocationRole:
     value = await _one(session, select(MembershipLocationGrant).where(
         MembershipLocationGrant.tenant_id == tenant_id,
         MembershipLocationGrant.membership_id == membership_id,
@@ -176,12 +215,27 @@ async def _grant(
     ), f'{label} location grant')
     if value is None:
         value = MembershipLocationGrant(
-            tenant_id=tenant_id, membership_id=membership_id, location_id=location_id,
+            tenant_id=tenant_id, membership_id=membership_id,
+            location_id=location_id,
         )
         session.add(value)
         await session.flush()
         created.append(f'{label}:location_grant')
-    return value
+    assignment = await _one(session, select(MembershipLocationRole).where(
+        MembershipLocationRole.tenant_id == tenant_id,
+        MembershipLocationRole.membership_id == membership_id,
+        MembershipLocationRole.location_id == location_id,
+        MembershipLocationRole.role_id == role_id,
+    ), f'{label} location role')
+    if assignment is None:
+        assignment = MembershipLocationRole(
+            tenant_id=tenant_id, membership_id=membership_id,
+            location_id=location_id, role_id=role_id,
+        )
+        session.add(assignment)
+        await session.flush()
+        created.append(f'{label}:location_role')
+    return assignment
 
 
 async def _staff(
@@ -189,10 +243,11 @@ async def _staff(
     created: list[str], role_code: str, email: str, display_name: str,
     permission_codes: tuple[str, ...],
 ) -> TenantMembership:
+    username = role_code.casefold()
     user = await _one(session, select(User).where(User.email == email), f'{role_code} user')
     if user is None:
         user = User(
-            email=email, display_name=display_name, status='ACTIVE',
+            username=username, email=email, display_name=display_name, status='ACTIVE',
             password_hash=hash_password(password),
         )
         session.add(user)
@@ -200,6 +255,14 @@ async def _staff(
         created.append(f'{role_code}:user')
     else:
         _match(user, f'{role_code} user', display_name=display_name, status='ACTIVE')
+        if user.username != username:
+            conflict = await session.scalar(select(User.id).where(
+                User.username == username, User.id != user.id,
+            ))
+            if conflict is not None:
+                raise RuntimeError(f'{role_code} username conflicts with an existing User')
+            user.username = username
+            created.append(f'{role_code}:username')
 
     membership = await _one(session, select(TenantMembership).where(
         TenantMembership.tenant_id == tenant_id,
@@ -213,14 +276,14 @@ async def _staff(
     else:
         _match(membership, f'{role_code} membership', status='ACTIVE')
 
-    role_name = f'{"DEMO" if DEMO_MODE else "PREPILOT"}_{role_code}'
+    role_name = operational_role_name(role_code)
     role = await _one(session, select(Role).where(
         Role.tenant_id == tenant_id, Role.name == role_name,
     ), f'{role_code} role')
     if role is None:
         role = Role(
             tenant_id=tenant_id, name=role_name,
-            description=f'Synthetic local pre-pilot {role_code.lower()} role.', status='ACTIVE',
+            description=operational_role_description(role_code), status='ACTIVE',
         )
         session.add(role)
         await session.flush()
@@ -254,7 +317,9 @@ async def _staff(
             tenant_id=tenant_id, membership_id=membership.id, role_id=role.id,
         ))
         created.append(f'{role_code}:membership_role')
-    await _grant(session, tenant_id, membership.id, location_id, created, role_code)
+    await _grant(
+        session, tenant_id, membership.id, location_id, role.id, created, role_code,
+    )
     return membership
 
 
@@ -342,7 +407,7 @@ async def bootstrap_pilot_minimum() -> PilotResult:
 
                 await _grant(
                     session, core.tenant_id, core.membership_id, location.id,
-                    created, 'ADMIN',
+                    core.role_id, created, 'ADMIN',
                 )
                 staff_memberships: dict[str, int] = {}
                 for role_code, email, name, permissions in STAFF:

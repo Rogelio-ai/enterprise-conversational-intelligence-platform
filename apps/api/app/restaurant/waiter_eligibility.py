@@ -8,8 +8,7 @@ from sqlalchemy import distinct, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.models import (
-    MembershipLocationGrant,
-    MembershipRole,
+    MembershipLocationRole,
     Permission,
     Role,
     RolePermission,
@@ -28,19 +27,14 @@ def eligible_waiter_statement(
         select(TenantMembership.id, User.display_name, User.email)
         .join(User, User.id == TenantMembership.user_id)
         .join(
-            MembershipLocationGrant,
-            (MembershipLocationGrant.membership_id == TenantMembership.id)
-            & (MembershipLocationGrant.tenant_id == TenantMembership.tenant_id),
-        )
-        .join(
-            MembershipRole,
-            (MembershipRole.membership_id == TenantMembership.id)
-            & (MembershipRole.tenant_id == TenantMembership.tenant_id),
+            MembershipLocationRole,
+            (MembershipLocationRole.membership_id == TenantMembership.id)
+            & (MembershipLocationRole.tenant_id == TenantMembership.tenant_id),
         )
         .join(
             Role,
-            (Role.id == MembershipRole.role_id)
-            & (Role.tenant_id == MembershipRole.tenant_id),
+            (Role.id == MembershipLocationRole.role_id)
+            & (Role.tenant_id == MembershipLocationRole.tenant_id),
         )
         .join(RolePermission, RolePermission.role_id == Role.id)
         .join(Permission, Permission.id == RolePermission.permission_id)
@@ -48,7 +42,7 @@ def eligible_waiter_statement(
             TenantMembership.tenant_id == tenant_id,
             TenantMembership.status == 'ACTIVE',
             User.status == 'ACTIVE',
-            MembershipLocationGrant.location_id == location_id,
+            MembershipLocationRole.location_id == location_id,
             Role.status == 'ACTIVE',
             Permission.code.in_(WAITER_CAPABILITIES),
         )

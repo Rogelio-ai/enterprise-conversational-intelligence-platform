@@ -21,9 +21,9 @@ def _user(connection, prefix: str, label: str, *, status: str = 'ACTIVE') -> tup
     password_hash = hash_password(PASSWORD)
     user_id = _execute(
         connection,
-        'INSERT INTO users (email,password_hash,display_name,status) '
-        'VALUES (%s,%s,%s,%s)',
-        (email, password_hash, f'Target {label}', status),
+        'INSERT INTO users (username,email,password_hash,display_name,status) '
+        'VALUES (%s,%s,%s,%s,%s)',
+        (f'{prefix}-{label}'.casefold(), email, password_hash, f'Target {label}', status),
     )
     return user_id, password_hash
 
@@ -104,7 +104,7 @@ def test_access_plan_creates_replays_and_preserves_credentials_and_rbac(
         assert replay.json()['location_grants'][0]['operation'] == 'UNCHANGED'
 
         login = client.post('/auth/login', json={
-            'email': f'{prefix}-safe@example.test', 'password': PASSWORD,
+            'username': f'{prefix}-safe', 'password': PASSWORD,
         })
         assert login.status_code == 200, login.text
         me = client.get('/auth/me', headers={
@@ -144,6 +144,66 @@ def test_access_plan_creates_replays_and_preserves_credentials_and_rbac(
             (role_id,),
         )
         assert cursor.fetchone()['amount'] == 1
+
+
+def test_staff_account_provisioning_creates_username_login_without_email(
+    integration_settings, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _scope(connection, f'{prefix}-staff-account')
+    for code in ('user.manage', 'role.manage', 'location.manage', 'product.read'):
+        _permission(connection, scope.role_id, code)
+    role_name = f'{prefix}-STAFF'
+    _role(connection, scope.tenant_id, role_name, ('product.read',))
+    payload = {
+        'username': f'{prefix}.Operator',
+        'password': PASSWORD,
+        'display_name': 'Operator Without Email',
+        'role_name': role_name,
+        'locations': [{
+            'organization_id': scope.organization_id,
+            'location_id': scope.location_id,
+        }],
+    }
+
+    with TestClient(create_app(settings=integration_settings)) as client:
+        headers = _headers(client, scope)
+        created = client.post(
+            '/identity/access-provisioning/staff', headers=headers, json=payload,
+        )
+        assert created.status_code == 200, created.text
+        login = client.post('/auth/login', json={
+            'username': f'{prefix}.operator', 'password': PASSWORD,
+        })
+        assert login.status_code == 200, login.text
+        assert login.json()['user']['email'] is None
+        duplicate = client.post(
+            '/identity/access-provisioning/staff', headers=headers,
+            json={**payload, 'username': f'  {prefix}.OPERATOR  '},
+        )
+        assert duplicate.status_code == 409
+        no_location = client.post(
+            '/identity/access-provisioning/staff', headers=headers,
+            json={
+                **payload,
+                'username': f'{prefix}.no-location',
+                'locations': [],
+            },
+        )
+        assert no_location.status_code == 422
+
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT COUNT(*) AS amount FROM users WHERE username=%s AND email IS NULL',
+            (f'{prefix}.operator',),
+        )
+        assert cursor.fetchone()['amount'] == 1
+        cursor.execute(
+            'SELECT role_id FROM membership_location_roles '
+            'WHERE membership_id=%s AND location_id=%s',
+            (created.json()['membership_id'], scope.location_id),
+        )
+        assert cursor.fetchone()['role_id'] is not None
 
 
 def test_access_plan_fails_closed_for_authority_privilege_and_scope_conflicts(

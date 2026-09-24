@@ -19,7 +19,7 @@ router = APIRouter(
 class WaiterAssignmentResponse(BaseModel):
     membership_id: int
     display_name: str
-    email: str
+    email: str | None
     is_responsible: bool
 
 
@@ -34,7 +34,7 @@ class AssignmentSetResponse(BaseModel):
 class EligibleWaiterResponse(BaseModel):
     membership_id: int
     display_name: str
-    email: str
+    email: str | None
 
 
 class EligibleWaiterListResponse(BaseModel):

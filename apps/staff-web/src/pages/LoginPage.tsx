@@ -9,8 +9,8 @@ export function LoginPage() {
   const location = useLocation();
   const [error, setError] = useState<{ kind: 'rejected' | 'network' | 'other'; message: string } | null>(null);
   const [submitting, setSubmitting] = useState(false);
-  const emailRef = useRef<HTMLInputElement>(null);
-  useEffect(() => { if (error) emailRef.current?.focus(); }, [error]);
+  const usernameRef = useRef<HTMLInputElement>(null);
+  useEffect(() => { if (error) usernameRef.current?.focus(); }, [error]);
 
   if (status === 'authenticated' || status === 'checking' || status === 'restoration-error') {
     const destination = typeof location.state === 'object' && location.state && 'from' in location.state
@@ -24,18 +24,18 @@ export function LoginPage() {
     setError(null);
     setSubmitting(true);
     const data = new FormData(event.currentTarget);
-    const tenantValue = String(data.get('tenantId') ?? '').trim();
     try {
       await login({
-        email: String(data.get('email') ?? '').trim(),
+        username: String(data.get('username') ?? '').trim(),
         password: String(data.get('password') ?? ''),
-        ...(tenantValue ? { tenant_id: Number(tenantValue) } : {}),
       });
     } catch (reason) {
       if (reason instanceof ApiError && reason.kind === 'network') {
         setError({ kind: 'network', message: 'No pudimos contactar al servicio. Revisa tu conexión e inténtalo de nuevo.' });
+      } else if (reason instanceof ApiError && reason.status === 409 && reason.code === 'staff_already_logged_in') {
+        setError({ kind: 'other', message: 'Ya tienes una sesión activa. Cierra tu sesión actual antes de iniciar otra.' });
       } else if (reason instanceof ApiError && reason.kind === 'authentication') {
-        setError({ kind: 'rejected', message: 'El correo o la contraseña no son válidos.' });
+        setError({ kind: 'rejected', message: 'El usuario o la contraseña no son válidos.' });
       } else {
         setError({ kind: 'other', message: reason instanceof Error ? reason.message : 'No pudimos iniciar sesión.' });
       }
@@ -67,20 +67,13 @@ export function LoginPage() {
           {status === 'expired' ? <div className="notice" role="status"><strong>Tu sesión terminó.</strong> Vuelve a ingresar para continuar.</div> : null}
           {error ? <div id="login-error" className={`notice notice--${error.kind}`} role="alert"><strong>{error.kind === 'network' ? 'Sin conexión' : error.kind === 'rejected' ? 'Acceso rechazado' : 'No se pudo ingresar'}</strong>{error.message}</div> : null}
           <label className="field">
-            <span>Correo electrónico</span>
-            <input ref={emailRef} name="email" type="email" autoComplete="username" required maxLength={320} />
+            <span>Usuario</span>
+            <input ref={usernameRef} name="username" type="text" autoComplete="username" required maxLength={64} />
           </label>
           <label className="field">
             <span>Contraseña</span>
             <input name="password" type="password" autoComplete="current-password" required maxLength={128} />
           </label>
-          <details className="tenant-details">
-            <summary>¿Tienes acceso a más de una organización?</summary>
-            <label className="field">
-              <span>Identificador de tenant <small>Opcional</small></span>
-              <input name="tenantId" type="number" inputMode="numeric" min="1" step="1" />
-            </label>
-          </details>
           <button className="primary-button" type="submit" disabled={submitting}>{submitting ? 'Comprobando acceso…' : 'Ingresar a operación'}</button>
           <p className="security-note"><span aria-hidden="true">◆</span> Acceso protegido y limitado por tus permisos.</p>
         </form>

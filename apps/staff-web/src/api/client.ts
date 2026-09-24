@@ -130,6 +130,9 @@ export const staffApi = {
   me(): Promise<StaffIdentity> {
     return request('/auth/me');
   },
+  logout(): Promise<void> {
+    return request('/auth/logout', { method: 'POST' });
+  },
   managerOperationalOverview(locationId: number): Promise<ManagerOperationalOverview> {
     return request(`/staff/manager/operational-overview?location_id=${locationId}`);
   },

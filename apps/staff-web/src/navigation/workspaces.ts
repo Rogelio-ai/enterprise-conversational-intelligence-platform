@@ -54,3 +54,9 @@ export const workspaces: Workspace[] = [
 export function canUseWorkspace(permissions: string[], workspace: Workspace): boolean {
   return workspace.permissions.every((permission) => permissions.includes(permission));
 }
+
+export function workspaceForPath(pathname: string): Workspace | undefined {
+  return workspaces.find(
+    (workspace) => pathname === workspace.path || pathname.startsWith(`${workspace.path}/`),
+  );
+}

@@ -2,14 +2,19 @@ from __future__ import annotations
 
 from typing import Annotated
 
-from fastapi import APIRouter, Depends, HTTPException, Request, status
+from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthenticatedContext, get_authenticated_context, get_db
 from app.core.security import create_access_token, verify_password
-from app.identity.invitations import normalize_email
+from app.identity.usernames import normalize_username
+from app.identity.auth_sessions import (
+    ActiveStaffSessionConflict,
+    close_staff_auth_session,
+    create_staff_auth_session,
+)
 from app.models import Tenant, TenantMembership, User
 
 
@@ -18,24 +23,21 @@ _DUMMY_PASSWORD_HASH = '$argon2id$v=19$m=65536,t=3,p=4$uU8CX0/5qQg0XcGXgJzYVw$Zv
 
 
 class LoginRequest(BaseModel):
-    model_config = ConfigDict(str_strip_whitespace=True)
+    model_config = ConfigDict(str_strip_whitespace=True, extra='forbid')
 
-    email: str = Field(min_length=3, max_length=320)
+    username: str = Field(min_length=3, max_length=64)
     password: str = Field(min_length=1, max_length=128)
-    tenant_id: int | None = Field(default=None, gt=0)
 
-    @field_validator('email')
+    @field_validator('username')
     @classmethod
-    def validate_email(cls, value: str) -> str:
-        normalized = normalize_email(value)
-        if '@' not in normalized or normalized.startswith('@') or normalized.endswith('@'):
-            raise ValueError('A valid email is required')
-        return normalized
+    def validate_username(cls, value: str) -> str:
+        return normalize_username(value)
 
 
 class LoginUserResponse(BaseModel):
     id: int
-    email: str
+    username: str
+    email: str | None
     display_name: str
 
 
@@ -56,11 +58,19 @@ class TokenResponse(BaseModel):
 
 class CurrentUserResponse(BaseModel):
     user_id: int
-    email: str
+    username: str
+    email: str | None
     display_name: str
     tenant_id: int
     membership_id: int
     authorized_location_ids: list[int]
+    roles: list[str]
+    permissions: list[str]
+    location_authorities: list['LocationAuthorityResponse']
+
+
+class LocationAuthorityResponse(BaseModel):
+    location_id: int
     roles: list[str]
     permissions: list[str]
 
@@ -79,7 +89,7 @@ async def login(
     request: Request,
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> TokenResponse:
-    user_result = await db.execute(select(User).where(User.email == payload.email))
+    user_result = await db.execute(select(User).where(User.username == payload.username))
     user = user_result.scalar_one_or_none()
     password_valid = verify_password(
         payload.password,
@@ -99,32 +109,48 @@ async def login(
         .order_by(TenantMembership.id)
     )
     memberships = membership_result.all()
-    if payload.tenant_id is not None:
-        selected = next(
-            (row for row in memberships if row.TenantMembership.tenant_id == payload.tenant_id),
-            None,
-        )
-        if selected is None:
-            raise _invalid_credentials()
-    elif len(memberships) == 1:
+    if len(memberships) == 1:
         selected = memberships[0]
     elif len(memberships) > 1:
-        raise HTTPException(status_code=400, detail='Tenant selection is required')
+        raise HTTPException(status_code=409, detail='Multiple active memberships')
     else:
         raise _invalid_credentials()
 
     membership, tenant = selected
+    try:
+        auth_session = await create_staff_auth_session(
+            db,
+            user_id=user.id,
+            tenant_id=tenant.id,
+            membership_id=membership.id,
+        )
+    except ActiveStaffSessionConflict as exc:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail={
+                'code': 'staff_already_logged_in',
+                'message': 'Staff already has an active session',
+            },
+        ) from exc
+    except ValueError as exc:
+        await db.rollback()
+        raise _invalid_credentials() from exc
     settings = request.app.state.settings
     access_token = create_access_token(
         settings=settings,
         user_id=user.id,
         tenant_id=tenant.id,
         membership_id=membership.id,
+        session_id=auth_session.session_id,
     )
     return TokenResponse(
         access_token=access_token,
         expires_in=settings.auth_access_token_ttl_minutes * 60,
-        user=LoginUserResponse(id=user.id, email=user.email, display_name=user.display_name),
+        user=LoginUserResponse(
+            id=user.id, username=user.username, email=user.email,
+            display_name=user.display_name,
+        ),
         tenant=LoginTenantResponse(
             id=tenant.id,
             name=tenant.name,
@@ -134,12 +160,26 @@ async def login(
     )
 
 
+@router.post('/logout', status_code=status.HTTP_204_NO_CONTENT)
+async def logout(
+    request: Request,
+    context: Annotated[AuthenticatedContext, Depends(get_authenticated_context)],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Response:
+    del context
+    await close_staff_auth_session(
+        db, session_id=request.state.auth_session_id,
+    )
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
 @router.get('/me', response_model=CurrentUserResponse)
 async def me(
     context: Annotated[AuthenticatedContext, Depends(get_authenticated_context)],
 ) -> CurrentUserResponse:
     return CurrentUserResponse(
         user_id=context.user_id,
+        username=context.username,
         email=context.email,
         display_name=context.display_name,
         tenant_id=context.tenant_id,
@@ -147,4 +187,11 @@ async def me(
         authorized_location_ids=list(context.authorized_location_ids),
         roles=list(context.roles),
         permissions=sorted(context.permissions),
+        location_authorities=[
+            LocationAuthorityResponse(
+                location_id=value.location_id,
+                roles=list(value.roles), permissions=sorted(value.permissions),
+            )
+            for value in context.location_authorities
+        ],
     )

@@ -237,7 +237,7 @@ def test_new_identity_is_secret_free_pending_then_resumes_after_acceptance(
     assert resumed.json()['groups']['staff']['pending'] == 0
     assert _access_counts(connection, scope.tenant_id, email) == (1, 1, 1)
     login = client.post('/auth/login', json={
-        'email': email, 'password': password, 'tenant_id': scope.tenant_id,
+        'username': 'invited', 'password': password,
     })
     assert login.status_code == 200, login.text
 

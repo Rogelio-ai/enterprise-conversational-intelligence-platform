@@ -39,7 +39,8 @@ def _native_item(client, connection, scope, *, name='Burger'):
 
 def _employee(client, connection, scope, *, read=True, execute=True, active=True):
     email = f'{uuid4().hex}@example.test'
-    user_id = _execute(connection, "INSERT INTO users (email,password_hash,display_name,status) VALUES (%s,%s,'Recorder','ACTIVE')", (email, hash_password(PASSWORD)))
+    username = email.partition('@')[0]
+    user_id = _execute(connection, "INSERT INTO users (username,email,password_hash,display_name,status) VALUES (%s,%s,%s,'Recorder','ACTIVE')", (username, email, hash_password(PASSWORD)))
     membership_id = _execute(connection, "INSERT INTO tenant_memberships (tenant_id,user_id,status) VALUES (%s,%s,%s)", (scope.tenant_id, user_id, 'ACTIVE' if active else 'INACTIVE'))
     role_id = _execute(connection, "INSERT INTO roles (tenant_id,name,description,status) VALUES (%s,%s,'Preparation role','ACTIVE')", (scope.tenant_id, f'PREP_{uuid4().hex}'))
     _execute(connection, 'INSERT INTO membership_roles (tenant_id,membership_id,role_id) VALUES (%s,%s,%s)', (scope.tenant_id, membership_id, role_id))
@@ -49,13 +50,21 @@ def _employee(client, connection, scope, *, read=True, execute=True, active=True
         'VALUES (%s,%s,%s)',
         (scope.tenant_id, membership_id, scope.location_id),
     )
+    _execute(
+        connection,
+        'INSERT INTO membership_location_roles '
+        '(tenant_id,membership_id,location_id,role_id) VALUES (%s,%s,%s,%s)',
+        (scope.tenant_id, membership_id, scope.location_id, role_id),
+    )
     codes = (['preparation.read'] if read else []) + (['preparation.execute'] if execute else [])
     for code in codes:
         with connection.cursor() as cursor:
             cursor.execute('SELECT id FROM permissions WHERE code=%s', (code,))
             permission_id = cursor.fetchone()['id']
         _execute(connection, 'INSERT INTO role_permissions (role_id,permission_id) VALUES (%s,%s)', (role_id, permission_id))
-    response = client.post('/auth/login', json={'email': email, 'password': PASSWORD})
+    response = client.post('/auth/login', json={
+        'username': username, 'password': PASSWORD,
+    })
     if not active:
         assert response.status_code == 403
         return membership_id, {}

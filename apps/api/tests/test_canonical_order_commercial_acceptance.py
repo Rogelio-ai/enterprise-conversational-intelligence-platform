@@ -63,7 +63,7 @@ def _staff_table(connection, scope, table_resource_id: int) -> None:
 def _scope(connection, prefix: str, *, order_read: bool = True) -> Scope:
     tenant_id = _execute(connection, "INSERT INTO tenants (name,slug,status) VALUES ('Order Tenant',%s,'ACTIVE')", (prefix,))
     email = f'{prefix}@example.test'
-    user_id = _execute(connection, "INSERT INTO users (email,password_hash,display_name,status) VALUES (%s,%s,'Staff','ACTIVE')", (email, hash_password(PASSWORD)))
+    user_id = _execute(connection, "INSERT INTO users (username,email,password_hash,display_name,status) VALUES (%s,%s,%s,'Staff','ACTIVE')", (prefix.casefold(), email, hash_password(PASSWORD)))
     membership_id = _execute(connection, "INSERT INTO tenant_memberships (tenant_id,user_id,status) VALUES (%s,%s,'ACTIVE')", (tenant_id, user_id))
     role_id = _execute(connection, "INSERT INTO roles (tenant_id,name,description,status) VALUES (%s,%s,'Role','ACTIVE')", (tenant_id, f'ORDER_{uuid4().hex}'))
     _execute(connection, 'INSERT INTO membership_roles (tenant_id,membership_id,role_id) VALUES (%s,%s,%s)', (tenant_id, membership_id, role_id))
@@ -82,6 +82,7 @@ def _scope(connection, prefix: str, *, order_read: bool = True) -> Scope:
     organization_id = _execute(connection, "INSERT INTO organizations (tenant_id,code,name,status) VALUES (%s,%s,'Organization','ACTIVE')", (tenant_id, f'ORG-{uuid4().hex[:12]}'))
     location_id = _execute(connection, "INSERT INTO locations (tenant_id,organization_id,code,name,timezone,country_code,status) VALUES (%s,%s,%s,'Location','America/Mexico_City','MX','ACTIVE')", (tenant_id, organization_id, f'LOC-{uuid4().hex[:12]}'))
     _execute(connection, 'INSERT INTO membership_location_grants (tenant_id,membership_id,location_id) VALUES (%s,%s,%s)', (tenant_id, membership_id, location_id))
+    _execute(connection, 'INSERT INTO membership_location_roles (tenant_id,membership_id,location_id,role_id) VALUES (%s,%s,%s,%s)', (tenant_id, membership_id, location_id, role_id))
     resource_id = _execute(connection, "INSERT INTO resources (tenant_id,location_id,code,name,resource_type,status) VALUES (%s,%s,%s,'Table','TABLE','ACTIVE')", (tenant_id, location_id, f'T-{uuid4().hex[:12]}'))
     scope = Scope(tenant_id, organization_id, location_id, resource_id, email)
     _staff_table(connection, scope, resource_id)
@@ -89,7 +90,9 @@ def _scope(connection, prefix: str, *, order_read: bool = True) -> Scope:
 
 
 def _staff_headers(client: TestClient, scope: Scope) -> dict[str, str]:
-    login = client.post('/auth/login', json={'email': scope.email, 'password': PASSWORD})
+    login = client.post('/auth/login', json={
+        'username': scope.email.partition('@')[0], 'password': PASSWORD,
+    })
     assert login.status_code == 200
     return {'Authorization': f"Bearer {login.json()['access_token']}"}
 

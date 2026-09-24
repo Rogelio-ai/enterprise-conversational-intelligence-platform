@@ -7,7 +7,7 @@ import { AuthProvider } from '../session/AuthContext';
 import { storeCredential } from '../session/storage';
 
 const identity = {
-  user_id: 7, email: 'cashier@example.test', display_name: 'Ana Caja', tenant_id: 11,
+  user_id: 7, username: 'cashier', email: 'cashier@example.test', display_name: 'Ana Caja', tenant_id: 11,
   membership_id: 13, authorized_location_ids: [21], roles: ['CASHIER'],
   permissions: ['restaurant_check.read', 'restaurant_check.manage', 'preparation.read', 'operational_request.read', 'operational_request.manage'],
 };

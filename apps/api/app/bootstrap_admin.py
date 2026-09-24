@@ -9,7 +9,8 @@ from dataclasses import dataclass
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.api.routes.auth import normalize_email
+from app.identity.invitations import normalize_email
+from app.identity.usernames import normalize_username
 from app.core.config import Settings, get_settings
 from app.core.security import hash_password, validate_password
 from app.db.session import DatabaseManager
@@ -59,6 +60,9 @@ CORE_PERMISSIONS = {
     'cash_movement.manage': 'Record authorized manual cash movements.',
     'inventory.read': 'Read location inventory, stock, recipes, and current costs.',
     'inventory.manage': 'Manage location inventory, recipes, and stock movements.',
+    'inventory.count.read': 'Read physical count evidence.',
+    'inventory.count.approve': 'Approve submitted physical counts.',
+    'inventory.count.post': 'Post approved physical count adjustments.',
     'pos_submission.read': 'Read POS order submission state and history.',
     'pos_submission.submit': 'Submit accepted Restaurant Orders to a POS.',
     'pos_submission.retry': 'Retry safely retryable POS order submissions.',
@@ -80,6 +84,7 @@ class BootstrapInput:
     admin_email: str
     admin_password: str
     admin_display_name: str
+    admin_username: str | None = None
 
     @classmethod
     def from_environment(cls) -> 'BootstrapInput':
@@ -129,6 +134,9 @@ def _validate_input(values: BootstrapInput, settings: Settings) -> BootstrapInpu
         admin_email=email,
         admin_password=values.admin_password,
         admin_display_name=values.admin_display_name.strip(),
+        admin_username=normalize_username(
+            values.admin_username or email.partition('@')[0]
+        ),
     )
 
 
@@ -153,6 +161,7 @@ async def _bootstrap_in_session(
     user = await session.scalar(select(User).where(User.email == values.admin_email))
     if user is None:
         user = User(
+            username=values.admin_username,
             email=values.admin_email,
             password_hash=hash_password(
                 values.admin_password, minimum_length=settings.password_min_length
@@ -165,6 +174,12 @@ async def _bootstrap_in_session(
         created.append('user')
     elif user.status != 'ACTIVE':
         raise RuntimeError('Existing bootstrap User is not active')
+    elif user.username != values.admin_username:
+        if user.username is None:
+            user.username = values.admin_username
+            created.append('user_username')
+        else:
+            raise RuntimeError('Existing bootstrap User username conflicts')
 
     membership = await session.scalar(
         select(TenantMembership).where(

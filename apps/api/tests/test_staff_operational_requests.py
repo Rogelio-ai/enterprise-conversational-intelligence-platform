@@ -41,6 +41,15 @@ def _enable_staff(
         'VALUES (%s,%s,%s)',
         (scope.tenant_id, membership_id, scope.location_id),
     )
+    _execute(
+        connection,
+        'INSERT IGNORE INTO membership_location_roles '
+        '(tenant_id,membership_id,location_id,role_id) VALUES (%s,%s,%s,%s)',
+        (
+            scope.tenant_id, membership_id,
+            scope.location_id, authority['role_id'],
+        ),
+    )
     for code in permissions:
         _execute(
             connection,
@@ -149,8 +158,9 @@ def _second_staff(
     email = f'{prefix}-{label}@example.test'
     user_id = _execute(
         connection,
-        "INSERT INTO users (email,password_hash,display_name,status) VALUES (%s,%s,'Staff','ACTIVE')",
-        (email, hash_password(PASSWORD)),
+        "INSERT INTO users (username,email,password_hash,display_name,status) "
+        "VALUES (%s,%s,%s,'Staff','ACTIVE')",
+        (email.partition('@')[0], email, hash_password(PASSWORD)),
     )
     membership_id = _execute(
         connection,
@@ -173,6 +183,12 @@ def _second_staff(
         'VALUES (%s,%s,%s)',
         (scope.tenant_id, membership_id, scope.location_id),
     )
+    _execute(
+        connection,
+        'INSERT INTO membership_location_roles '
+        '(tenant_id,membership_id,location_id,role_id) VALUES (%s,%s,%s,%s)',
+        (scope.tenant_id, membership_id, scope.location_id, role_id),
+    )
     for code in permissions:
         _execute(
             connection,
@@ -191,7 +207,9 @@ def _second_staff(
 
 
 def _login(client: TestClient, email: str) -> dict[str, str]:
-    response = client.post('/auth/login', json={'email': email, 'password': PASSWORD})
+    response = client.post('/auth/login', json={
+        'username': email.partition('@')[0], 'password': PASSWORD,
+    })
     assert response.status_code == 200, response.text
     return {'Authorization': f"Bearer {response.json()['access_token']}"}
 

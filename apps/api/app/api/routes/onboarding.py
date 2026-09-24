@@ -45,13 +45,18 @@ async def confirm(
 ) -> dict:
     del explicit_confirmation
     analysis = analyze_xlsx(content, filename=filename)
+    location_authority = context.authority_for_location(location_id)
     try:
         result = await confirm_import(
             db, analysis=analysis, expected_fingerprint=expected_fingerprint,
             tenant_id=context.tenant_id, tenant_slug=context.tenant_slug,
             membership_id=context.membership_id, location_id=location_id,
             authorized_location_ids=context.authorized_location_ids,
-            permissions=context.permissions,
+            permissions=(
+                frozenset()
+                if location_authority is None
+                else location_authority.permissions
+            ),
             settings=request.app.state.settings,
         )
     except ImportRejectedError as exc:

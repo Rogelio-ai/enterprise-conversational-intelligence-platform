@@ -12,6 +12,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.config import Settings
 from app.identity import access_provisioning, invitations
+from app.identity.usernames import normalize_username
 from app.models import (
     IdentityInvitation,
     Location,
@@ -26,6 +27,24 @@ from app.models import (
 
 class StaffProvisioningError(ValueError):
     pass
+
+
+async def _ensure_staff_username(
+    db: AsyncSession, *, user: User, staff_key: str,
+) -> bool:
+    try:
+        username = normalize_username(staff_key)
+    except ValueError:
+        return False
+    if user.username == username:
+        return True
+    if await db.scalar(select(User.id).where(
+        User.username == username, User.id != user.id,
+    )) is not None:
+        return False
+    user.username = username
+    await db.flush()
+    return True
 
 
 @dataclass(frozen=True, slots=True)
@@ -310,6 +329,12 @@ async def resume_continuation(
         return await _mark_security_conflict(
             db, continuation=continuation, user=user,
         )
+    if not await _ensure_staff_username(
+        db, user=user, staff_key=continuation.staff_key,
+    ):
+        return await _mark_security_conflict(
+            db, continuation=continuation, user=user,
+        )
     current_permissions = frozenset((await db.scalars(
         select(Permission.code)
         .join(RolePermission, RolePermission.permission_id == Permission.id)
@@ -386,6 +411,16 @@ async def provision_staff_request(
                 values=values, invitation=None, user=user,
                 status='SECURITY_CONFLICT', operation=None,
                 error_code='IDENTITY_NOT_ACTIVE',
+            ))
+            return StaffOutcome(continuation, continuation.status, None)
+        if not await _ensure_staff_username(
+            db, user=user, staff_key=str(values['staff_key']),
+        ):
+            continuation = await _save_new_continuation(db, _new_continuation(
+                evidence=evidence, actor_membership_id=actor_membership_id,
+                values=values, invitation=None, user=user,
+                status='SECURITY_CONFLICT', operation=None,
+                error_code='USERNAME_CONFLICT',
             ))
             return StaffOutcome(continuation, continuation.status, None)
         try:

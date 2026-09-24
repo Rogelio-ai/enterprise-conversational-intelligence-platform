@@ -119,6 +119,7 @@ POST_0026_APPLICATION_TABLES = {
     'inventory_valuation_snapshot_lines',
     'item_uom_conversions',
     'membership_location_grants',
+    'staff_auth_sessions',
     'paid_check_dispatch_attempts',
     'paid_check_dispatches',
     'physical_count_lines',
@@ -5039,6 +5040,7 @@ def test_0062_conversation_responder_migration_is_portable_and_reversible(
     finally:
         connection.close()
 
+
     _run_alembic(database_name, revision)
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
@@ -5163,6 +5165,391 @@ def test_0062_conversation_responder_migration_is_portable_and_reversible(
             }
     finally:
         connection.close()
+
+
+def test_0063_staff_username_migration_preserves_identity_and_access(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    previous_revision = '0062_conversation_responder_foundation'
+    revision = '0063_staff_username_login'
+    _run_alembic(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES ('Staff Tenant','staff-migration','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO users (email,password_hash,display_name,status) VALUES '
+                "('same@one.test','hash-one','One','ACTIVE'),"
+                "('same@two.test','hash-two','Two','ACTIVE')"
+            )
+            first_user_id = int(cursor.lastrowid)
+            second_user_id = first_user_id + 1
+            cursor.execute(
+                "INSERT INTO tenant_memberships (tenant_id,user_id,status) VALUES "
+                "(%s,%s,'ACTIVE'),(%s,%s,'ACTIVE')",
+                (tenant_id, first_user_id, tenant_id, second_user_id),
+            )
+            first_membership_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO roles (tenant_id,name,status) VALUES (%s,'STAFF','ACTIVE')",
+                (tenant_id,),
+            )
+            role_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO membership_roles (tenant_id,membership_id,role_id) '
+                'VALUES (%s,%s,%s)',
+                (tenant_id, first_membership_id, role_id),
+            )
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) "
+                "VALUES (%s,'ORG','Organization','ACTIVE')",
+                (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO locations '
+                '(tenant_id,organization_id,code,name,timezone,status) '
+                "VALUES (%s,%s,'LOC','Location','America/Mexico_City','ACTIVE')",
+                (tenant_id, organization_id),
+            )
+            location_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO membership_location_grants '
+                '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
+                (tenant_id, first_membership_id, location_id),
+            )
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute('SELECT id,username,email,password_hash FROM users ORDER BY id')
+            assert cursor.fetchall() == [
+                {'id': first_user_id, 'username': 'same', 'email': 'same@one.test', 'password_hash': 'hash-one'},
+                {'id': second_user_id, 'username': f'same-{second_user_id}', 'email': 'same@two.test', 'password_hash': 'hash-two'},
+            ]
+            cursor.execute('SELECT tenant_id,user_id,status FROM tenant_memberships ORDER BY id')
+            assert cursor.fetchall() == [
+                {'tenant_id': tenant_id, 'user_id': first_user_id, 'status': 'ACTIVE'},
+                {'tenant_id': tenant_id, 'user_id': second_user_id, 'status': 'ACTIVE'},
+            ]
+            cursor.execute('SELECT membership_id,role_id FROM membership_roles')
+            assert cursor.fetchone() == {'membership_id': first_membership_id, 'role_id': role_id}
+            cursor.execute(
+                'SELECT membership_id,location_id FROM membership_location_grants'
+            )
+            assert cursor.fetchone() == {
+                'membership_id': first_membership_id, 'location_id': location_id,
+            }
+            cursor.execute(
+                'SELECT IS_NULLABLE FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='users' AND COLUMN_NAME='email'"
+            )
+            assert cursor.fetchone()['IS_NULLABLE'] == 'YES'
+    finally:
+        connection.close()
+    _run_alembic_downgrade(database_name, previous_revision)
+    _run_alembic(database_name, revision)
+
+
+def test_0064_location_scoped_staff_rbac_is_portable_and_reversible(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    previous_revision = '0063_staff_username_login'
+    revision = '0064_location_scoped_staff_rbac'
+    _run_alembic(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES ('Scoped Staff','scoped-staff','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO users (username,email,password_hash,display_name,status) "
+                "VALUES ('scoped.staff','scoped@example.test','preserved-hash','Staff','ACTIVE')"
+            )
+            user_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO tenant_memberships (tenant_id,user_id,status) VALUES (%s,%s,'ACTIVE')",
+                (tenant_id, user_id),
+            )
+            membership_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO roles (tenant_id,name,status) VALUES "
+                "(%s,'WAITER','ACTIVE'),(%s,'CASHIER','ACTIVE')",
+                (tenant_id, tenant_id),
+            )
+            waiter_role_id = int(cursor.lastrowid)
+            cashier_role_id = waiter_role_id + 1
+            cursor.execute(
+                'INSERT INTO membership_roles (tenant_id,membership_id,role_id) '
+                'VALUES (%s,%s,%s),(%s,%s,%s)',
+                (
+                    tenant_id, membership_id, waiter_role_id,
+                    tenant_id, membership_id, cashier_role_id,
+                ),
+            )
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) "
+                "VALUES (%s,'ORG','Organization','ACTIVE')",
+                (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO locations '
+                '(tenant_id,organization_id,code,name,timezone,status) '
+                "VALUES (%s,%s,'A','Location A','America/Mexico_City','ACTIVE'),"
+                "(%s,%s,'B','Location B','America/Mexico_City','ACTIVE')",
+                (tenant_id, organization_id, tenant_id, organization_id),
+            )
+            location_a = int(cursor.lastrowid)
+            location_b = location_a + 1
+            cursor.execute(
+                'INSERT INTO membership_location_grants '
+                '(tenant_id,membership_id,location_id) VALUES '
+                '(%s,%s,%s),(%s,%s,%s)',
+                (
+                    tenant_id, membership_id, location_a,
+                    tenant_id, membership_id, location_b,
+                ),
+            )
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT location_id,role_id FROM membership_location_roles '
+                'WHERE membership_id=%s ORDER BY location_id,role_id',
+                (membership_id,),
+            )
+            assert cursor.fetchall() == [
+                {'location_id': location_a, 'role_id': waiter_role_id},
+                {'location_id': location_a, 'role_id': cashier_role_id},
+                {'location_id': location_b, 'role_id': waiter_role_id},
+                {'location_id': location_b, 'role_id': cashier_role_id},
+            ]
+            cursor.execute(
+                'SELECT username,email,password_hash FROM users WHERE id=%s',
+                (user_id,),
+            )
+            assert cursor.fetchone() == {
+                'username': 'scoped.staff', 'email': 'scoped@example.test',
+                'password_hash': 'preserved-hash',
+            }
+            with pytest.raises(pymysql.err.IntegrityError):
+                cursor.execute(
+                    'INSERT INTO membership_location_roles '
+                    '(tenant_id,membership_id,location_id,role_id) VALUES (%s,%s,%s,%s)',
+                    (tenant_id, membership_id, location_a, waiter_role_id),
+                )
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT location_id FROM membership_location_grants '
+                'WHERE membership_id=%s ORDER BY location_id',
+                (membership_id,),
+            )
+            assert cursor.fetchall() == [
+                {'location_id': location_a}, {'location_id': location_b},
+            ]
+    finally:
+        connection.close()
+    _run_alembic(database_name, revision)
+
+
+def test_0065_staff_auth_session_migration_is_portable_and_reversible(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    previous_revision = '0064_location_scoped_staff_rbac'
+    revision = '0065_staff_auth_session_foundation'
+    _run_alembic(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES "
+                "('Session Tenant','session-tenant','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO users '
+                '(username,email,password_hash,display_name,status) VALUES '
+                "('session.staff','session@example.test','preserved-hash','Staff','ACTIVE'),"
+                "('other.staff','other@example.test','other-hash','Other','ACTIVE')"
+            )
+            user_id = int(cursor.lastrowid)
+            other_user_id = user_id + 1
+            cursor.execute(
+                'INSERT INTO tenant_memberships (tenant_id,user_id,status) VALUES '
+                "(%s,%s,'ACTIVE'),(%s,%s,'ACTIVE')",
+                (tenant_id, user_id, tenant_id, other_user_id),
+            )
+            membership_id = int(cursor.lastrowid)
+            other_membership_id = membership_id + 1
+            cursor.execute(
+                "INSERT INTO roles (tenant_id,name,status) VALUES (%s,'WAITER','ACTIVE')",
+                (tenant_id,),
+            )
+            role_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO membership_roles (tenant_id,membership_id,role_id) '
+                'VALUES (%s,%s,%s)',
+                (tenant_id, membership_id, role_id),
+            )
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) "
+                "VALUES (%s,'ORG','Organization','ACTIVE')",
+                (tenant_id,),
+            )
+            organization_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO locations '
+                '(tenant_id,organization_id,code,name,timezone,status) '
+                "VALUES (%s,%s,'LOC','Location','America/Mexico_City','ACTIVE')",
+                (tenant_id, organization_id),
+            )
+            location_id = int(cursor.lastrowid)
+            cursor.execute(
+                'INSERT INTO membership_location_grants '
+                '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
+                (tenant_id, membership_id, location_id),
+            )
+            cursor.execute(
+                'INSERT INTO membership_location_roles '
+                '(tenant_id,membership_id,location_id,role_id) VALUES (%s,%s,%s,%s)',
+                (tenant_id, membership_id, location_id, role_id),
+            )
+            cursor.execute(
+                'INSERT INTO resources '
+                '(tenant_id,location_id,code,name,resource_type,status) '
+                "VALUES (%s,%s,'TABLE','Table','TABLE','ACTIVE')",
+                (tenant_id, location_id),
+            )
+            resource_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT username,email,password_hash FROM users WHERE id=%s',
+                (user_id,),
+            )
+            assert cursor.fetchone() == {
+                'username': 'session.staff', 'email': 'session@example.test',
+                'password_hash': 'preserved-hash',
+            }
+            cursor.execute(
+                'SELECT tenant_id,user_id,status FROM tenant_memberships WHERE id=%s',
+                (membership_id,),
+            )
+            assert cursor.fetchone() == {
+                'tenant_id': tenant_id, 'user_id': user_id, 'status': 'ACTIVE',
+            }
+            cursor.execute(
+                'SELECT location_id,role_id FROM membership_location_roles '
+                'WHERE membership_id=%s',
+                (membership_id,),
+            )
+            assert cursor.fetchone() == {
+                'location_id': location_id, 'role_id': role_id,
+            }
+            cursor.execute('SELECT id,status FROM resources WHERE id=%s', (resource_id,))
+            assert cursor.fetchone() == {'id': resource_id, 'status': 'ACTIVE'}
+            cursor.execute(
+                'INSERT INTO staff_auth_sessions '
+                '(session_id,tenant_id,user_id,membership_id,status,active_slot) '
+                "VALUES ('session-a',%s,%s,%s,'ACTIVE',1)",
+                (tenant_id, user_id, membership_id),
+            )
+            with pytest.raises(pymysql.err.IntegrityError):
+                cursor.execute(
+                    'INSERT INTO staff_auth_sessions '
+                    '(session_id,tenant_id,user_id,membership_id,status,active_slot) '
+                    "VALUES ('session-duplicate',%s,%s,%s,'ACTIVE',1)",
+                    (tenant_id, user_id, membership_id),
+                )
+            with pytest.raises(pymysql.err.IntegrityError):
+                cursor.execute(
+                    'INSERT INTO staff_auth_sessions '
+                    '(session_id,tenant_id,user_id,membership_id,status,active_slot) '
+                    "VALUES ('session-cross-user',%s,%s,%s,'ACTIVE',1)",
+                    (tenant_id, other_user_id, membership_id),
+                )
+            cursor.execute(
+                "UPDATE staff_auth_sessions SET status='REPLACED',active_slot=NULL,"
+                'closed_at=CURRENT_TIMESTAMP WHERE session_id=%s',
+                ('session-a',),
+            )
+            cursor.execute(
+                'INSERT INTO staff_auth_sessions '
+                '(session_id,tenant_id,user_id,membership_id,status,active_slot) '
+                "VALUES ('session-b',%s,%s,%s,'ACTIVE',1)",
+                (tenant_id, user_id, membership_id),
+            )
+            cursor.execute(
+                'SELECT session_id,status,active_slot FROM staff_auth_sessions '
+                'WHERE user_id=%s ORDER BY id',
+                (user_id,),
+            )
+            assert cursor.fetchall() == [
+                {'session_id': 'session-a', 'status': 'REPLACED', 'active_slot': None},
+                {'session_id': 'session-b', 'status': 'ACTIVE', 'active_slot': 1},
+            ]
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == revision
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT username,password_hash FROM users WHERE id=%s', (user_id,),
+            )
+            assert cursor.fetchone() == {
+                'username': 'session.staff', 'password_hash': 'preserved-hash',
+            }
+            cursor.execute(
+                'SELECT tenant_id,user_id,status FROM tenant_memberships WHERE id=%s',
+                (membership_id,),
+            )
+            assert cursor.fetchone() == {
+                'tenant_id': tenant_id, 'user_id': user_id, 'status': 'ACTIVE',
+            }
+            cursor.execute('SELECT id,status FROM resources WHERE id=%s', (resource_id,))
+            assert cursor.fetchone() == {'id': resource_id, 'status': 'ACTIVE'}
+            cursor.execute(
+                'SELECT COUNT(*) AS amount FROM information_schema.TABLES '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME='staff_auth_sessions'"
+            )
+            assert cursor.fetchone()['amount'] == 0
+    finally:
+        connection.close()
+    _run_alembic(database_name, revision)
 
 
 def test_0040_location_grants_are_portable_reversible_and_never_backfilled(

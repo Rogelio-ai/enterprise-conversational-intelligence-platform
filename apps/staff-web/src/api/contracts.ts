@@ -1,26 +1,31 @@
 export interface LoginRequest {
-  email: string;
+  username: string;
   password: string;
-  tenant_id?: number;
 }
 
 export interface LoginResponse {
   access_token: string;
   token_type: 'bearer';
   expires_in: number;
-  user: { id: number; email: string; display_name: string };
+  user: { id: number; username: string; email: string | null; display_name: string };
   tenant: { id: number; name: string; slug: string; membership_id: number };
 }
 
 export interface StaffIdentity {
   user_id: number;
-  email: string;
+  username: string;
+  email: string | null;
   display_name: string;
   tenant_id: number;
   membership_id: number;
   authorized_location_ids: number[];
   roles: string[];
   permissions: string[];
+  location_authorities: Array<{
+    location_id: number;
+    roles: string[];
+    permissions: string[];
+  }>;
 }
 
 export interface InventoryWarehouse { id: number; code: string; name: string; negative_stock_policy: 'ALLOW' | 'WARN' | 'BLOCK'; is_default: boolean }

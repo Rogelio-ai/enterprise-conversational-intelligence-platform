@@ -10,6 +10,7 @@ import { storeCredential } from '../session/storage';
 import { ThemeProvider } from '../theme/ThemeContext';
 
 const cashierIdentity: StaffIdentity = {
+  username: 'cashier',
   user_id: 7,
   email: 'cashier@example.test',
   display_name: 'Ana Caja',
@@ -22,6 +23,15 @@ const cashierIdentity: StaffIdentity = {
     'cash_movement.manage', 'restaurant_check.read', 'restaurant_payment.read',
     'restaurant_payment.manage', 'restaurant_payment.recover', 'operational_request.read',
   ],
+  location_authorities: [{
+    location_id: 21,
+    roles: ['CASHIER'],
+    permissions: [
+      'location.read', 'resource.read', 'cash_management.read', 'cash_session.manage',
+      'cash_movement.manage', 'restaurant_check.read', 'restaurant_payment.read',
+      'restaurant_payment.manage', 'restaurant_payment.recover', 'operational_request.read',
+    ],
+  }],
 };
 
 const location = {

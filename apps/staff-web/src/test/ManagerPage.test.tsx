@@ -15,9 +15,10 @@ const managerPermissions = [
   'restaurant_payment.read', 'cash_management.read',
 ];
 const manager: StaffIdentity = {
-  user_id: 7, email: 'manager@example.test', display_name: 'Mara Gerencia',
+  user_id: 7, username: 'manager', email: 'manager@example.test', display_name: 'Mara Gerencia',
   tenant_id: 11, membership_id: 13, authorized_location_ids: [21],
   roles: ['MANAGER'], permissions: managerPermissions,
+  location_authorities: [{ location_id: 21, roles: ['MANAGER'], permissions: managerPermissions }],
 };
 const location = { id: 21, tenant_id: 11, organization_id: 31, code: 'CENTRO', name: 'Sucursal Centro', timezone: 'America/Mexico_City', status: 'ACTIVE' };
 

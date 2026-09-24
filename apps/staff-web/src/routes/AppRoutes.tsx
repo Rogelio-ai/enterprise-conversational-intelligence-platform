@@ -26,16 +26,20 @@ function AuthenticatedBoundary({ children }: { children: ReactNode }) {
 
 function LocationBoundary({ children }: { children: ReactNode }) {
   const context = useStaffContext();
+  const route = useLocation();
   if (context.status === 'loading') return <StatePanel eyebrow="Contexto operativo" title="Cargando ubicaciones…" icon="◌"><p>Validamos tu alcance directamente con el backend.</p></StatePanel>;
   if (context.status === 'error') return <StatePanel eyebrow="Conexión interrumpida" title="No pudimos cargar tus ubicaciones" icon="↻"><p>Tu sesión permanece activa. Intenta recuperar el contexto.</p><button className="primary-button" onClick={context.retry}>Reintentar</button></StatePanel>;
-  if (context.status === 'selection-required') return <StatePanel eyebrow="Contexto requerido" title="Elige dónde operar" icon="⌖"><p>Tu cuenta tiene acceso tenant-wide a más de una ubicación. La selección define el contexto de esta sesión.</p><div className="location-choices">{context.locations.map((location) => <button className="location-choice" type="button" onClick={() => context.selectLocation(location.id)} key={location.id}><strong>{location.name}</strong><span>{location.code} · {location.timezone}</span></button>)}</div></StatePanel>;
+  if (context.status === 'selection-required') return <StatePanel eyebrow="Contexto requerido" title="Elige dónde operar" icon="⌖"><p>Selecciona una Sucursal autorizada para establecer tu contexto operativo.</p><label className="field location-selector"><span>Sucursal</span><select aria-label="Sucursal" defaultValue="" onChange={(event) => context.selectLocation(Number(event.target.value))}><option value="" disabled>Selecciona una sucursal</option>{context.locations.map((location) => <option value={location.id} key={location.id}>{location.name}{location.code ? ` · ${location.code}` : ''}</option>)}</select></label></StatePanel>;
   if (context.status === 'unavailable') return <StatePanel eyebrow="Contexto no disponible" title="No hay una ubicación operable" icon="!"><p>Tu cuenta no tiene `location.read` o el tenant no contiene ubicaciones activas. Solicita al administrador revisar tus permisos.</p></StatePanel>;
+  if (route.pathname === '/' && context.resumePath && context.resumePath !== '/') {
+    return <Navigate to={context.resumePath} replace />;
+  }
   return <StaffShell>{children}</StaffShell>;
 }
 
 function WorkspaceBoundary({ workspace, children }: { workspace: Workspace; children?: ReactNode }) {
-  const { identity } = useAuth();
-  if (!canUseWorkspace(identity?.permissions ?? [], workspace)) {
+  const context = useStaffContext();
+  if (!canUseWorkspace(context.permissions, workspace)) {
     return <StatePanel eyebrow="Acceso restringido" title="Este espacio no está disponible" icon="×"><p>Tu identidad no reúne las capacidades requeridas. La autorización permanece en el backend.</p><a className="secondary-button button-link" href="/">Volver al inicio</a></StatePanel>;
   }
   return children ?? <WorkspacePlaceholder workspace={workspace} />;

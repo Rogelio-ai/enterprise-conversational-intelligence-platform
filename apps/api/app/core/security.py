@@ -42,6 +42,7 @@ def create_access_token(
     user_id: int,
     tenant_id: int,
     membership_id: int,
+    session_id: str,
     issued_at: datetime | None = None,
     expires_delta: timedelta | None = None,
 ) -> str:
@@ -53,6 +54,7 @@ def create_access_token(
         'sub': str(user_id),
         'tenant_id': tenant_id,
         'membership_id': membership_id,
+        'session_id': session_id,
         'iat': now,
         'exp': expires_at,
         'type': 'access',
@@ -70,7 +72,12 @@ def decode_access_token(token: str, *, settings: Settings) -> dict[str, Any]:
             token,
             settings.auth_jwt_secret.get_secret_value(),
             algorithms=[settings.auth_jwt_algorithm],
-            options={'require': ['sub', 'tenant_id', 'membership_id', 'iat', 'exp', 'type']},
+            options={
+                'require': [
+                    'sub', 'tenant_id', 'membership_id', 'session_id',
+                    'iat', 'exp', 'type',
+                ]
+            },
         )
     except jwt.PyJWTError as exc:
         raise TokenValidationError('Invalid token') from exc
@@ -80,6 +87,8 @@ def decode_access_token(token: str, *, settings: Settings) -> dict[str, Any]:
         int(payload['sub'])
         int(payload['tenant_id'])
         int(payload['membership_id'])
+        if not isinstance(payload['session_id'], str) or not payload['session_id']:
+            raise ValueError('Invalid session identity')
     except (TypeError, ValueError) as exc:
         raise TokenValidationError('Invalid token') from exc
     return payload

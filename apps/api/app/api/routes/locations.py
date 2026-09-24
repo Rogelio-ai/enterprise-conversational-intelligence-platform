@@ -14,12 +14,19 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import (
     AuthenticatedContext,
+    get_authenticated_context,
     get_db,
     require_location_permission,
     require_permission,
 )
 from app.core.middleware import get_correlation_id
-from app.models import Location, MembershipLocationGrant, Organization
+from app.models import (
+    Location,
+    MembershipLocationGrant,
+    MembershipLocationRole,
+    MembershipRole,
+    Organization,
+)
 
 
 router = APIRouter(prefix='/locations', tags=['locations'])
@@ -232,12 +239,22 @@ async def _get_organization(
 
 @router.get('', response_model=LocationListResponse)
 async def list_locations(
-    context: Annotated[AuthenticatedContext, Depends(require_permission('location.read'))],
+    context: Annotated[AuthenticatedContext, Depends(get_authenticated_context)],
     db: Annotated[AsyncSession, Depends(get_db)],
     organization_id: int | None = Query(default=None, gt=0),
     limit: int = Query(default=50, ge=1, le=100),
     offset: int = Query(default=0, ge=0),
 ) -> LocationListResponse:
+    readable_location_ids = tuple(
+        authority.location_id
+        for authority in context.location_authorities
+        if 'location.read' in authority.permissions
+    )
+    if not readable_location_ids:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Insufficient permission',
+        )
     if organization_id is not None:
         await _get_organization(
             db,
@@ -246,7 +263,7 @@ async def list_locations(
         )
     statement = select(Location).where(
         Location.tenant_id == context.tenant_id,
-        Location.id.in_(context.authorized_location_ids),
+        Location.id.in_(readable_location_ids),
     )
     if organization_id is not None:
         statement = statement.where(Location.organization_id == organization_id)
@@ -275,11 +292,26 @@ async def create_location(
     db.add(location)
     try:
         await db.flush()
+        role_ids = tuple((await db.scalars(select(MembershipRole.role_id).where(
+            MembershipRole.tenant_id == context.tenant_id,
+            MembershipRole.membership_id == context.membership_id,
+        ))).all())
+        if not role_ids:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail='Location creator has no assignable Role',
+            )
         db.add(MembershipLocationGrant(
             tenant_id=context.tenant_id,
             membership_id=context.membership_id,
             location_id=location.id,
         ))
+        db.add_all([
+            MembershipLocationRole(
+                tenant_id=context.tenant_id, membership_id=context.membership_id,
+                location_id=location.id, role_id=role_id,
+            ) for role_id in role_ids
+        ])
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()

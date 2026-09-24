@@ -5,8 +5,8 @@ import { canUseWorkspace, workspaces } from '../navigation/workspaces';
 
 export function StaffHomePage() {
   const { identity } = useAuth();
-  const { location } = useStaffContext();
-  const available = workspaces.filter((workspace) => canUseWorkspace(identity?.permissions ?? [], workspace));
+  const { location, roles, permissions } = useStaffContext();
+  const available = workspaces.filter((workspace) => canUseWorkspace(permissions, workspace));
   return (
     <div className="home-page">
       <header className="home-hero">
@@ -40,9 +40,9 @@ export function StaffHomePage() {
       <section className="identity-summary" aria-labelledby="identity-heading">
         <div><p className="eyebrow">Identidad activa</p><h2 id="identity-heading">{identity?.display_name}</h2></div>
         <dl>
-          <div><dt>Roles</dt><dd>{identity?.roles.length ? identity.roles.join(', ') : 'Sin rol nominal'}</dd></div>
-          <div><dt>Capacidades</dt><dd>{identity?.permissions.length ?? 0} autorizadas</dd></div>
-          <div><dt>Membresía</dt><dd>#{identity?.membership_id}</dd></div>
+          <div><dt>Roles</dt><dd>{roles.length ? roles.join(', ') : 'Sin rol nominal'}</dd></div>
+          <div><dt>Capacidades</dt><dd>{permissions.length} autorizadas en esta Sucursal</dd></div>
+          <div><dt>Usuario</dt><dd>{identity?.username}</dd></div>
         </dl>
       </section>
     </div>

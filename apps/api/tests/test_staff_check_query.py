@@ -13,6 +13,7 @@ from test_canonical_order_commercial_acceptance import (
     _preview,
     _product,
     _scope,
+    _staff_table,
     _staff_headers,
 )
 from test_restaurant_payment_settlement_foundation import (
@@ -37,11 +38,12 @@ def _membership(
     permissions: tuple[str, ...],
 ) -> tuple[str, int]:
     email = f'{slug}@example.test'
+    username = slug.casefold()[:64].rstrip('._-')
     user_id = _execute(
         connection,
-        'INSERT INTO users (email,password_hash,display_name,status) '
-        'VALUES (%s,%s,%s,%s)',
-        (email, hash_password(PASSWORD), slug, 'ACTIVE'),
+        'INSERT INTO users (username,email,password_hash,display_name,status) '
+        'VALUES (%s,%s,%s,%s,%s)',
+        (username, email, hash_password(PASSWORD), slug, 'ACTIVE'),
     )
     membership_id = _execute(
         connection,
@@ -88,6 +90,14 @@ def _grant_location(connection, tenant_id: int, membership_id: int, location_id:
         '(tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
         (tenant_id, membership_id, location_id),
     )
+    _execute(
+        connection,
+        'INSERT IGNORE INTO membership_location_roles '
+        '(tenant_id,membership_id,location_id,role_id) '
+        'SELECT tenant_id,membership_id,%s,role_id FROM membership_roles '
+        'WHERE tenant_id=%s AND membership_id=%s',
+        (location_id, tenant_id, membership_id),
+    )
 
 
 def _table_scope(connection, scope: Scope, suffix: str) -> Scope:
@@ -105,13 +115,15 @@ def _table_scope(connection, scope: Scope, suffix: str) -> Scope:
             'ACTIVE',
         ),
     )
-    return Scope(
+    table_scope = Scope(
         scope.tenant_id,
         scope.organization_id,
         scope.location_id,
         resource_id,
         scope.email,
     )
+    _staff_table(connection, table_scope, resource_id)
+    return table_scope
 
 
 def _other_location(connection, scope: Scope, suffix: str) -> Scope:
@@ -419,6 +431,9 @@ def test_staff_check_query_and_detail_enforce_location_and_permission(
 
 
 def _login(client, email: str) -> dict[str, str]:
-    response = client.post('/auth/login', json={'email': email, 'password': PASSWORD})
+    response = client.post('/auth/login', json={
+        'username': email.partition('@')[0].casefold()[:64].rstrip('._-'),
+        'password': PASSWORD,
+    })
     assert response.status_code == 200, response.text
     return {'Authorization': f"Bearer {response.json()['access_token']}"}

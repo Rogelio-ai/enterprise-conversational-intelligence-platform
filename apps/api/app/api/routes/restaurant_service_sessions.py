@@ -71,7 +71,7 @@ class ClosedServiceSessionResponse(BaseModel):
 class ServiceResponsibleWaiterResponse(BaseModel):
     membership_id: int
     display_name: str
-    email: str
+    email: str | None
 
 
 class CurrentServiceResponsibilityResponse(BaseModel):

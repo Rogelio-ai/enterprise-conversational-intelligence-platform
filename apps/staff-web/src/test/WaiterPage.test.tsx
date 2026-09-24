@@ -10,9 +10,14 @@ import { storeCredential } from '../session/storage';
 import { ThemeProvider } from '../theme/ThemeContext';
 
 const waiterIdentity: StaffIdentity = {
-  user_id: 7, email: 'waiter@example.test', display_name: 'Ana Mesera', tenant_id: 11,
+  user_id: 7, username: 'waiter', email: 'waiter@example.test', display_name: 'Ana Mesera', tenant_id: 11,
   membership_id: 13, authorized_location_ids: [21], roles: ['WAITER'],
   permissions: ['location.read', 'restaurant_service.read', 'restaurant_order.read', 'restaurant_check.read', 'operational_request.read', 'operational_request.manage'],
+  location_authorities: [{
+    location_id: 21,
+    roles: ['WAITER'],
+    permissions: ['location.read', 'restaurant_service.read', 'restaurant_order.read', 'restaurant_check.read', 'operational_request.read', 'operational_request.manage'],
+  }],
 };
 const location = { id: 21, tenant_id: 11, organization_id: 31, code: 'CENTRO', name: 'Sucursal Centro', timezone: 'America/Mexico_City', status: 'ACTIVE' };
 

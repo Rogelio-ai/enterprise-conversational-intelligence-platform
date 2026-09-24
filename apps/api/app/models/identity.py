@@ -52,10 +52,65 @@ class User(TimestampMixin, Base):
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
-    email: Mapped[str] = mapped_column(String(320), nullable=False, unique=True)
+    username: Mapped[str | None] = mapped_column(
+        String(64, collation='ascii_bin'), nullable=True, unique=True,
+    )
+    email: Mapped[str | None] = mapped_column(String(320), nullable=True, unique=True)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
     display_name: Mapped[str] = mapped_column(String(200), nullable=False)
     status: Mapped[str] = mapped_column(String(16), nullable=False, default='ACTIVE')
+
+
+class StaffAuthSession(TimestampMixin, Base):
+    __tablename__ = 'staff_auth_sessions'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['membership_id', 'tenant_id', 'user_id'],
+            [
+                'tenant_memberships.id',
+                'tenant_memberships.tenant_id',
+                'tenant_memberships.user_id',
+            ],
+            name='fk_staff_auth_sessions_membership_scope',
+            ondelete='CASCADE',
+        ),
+        UniqueConstraint(
+            'session_id', name='uq_staff_auth_sessions_public_id',
+        ),
+        UniqueConstraint(
+            'user_id', 'active_slot', name='uq_staff_auth_sessions_user_active',
+        ),
+        CheckConstraint(
+            'active_slot IS NULL OR active_slot = 1',
+            name='ck_staff_auth_sessions_active_slot',
+        ),
+        CheckConstraint(
+            "(status = 'ACTIVE' AND active_slot = 1 AND closed_at IS NULL) OR "
+            "(status IN ('REPLACED', 'CLOSED') AND active_slot IS NULL "
+            'AND closed_at IS NOT NULL)',
+            name='ck_staff_auth_sessions_lifecycle',
+        ),
+        Index(
+            'ix_staff_auth_sessions_lookup',
+            'session_id', 'status', 'active_slot',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    session_id: Mapped[str] = mapped_column(
+        String(36, collation='ascii_bin'), nullable=False,
+    )
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    membership_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    status: Mapped[str] = mapped_column(String(16), nullable=False, default='ACTIVE')
+    active_slot: Mapped[int | None] = mapped_column(
+        SmallInteger, nullable=True, default=1, server_default=text('1'),
+    )
+    activated_at: Mapped[datetime] = mapped_column(
+        DateTime(), nullable=False, server_default=func.current_timestamp(),
+    )
+    closed_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
 
 
 class IdentityInvitation(TimestampMixin, Base):
@@ -120,6 +175,10 @@ class TenantMembership(TimestampMixin, Base):
     __table_args__ = (
         UniqueConstraint('tenant_id', 'user_id', name='uq_tenant_memberships_tenant_user'),
         UniqueConstraint('id', 'tenant_id', name='uq_tenant_memberships_id_tenant'),
+        UniqueConstraint(
+            'id', 'tenant_id', 'user_id',
+            name='uq_tenant_memberships_id_tenant_user',
+        ),
         CheckConstraint(
             "status IN ('ACTIVE', 'SUSPENDED', 'INACTIVE')",
             name='ck_tenant_memberships_status',
@@ -219,9 +278,45 @@ class MembershipLocationGrant(TimestampMixin, Base):
             'membership_id', 'location_id',
             name='uq_membership_location_grants_membership_location',
         ),
+        UniqueConstraint(
+            'membership_id', 'location_id', 'tenant_id',
+            name='uq_membership_location_grants_membership_location_tenant',
+        ),
     )
 
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
     tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     membership_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+
+
+class MembershipLocationRole(TimestampMixin, Base):
+    __tablename__ = 'membership_location_roles'
+    __table_args__ = (
+        ForeignKeyConstraint(
+            ['membership_id', 'location_id', 'tenant_id'],
+            [
+                'membership_location_grants.membership_id',
+                'membership_location_grants.location_id',
+                'membership_location_grants.tenant_id',
+            ],
+            name='fk_membership_location_roles_grant',
+            ondelete='CASCADE',
+        ),
+        ForeignKeyConstraint(
+            ['role_id', 'tenant_id'],
+            ['roles.id', 'roles.tenant_id'],
+            name='fk_membership_location_roles_role_tenant',
+            ondelete='CASCADE',
+        ),
+        UniqueConstraint(
+            'membership_id', 'location_id', 'role_id',
+            name='uq_membership_location_roles_membership_location_role',
+        ),
+    )
+
+    id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)
+    tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    membership_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    location_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
+    role_id: Mapped[int] = mapped_column(BigInteger, nullable=False)

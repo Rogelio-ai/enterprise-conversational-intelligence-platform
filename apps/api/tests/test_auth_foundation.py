@@ -22,6 +22,7 @@ class SeededAuthority:
     membership_id: int
     role_id: int
     email: str
+    username: str
 
 
 def _execute(connection, statement: str, parameters=()) -> int:
@@ -45,10 +46,11 @@ def _seed_authority(
         ('Test Tenant', prefix, tenant_status),
     )
     email = f'{prefix}@example.test'
+    username = prefix.casefold()
     user_id = _execute(
         connection,
-        'INSERT INTO users (email, password_hash, display_name, status) VALUES (%s, %s, %s, %s)',
-        (email, hash_password(PASSWORD), 'Test User', user_status),
+        'INSERT INTO users (username, email, password_hash, display_name, status) VALUES (%s, %s, %s, %s, %s)',
+        (username, email, hash_password(PASSWORD), 'Test User', user_status),
     )
     membership_id = _execute(
         connection,
@@ -67,7 +69,7 @@ def _seed_authority(
     )
     if permission:
         _assign_permission(connection, role_id, permission)
-    return SeededAuthority(tenant_id, user_id, membership_id, role_id, email)
+    return SeededAuthority(tenant_id, user_id, membership_id, role_id, email, username)
 
 
 def _assign_permission(connection, role_id: int, code: str) -> None:
@@ -95,7 +97,7 @@ def client(integration_settings):
 def _login(client: TestClient, authority: SeededAuthority, **extra) -> str:
     response = client.post(
         '/auth/login',
-        json={'email': authority.email, 'password': PASSWORD, **extra},
+        json={'username': authority.username, 'password': PASSWORD, **extra},
     )
     assert response.status_code == 200, response.text
     return response.json()['access_token']
@@ -111,6 +113,13 @@ def test_unique_tenant_slug_user_email_and_membership(sql_connection) -> None:
             connection,
             'INSERT INTO users (email, password_hash, display_name, status) VALUES (%s, %s, %s, %s)',
             (authority.email, hash_password(PASSWORD), 'Duplicate', 'ACTIVE'),
+        )
+    with pytest.raises(pymysql.err.IntegrityError):
+        _execute(
+            connection,
+            'INSERT INTO users (username, email, password_hash, display_name, status) '
+            'VALUES (%s, %s, %s, %s, %s)',
+            (authority.username, f'other-{authority.email}', hash_password(PASSWORD), 'Duplicate', 'ACTIVE'),
         )
     with pytest.raises(pymysql.err.IntegrityError):
         _execute(
@@ -151,6 +160,7 @@ def test_successful_login_and_authenticated_me(client, sql_connection) -> None:
     assert response.status_code == 200
     assert response.json() == {
         'user_id': authority.user_id,
+        'username': authority.username,
         'email': authority.email,
         'display_name': 'Test User',
         'tenant_id': authority.tenant_id,
@@ -158,19 +168,20 @@ def test_successful_login_and_authenticated_me(client, sql_connection) -> None:
         'authorized_location_ids': [],
         'roles': ['TEST_ROLE'],
         'permissions': ['tenant.read'],
+        'location_authorities': [],
     }
 
 
 @pytest.mark.parametrize(
-    ('email_kind', 'password'),
+    ('username_kind', 'password'),
     [('known', 'incorrect password'), ('unknown', PASSWORD)],
 )
-def test_invalid_credentials_are_generic(client, sql_connection, email_kind, password) -> None:
+def test_invalid_credentials_are_generic(client, sql_connection, username_kind, password) -> None:
     connection, prefix = sql_connection
     authority = _seed_authority(connection, prefix)
-    email = authority.email if email_kind == 'known' else f'{prefix}-unknown@example.test'
+    username = authority.username if username_kind == 'known' else f'{prefix}-unknown'
 
-    response = client.post('/auth/login', json={'email': email, 'password': password})
+    response = client.post('/auth/login', json={'username': username, 'password': password})
 
     assert response.status_code == 401
     assert 'Invalid authentication credentials' in response.text
@@ -181,7 +192,7 @@ def test_disabled_user_cannot_login(client, sql_connection) -> None:
     connection, prefix = sql_connection
     authority = _seed_authority(connection, prefix, user_status='DISABLED')
 
-    response = client.post('/auth/login', json={'email': authority.email, 'password': PASSWORD})
+    response = client.post('/auth/login', json={'username': authority.username, 'password': PASSWORD})
 
     assert response.status_code == 401
 
@@ -191,10 +202,10 @@ def test_auth_me_requires_valid_token(client) -> None:
     assert client.get('/auth/me', headers={'Authorization': 'Bearer invalid'}).status_code == 401
 
 
-def test_single_tenant_is_inferred_and_multiple_tenants_require_selection(client, sql_connection) -> None:
+def test_single_tenant_is_inferred_and_multiple_tenants_are_controlled(client, sql_connection) -> None:
     connection, prefix = sql_connection
     authority = _seed_authority(connection, prefix)
-    first = client.post('/auth/login', json={'email': authority.email, 'password': PASSWORD})
+    first = client.post('/auth/login', json={'username': authority.username, 'password': PASSWORD})
     assert first.status_code == 200
     assert first.json()['tenant']['id'] == authority.tenant_id
 
@@ -208,15 +219,34 @@ def test_single_tenant_is_inferred_and_multiple_tenants_require_selection(client
         'INSERT INTO tenant_memberships (tenant_id, user_id, status) VALUES (%s, %s, %s)',
         (other_tenant_id, authority.user_id, 'ACTIVE'),
     )
-    ambiguous = client.post('/auth/login', json={'email': authority.email, 'password': PASSWORD})
-    selected = client.post(
-        '/auth/login',
-        json={'email': authority.email, 'password': PASSWORD, 'tenant_id': authority.tenant_id},
-    )
+    ambiguous = client.post('/auth/login', json={'username': authority.username, 'password': PASSWORD})
 
-    assert ambiguous.status_code == 400
-    assert selected.status_code == 200
-    assert selected.json()['tenant']['id'] == authority.tenant_id
+    assert ambiguous.status_code == 409
+    assert 'Multiple active memberships' in ambiguous.text
+
+
+def test_username_is_normalized_and_email_is_not_a_login_contract(client, sql_connection) -> None:
+    connection, prefix = sql_connection
+    authority = _seed_authority(connection, prefix)
+    normalized = client.post('/auth/login', json={
+        'username': f'  {authority.username.upper()}  ', 'password': PASSWORD,
+    })
+    legacy = client.post('/auth/login', json={
+        'email': authority.email, 'password': PASSWORD,
+    })
+    assert normalized.status_code == 200
+    assert legacy.status_code == 422
+
+
+def test_staff_without_email_can_authenticate(client, sql_connection) -> None:
+    connection, prefix = sql_connection
+    authority = _seed_authority(connection, prefix)
+    _execute(connection, 'UPDATE users SET email=NULL WHERE id=%s', (authority.user_id,))
+    response = client.post('/auth/login', json={
+        'username': authority.username, 'password': PASSWORD,
+    })
+    assert response.status_code == 200
+    assert response.json()['user']['email'] is None
 
 
 def test_unauthorized_tenant_selection_and_cross_tenant_token_are_denied(client, sql_connection) -> None:

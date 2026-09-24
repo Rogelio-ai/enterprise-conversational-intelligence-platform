@@ -46,8 +46,12 @@ def _waiter(
     email = f'{prefix}-{label}@example.test'
     user_id = _execute(
         connection,
-        'INSERT INTO users (email,password_hash,display_name,status) VALUES (%s,%s,%s,%s)',
-        (email, hash_password(PASSWORD), f'Waiter {label}', 'ACTIVE' if active_user else 'DISABLED'),
+        'INSERT INTO users (username,email,password_hash,display_name,status) '
+        'VALUES (%s,%s,%s,%s,%s)',
+        (
+            f'{prefix}-{label}'.casefold(), email, hash_password(PASSWORD),
+            f'Waiter {label}', 'ACTIVE' if active_user else 'DISABLED',
+        ),
     )
     membership_id = _execute(
         connection,
@@ -71,6 +75,12 @@ def _waiter(
             connection,
             'INSERT INTO membership_location_grants (tenant_id,membership_id,location_id) VALUES (%s,%s,%s)',
             (tenant_id, membership_id, location_id),
+        )
+        _execute(
+            connection,
+            'INSERT INTO membership_location_roles '
+            '(tenant_id,membership_id,location_id,role_id) VALUES (%s,%s,%s,%s)',
+            (tenant_id, membership_id, location_id, role_id),
         )
     return membership_id
 

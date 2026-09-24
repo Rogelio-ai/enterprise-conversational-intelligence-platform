@@ -46,7 +46,7 @@ class AssignmentConflictError(TableWaiterAssignmentError):
 class WaiterAssignmentValue:
     membership_id: int
     display_name: str
-    email: str
+    email: str | None
     is_responsible: bool
 
 
@@ -62,7 +62,7 @@ class AssignmentSetValue:
 class EligibleWaiterValue:
     membership_id: int
     display_name: str
-    email: str
+    email: str | None
 
 
 @dataclass(frozen=True, slots=True)

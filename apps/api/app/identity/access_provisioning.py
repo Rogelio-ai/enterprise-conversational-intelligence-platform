@@ -8,9 +8,13 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from app.core.security import hash_password
+from app.identity.invitations import normalize_email
+from app.identity.usernames import normalize_username
 from app.models import (
     Location,
     MembershipLocationGrant,
+    MembershipLocationRole,
     MembershipRole,
     Organization,
     Permission,
@@ -61,6 +65,51 @@ class AccessProvisioningResult:
     location_grants: tuple[LocationGrantResult, ...]
 
 
+async def provision_staff_account(
+    db: AsyncSession, *, tenant_id: int, actor_membership_id: int,
+    username: str, password: str, display_name: str, email: str | None,
+    password_minimum_length: int, role_name: str,
+    locations: tuple[LocationGrantCandidate, ...],
+) -> AccessProvisioningResult:
+    """Create canonical Staff credentials and their initial access atomically."""
+    try:
+        canonical_username = normalize_username(username)
+        password_hash = hash_password(password, minimum_length=password_minimum_length)
+    except ValueError as exc:
+        raise AccessProvisioningConflictError(str(exc)) from exc
+    canonical_display_name = display_name.strip()
+    if not canonical_display_name or len(canonical_display_name) > 200:
+        raise AccessProvisioningConflictError('Invalid Staff display name')
+    canonical_email = None
+    if email is not None:
+        canonical_email = normalize_email(email)
+        if '@' not in canonical_email:
+            raise AccessProvisioningConflictError('Invalid Staff email')
+    if await db.scalar(select(User.id).where(User.username == canonical_username)) is not None:
+        raise AccessProvisioningConflictError('Staff username already exists')
+    if canonical_email is not None and await db.scalar(
+        select(User.id).where(User.email == canonical_email)
+    ) is not None:
+        raise AccessProvisioningConflictError('Staff email already exists')
+    user = User(
+        username=canonical_username, email=canonical_email,
+        password_hash=password_hash, display_name=canonical_display_name,
+        status='ACTIVE',
+    )
+    db.add(user)
+    try:
+        await db.flush()
+    except IntegrityError as exc:
+        await db.rollback()
+        raise AccessProvisioningConflictError(
+            'Staff identity provisioning conflicted with concurrent state'
+        ) from exc
+    return await provision_access(
+        db, tenant_id=tenant_id, actor_membership_id=actor_membership_id,
+        user_id=user.id, role_name=role_name, locations=locations,
+    )
+
+
 def can_assign_role(
     actor_permissions: frozenset[str], target_permissions: frozenset[str],
 ) -> bool:
@@ -97,7 +146,7 @@ async def _locked_permissions_for_roles(
 
 async def _authorize_actor(
     db: AsyncSession, *, tenant_id: int, actor_membership_id: int,
-) -> tuple[frozenset[str], frozenset[int]]:
+) -> dict[int, frozenset[str]]:
     actor_membership = await db.scalar(select(TenantMembership).where(
         TenantMembership.id == actor_membership_id,
         TenantMembership.tenant_id == tenant_id,
@@ -114,46 +163,43 @@ async def _authorize_actor(
             'Access provisioning actor is not active'
         )
 
-    assignments = tuple((await db.scalars(
-        select(MembershipRole)
-        .where(
-            MembershipRole.membership_id == actor_membership_id,
-            MembershipRole.tenant_id == tenant_id,
+    assignments = tuple((await db.execute(
+        select(MembershipLocationRole.location_id, Role.id)
+        .join(
+            Role,
+            (Role.id == MembershipLocationRole.role_id)
+            & (Role.tenant_id == MembershipLocationRole.tenant_id),
         )
-        .order_by(MembershipRole.id)
+        .where(
+            MembershipLocationRole.membership_id == actor_membership_id,
+            MembershipLocationRole.tenant_id == tenant_id,
+            Role.status == 'ACTIVE',
+        )
+        .order_by(MembershipLocationRole.location_id, Role.id)
         .with_for_update()
     )).all())
-    assigned_role_ids = tuple(sorted({value.role_id for value in assignments}))
-    active_roles: tuple[Role, ...] = ()
-    if assigned_role_ids:
-        active_roles = tuple((await db.scalars(
-            select(Role)
-            .where(
-                Role.id.in_(assigned_role_ids),
-                Role.tenant_id == tenant_id,
-                Role.status == 'ACTIVE',
-            )
-            .order_by(Role.id)
+    role_ids = tuple(sorted({role_id for _, role_id in assignments}))
+    permission_rows = ()
+    if role_ids:
+        permission_rows = tuple((await db.execute(
+            select(RolePermission.role_id, Permission.code)
+            .join(Permission, Permission.id == RolePermission.permission_id)
+            .where(RolePermission.role_id.in_(role_ids))
+            .order_by(RolePermission.role_id, Permission.code)
             .with_for_update()
         )).all())
-    permissions = await _locked_permissions_for_roles(
-        db, role_ids=tuple(value.id for value in active_roles),
-    )
-    if not can_provision_access(permissions):
-        raise AccessProvisioningAuthorizationError(
-            'Access provisioning authority is required'
+    permissions_by_role: dict[int, set[str]] = {}
+    for role_id, code in permission_rows:
+        permissions_by_role.setdefault(role_id, set()).add(code)
+    permissions_by_location: dict[int, set[str]] = {}
+    for location_id, role_id in assignments:
+        permissions_by_location.setdefault(location_id, set()).update(
+            permissions_by_role.get(role_id, set())
         )
-
-    grants = tuple((await db.scalars(
-        select(MembershipLocationGrant)
-        .where(
-            MembershipLocationGrant.membership_id == actor_membership_id,
-            MembershipLocationGrant.tenant_id == tenant_id,
-        )
-        .order_by(MembershipLocationGrant.id)
-        .with_for_update()
-    )).all())
-    return permissions, frozenset(value.location_id for value in grants)
+    return {
+        location_id: frozenset(permissions)
+        for location_id, permissions in permissions_by_location.items()
+    }
 
 
 def _role_name(value: object) -> str:
@@ -200,7 +246,7 @@ async def provision_access(
         raise AccessProvisioningAuthorizationError(
             'Access provisioning Tenant is not active'
         )
-    actor_permissions, actor_location_ids = await _authorize_actor(
+    actor_permissions_by_location = await _authorize_actor(
         db, tenant_id=tenant_id, actor_membership_id=actor_membership_id,
     )
 
@@ -222,10 +268,6 @@ async def provision_access(
             'Target Role is not an existing active Tenant Role'
         )
     target_permissions = await _locked_permissions_for_roles(db, role_ids=(role.id,))
-    if not can_assign_role(actor_permissions, target_permissions):
-        raise AccessProvisioningAuthorizationError(
-            'Actor cannot delegate the target Role permissions'
-        )
 
     organization_ids = tuple(sorted({value.organization_id for value in requested_locations}))
     organizations = tuple((await db.scalars(
@@ -257,9 +299,18 @@ async def provision_access(
             raise AccessProvisioningConflictError(
                 'Target Location is not active in the requested Tenant/Organization scope'
             )
-        if candidate.location_id not in actor_location_ids:
+        actor_permissions = actor_permissions_by_location.get(candidate.location_id)
+        if actor_permissions is None:
             raise AccessProvisioningAuthorizationError(
                 'Actor cannot delegate an unauthorized Location'
+            )
+        if not can_provision_access(actor_permissions):
+            raise AccessProvisioningAuthorizationError(
+                'Access provisioning authority is required at the target Location'
+            )
+        if not can_assign_role(actor_permissions, target_permissions):
+            raise AccessProvisioningAuthorizationError(
+                'Actor cannot delegate the target Role permissions at the target Location'
             )
 
     membership = await db.scalar(select(TenantMembership).where(
@@ -274,6 +325,7 @@ async def provision_access(
     membership_operation = 'UNCHANGED'
     role_operation = 'CREATE'
     existing_grants: dict[int, MembershipLocationGrant] = {}
+    existing_location_roles: dict[int, MembershipLocationRole] = {}
     assignment: MembershipRole | None = None
     if membership is not None:
         assignment = await db.scalar(select(MembershipRole).where(
@@ -288,6 +340,13 @@ async def provision_access(
             MembershipLocationGrant.location_id.in_(location_ids),
         ).order_by(MembershipLocationGrant.id).with_for_update())).all())
         existing_grants = {value.location_id: value for value in grants}
+        location_roles = tuple((await db.scalars(select(MembershipLocationRole).where(
+            MembershipLocationRole.tenant_id == tenant_id,
+            MembershipLocationRole.membership_id == membership.id,
+            MembershipLocationRole.location_id.in_(location_ids),
+            MembershipLocationRole.role_id == role.id,
+        ).order_by(MembershipLocationRole.id).with_for_update())).all())
+        existing_location_roles = {value.location_id: value for value in location_roles}
 
     if membership is None:
         membership = TenantMembership(
@@ -313,6 +372,14 @@ async def provision_access(
                     tenant_id=tenant_id,
                     membership_id=membership.id,
                     location_id=candidate.location_id,
+                ))
+                operation = 'CREATE'
+            if candidate.location_id not in existing_location_roles:
+                db.add(MembershipLocationRole(
+                    tenant_id=tenant_id,
+                    membership_id=membership.id,
+                    location_id=candidate.location_id,
+                    role_id=role.id,
                 ))
                 operation = 'CREATE'
             location_results.append(LocationGrantResult(

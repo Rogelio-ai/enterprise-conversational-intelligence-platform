@@ -21,7 +21,7 @@ const permissions = [
     'inventory.valuation.read', 'inventory.valuation.create', 'inventory.fifo.read',
     'inventory.transfer.read', 'inventory.transfer.manage',
 ];
-const identity: StaffIdentity = { user_id: 1, email: 'inventory@example.test', display_name: 'Iris Inventario', tenant_id: 11, membership_id: 12, authorized_location_ids: [21], roles: ['INVENTORY_OPERATOR'], permissions };
+const identity: StaffIdentity = { user_id: 1, username: 'inventory', email: 'inventory@example.test', display_name: 'Iris Inventario', tenant_id: 11, membership_id: 12, authorized_location_ids: [21], roles: ['INVENTORY_OPERATOR'], permissions, location_authorities: [{ location_id: 21, roles: ['INVENTORY_OPERATOR'], permissions }] };
 const location = { id: 21, tenant_id: 11, organization_id: 31, code: 'CENTRO', name: 'Sucursal Centro', timezone: 'America/Mexico_City', status: 'ACTIVE' };
 const intelligence: InventoryIntelligence = {
   location_id: 21, generated_at: '2026-09-12T12:00:00Z', cost_visible: false,

@@ -48,8 +48,8 @@ def _authority(
     email = f'{prefix}@example.test'
     user_id = _execute(
         connection,
-        "INSERT INTO users (email, password_hash, display_name, status) VALUES (%s,%s,%s,'ACTIVE')",
-        (email, hash_password(PASSWORD), f'User {prefix}'),
+        "INSERT INTO users (username, email, password_hash, display_name, status) VALUES (%s,%s,%s,%s,'ACTIVE')",
+        (prefix.casefold(), email, hash_password(PASSWORD), f'User {prefix}'),
     )
     membership_id = _execute(
         connection,
@@ -102,19 +102,50 @@ def _location(connection, tenant_id: int, organization_id: int, code: str) -> in
     )
 
 
-def _grant(connection, authority: Authority, location_id: int) -> int:
-    return _execute(
+def _grant(
+    connection, authority: Authority, location_id: int, role_id: int | None = None,
+) -> int:
+    _execute(
         connection,
-        'INSERT INTO membership_location_grants (tenant_id, membership_id, location_id) '
-        'VALUES (%s,%s,%s)',
+        'INSERT IGNORE INTO membership_location_grants '
+        '(tenant_id, membership_id, location_id) VALUES (%s,%s,%s)',
         (authority.tenant_id, authority.membership_id, location_id),
     )
+    return _execute(
+        connection,
+        'INSERT INTO membership_location_roles '
+        '(tenant_id, membership_id, location_id, role_id) VALUES (%s,%s,%s,%s)',
+        (
+            authority.tenant_id, authority.membership_id, location_id,
+            authority.role_id if role_id is None else role_id,
+        ),
+    )
+
+
+def _role(connection, tenant_id: int, name: str, permission: str) -> int:
+    role_id = _execute(
+        connection,
+        "INSERT INTO roles (tenant_id,name,description,status) VALUES (%s,%s,%s,'ACTIVE')",
+        (tenant_id, name, f'{name} scoped role'),
+    )
+    _execute(
+        connection,
+        'INSERT IGNORE INTO permissions (code,description) VALUES (%s,%s)',
+        (permission, permission),
+    )
+    _execute(
+        connection,
+        'INSERT INTO role_permissions (role_id,permission_id) '
+        'SELECT %s,id FROM permissions WHERE code=%s',
+        (role_id, permission),
+    )
+    return role_id
 
 
 def _login(client: TestClient, authority: Authority) -> dict[str, str]:
     response = client.post(
         '/auth/login',
-        json={'email': authority.email, 'password': PASSWORD},
+        json={'username': authority.email.partition('@')[0], 'password': PASSWORD},
     )
     assert response.status_code == 200, response.text
     return {'Authorization': f"Bearer {response.json()['access_token']}"}
@@ -277,3 +308,95 @@ def test_shared_location_dependency_is_reusable_by_future_staff_routes(
     assert allowed.status_code == 200
     assert allowed.json() == {'membership_id': authority.membership_id}
     assert denied_response.status_code == 404
+
+
+def test_roles_and_permissions_are_composed_only_within_the_assigned_location(
+    client: TestClient,
+    sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    tenant_id = _tenant(connection, prefix)
+    organization_id = _organization(connection, tenant_id, 'ORG')
+    location_a = _location(connection, tenant_id, organization_id, 'A')
+    location_b = _location(connection, tenant_id, organization_id, 'B')
+    staff = _authority(connection, tenant_id, prefix, permissions=())
+    waiter_role = _role(connection, tenant_id, f'{prefix}-WAITER', 'restaurant_service.read')
+    cashier_role = _role(connection, tenant_id, f'{prefix}-CASHIER', 'resource.read')
+    _grant(connection, staff, location_a, waiter_role)
+    _grant(connection, staff, location_b, cashier_role)
+    headers = _login(client, staff)
+
+    waiter_a = client.get(
+        f'/locations/{location_a}/restaurant-service-sessions/999999/responsibility',
+        headers=headers,
+    )
+    waiter_b = client.get(
+        f'/locations/{location_b}/restaurant-service-sessions/999999/responsibility',
+        headers=headers,
+    )
+    cashier_a = client.get(
+        f'/locations/{location_a}/tables/eligible-waiters', headers=headers,
+    )
+    cashier_b = client.get(
+        f'/locations/{location_b}/tables/eligible-waiters', headers=headers,
+    )
+    me = client.get('/auth/me', headers=headers)
+
+    assert waiter_a.status_code == 404
+    assert waiter_b.status_code == 403
+    assert cashier_a.status_code == 403
+    assert cashier_b.status_code == 200
+    assert me.status_code == 200
+    assert me.json()['location_authorities'] == [
+        {
+            'location_id': location_a,
+            'roles': [f'{prefix}-WAITER'],
+            'permissions': ['restaurant_service.read'],
+        },
+        {
+            'location_id': location_b,
+            'roles': [f'{prefix}-CASHIER'],
+            'permissions': ['resource.read'],
+        },
+    ]
+
+    second_waiter_role = _role(
+        connection, tenant_id, f'{prefix}-WAITER-READ', 'location.read',
+    )
+    _grant(connection, staff, location_a, second_waiter_role)
+    refreshed_headers = _login(client, staff)
+    assert client.get(f'/locations/{location_a}', headers=refreshed_headers).status_code == 200
+    assert client.get(f'/locations/{location_b}', headers=refreshed_headers).status_code == 403
+    listing = client.get('/locations', headers=refreshed_headers)
+    assert listing.status_code == 200
+    assert [item['id'] for item in listing.json()['items']] == [location_a]
+
+
+def test_location_role_assignment_rejects_cross_tenant_and_duplicate_scope(
+    sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    tenant_a = _tenant(connection, prefix)
+    tenant_b = _tenant(connection, f'{prefix}-foreign')
+    organization_a = _organization(connection, tenant_a, 'A')
+    organization_b = _organization(connection, tenant_b, 'B')
+    location_a = _location(connection, tenant_a, organization_a, 'A')
+    location_b = _location(connection, tenant_b, organization_b, 'B')
+    staff = _authority(connection, tenant_a, prefix, permissions=())
+    role_a = _role(connection, tenant_a, f'{prefix}-A', 'location.read')
+    role_b = _role(connection, tenant_b, f'{prefix}-B', 'resource.read')
+    _grant(connection, staff, location_a, role_a)
+
+    with pytest.raises(pymysql.err.IntegrityError):
+        _grant(connection, staff, location_a, role_a)
+    with pytest.raises(pymysql.err.IntegrityError):
+        _grant(connection, staff, location_b, role_a)
+    with pytest.raises(pymysql.err.IntegrityError):
+        _grant(connection, staff, location_a, role_b)
+    with pytest.raises(pymysql.err.IntegrityError):
+        _execute(
+            connection,
+            'INSERT INTO membership_location_roles '
+            '(tenant_id,membership_id,location_id,role_id) VALUES (%s,%s,%s,%s)',
+            (tenant_b, staff.membership_id, location_a, role_b),
+        )

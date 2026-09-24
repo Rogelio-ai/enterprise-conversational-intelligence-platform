@@ -34,7 +34,7 @@ interface AuthState {
 
 interface AuthContextValue extends AuthState {
   login: (payload: LoginRequest) => Promise<void>;
-  logout: () => void;
+  logout: () => Promise<void>;
   retryRestoration: () => void;
   hasPermission: (permission: string) => boolean;
 }
@@ -104,10 +104,16 @@ export function AuthProvider({ children }: PropsWithChildren) {
     setAuth({ status: 'checking', credential, identity: null });
   }, []);
 
-  const logout = useCallback(() => {
-    clearStaffStorage();
-    queryClient.clear();
-    setAuth({ status: 'unauthenticated', credential: null, identity: null });
+  const logout = useCallback(async () => {
+    try {
+      if (readCredential()) await staffApi.logout();
+    } catch {
+      // Local logout remains safe when the session was already replaced or unavailable.
+    } finally {
+      clearStaffStorage();
+      queryClient.clear();
+      setAuth({ status: 'unauthenticated', credential: null, identity: null });
+    }
   }, [queryClient]);
 
   const retryRestoration = useCallback(() => {

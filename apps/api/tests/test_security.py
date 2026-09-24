@@ -34,6 +34,7 @@ def test_access_token_round_trip(settings) -> None:
         user_id=7,
         tenant_id=11,
         membership_id=13,
+        session_id='session-17',
     )
 
     payload = decode_access_token(token, settings=settings)
@@ -41,6 +42,7 @@ def test_access_token_round_trip(settings) -> None:
     assert payload['sub'] == '7'
     assert payload['tenant_id'] == 11
     assert payload['membership_id'] == 13
+    assert payload['session_id'] == 'session-17'
     assert payload['type'] == 'access'
     assert 'iat' in payload
     assert 'exp' in payload
@@ -52,6 +54,7 @@ def test_expired_access_token_is_rejected(settings) -> None:
         user_id=7,
         tenant_id=11,
         membership_id=13,
+        session_id='session-17',
         issued_at=datetime.now(timezone.utc) - timedelta(minutes=5),
         expires_delta=timedelta(minutes=1),
     )
@@ -69,6 +72,7 @@ def test_token_signed_with_another_secret_is_rejected(settings) -> None:
         user_id=7,
         tenant_id=11,
         membership_id=13,
+        session_id='session-17',
     )
 
     with pytest.raises(TokenValidationError):

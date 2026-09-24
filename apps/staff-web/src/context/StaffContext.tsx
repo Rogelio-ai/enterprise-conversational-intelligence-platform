@@ -1,16 +1,25 @@
 import {
+  useCallback,
   createContext,
   type PropsWithChildren,
   useContext,
   useEffect,
   useMemo,
+  useRef,
   useState,
 } from 'react';
 import { useQuery } from '@tanstack/react-query';
+import { useLocation, useNavigate } from 'react-router-dom';
 import type { Location, Organization, Tenant } from '../api/contracts';
 import { staffApi } from '../api/client';
+import { canUseWorkspace, workspaceForPath } from '../navigation/workspaces';
 import { useAuth } from '../session/AuthContext';
-import { readSelectedLocationId, storeSelectedLocationId } from '../session/storage';
+import {
+  clearStaffResumeHint,
+  readStaffResumeHint,
+  storeStaffResumeHint,
+  type StaffResumeHint,
+} from '../session/storage';
 
 interface StaffContextValue {
   status: 'loading' | 'ready' | 'selection-required' | 'unavailable' | 'error';
@@ -18,6 +27,11 @@ interface StaffContextValue {
   organization: Organization | null;
   location: Location | null;
   locations: Location[];
+  roles: string[];
+  permissions: string[];
+  resumePath: string | null;
+  hasPermission: (permission: string) => boolean;
+  selectHome: () => void;
   selectLocation: (locationId: number) => void;
   retry: () => void;
 }
@@ -25,9 +39,18 @@ interface StaffContextValue {
 const StaffContext = createContext<StaffContextValue | null>(null);
 
 export function StaffContextProvider({ children }: PropsWithChildren) {
-  const { identity, credential, hasPermission } = useAuth();
-  const [selectedId, setSelectedId] = useState<number | null>(readSelectedLocationId);
-  const canReadLocations = hasPermission('location.read');
+  const { identity, credential, hasPermission: hasTenantPermission } = useAuth();
+  const route = useLocation();
+  const navigate = useNavigate();
+  const [selectedId, setSelectedId] = useState<number | null>(null);
+  const [resumeHint, setResumeHint] = useState<StaffResumeHint | null>(readStaffResumeHint);
+  const explicitHomeRef = useRef(false);
+  const readableAuthorityIds = useMemo(() => new Set(
+    identity?.location_authorities
+      .filter((authority) => authority.permissions.includes('location.read'))
+      .map((authority) => authority.location_id) ?? [],
+  ), [identity]);
+  const canReadLocations = readableAuthorityIds.size > 0;
   const locationsQuery = useQuery({
     queryKey: ['staff', 'locations', identity?.tenant_id],
     queryFn: staffApi.locations,
@@ -35,25 +58,86 @@ export function StaffContextProvider({ children }: PropsWithChildren) {
     retry: false,
   });
   const activeLocations = useMemo(
-    () => locationsQuery.data?.items.filter((location) => location.status === 'ACTIVE') ?? [],
-    [locationsQuery.data],
+    () => locationsQuery.data?.items.filter(
+      (location) => location.status === 'ACTIVE' && readableAuthorityIds.has(location.id),
+    ) ?? [],
+    [locationsQuery.data, readableAuthorityIds],
   );
+  const hintMatchesIdentity = Boolean(identity && resumeHint?.identityKey === identity.username);
+  const hintedId = hintMatchesIdentity ? resumeHint?.locationId ?? null : null;
   const validatedId = activeLocations.some((location) => location.id === selectedId)
     ? selectedId
+    : activeLocations.some((location) => location.id === hintedId) ? hintedId
     : activeLocations.length === 1 ? activeLocations[0].id : null;
   const location = activeLocations.find((item) => item.id === validatedId) ?? null;
+  const authority = identity?.location_authorities.find(
+    (value) => value.location_id === location?.id,
+  );
+  const roles = authority?.roles ?? [];
+  const permissions = authority?.permissions ?? [];
+  const hasPermission = useCallback(
+    (permission: string) => permissions.includes(permission),
+    [permissions],
+  );
+  const hintedWorkspace = resumeHint ? workspaceForPath(resumeHint.workspacePath) : undefined;
+  const resumePath = hintMatchesIdentity
+    && location?.id === resumeHint?.locationId
+    && hintedWorkspace
+    && canUseWorkspace(permissions, hintedWorkspace)
+    ? resumeHint!.workspacePath
+    : null;
 
   useEffect(() => {
-    if (validatedId && validatedId !== selectedId) {
+    if (validatedId !== selectedId) {
       setSelectedId(validatedId);
-      storeSelectedLocationId(validatedId);
     }
   }, [selectedId, validatedId]);
+
+  useEffect(() => {
+    if (!identity || !canReadLocations || locationsQuery.isPending || locationsQuery.isError) return;
+    if (resumeHint && (!hintMatchesIdentity || !activeLocations.some(
+      (item) => item.id === resumeHint.locationId,
+    ))) {
+      clearStaffResumeHint();
+      setResumeHint(null);
+      return;
+    }
+    if (resumeHint && location?.id === resumeHint.locationId && resumeHint.workspacePath !== '/') {
+      const workspace = workspaceForPath(resumeHint.workspacePath);
+      if (!workspace || !canUseWorkspace(permissions, workspace)) {
+        clearStaffResumeHint();
+        setResumeHint(null);
+      }
+    }
+  }, [
+    activeLocations, canReadLocations, hintMatchesIdentity, identity, location,
+    locationsQuery.isError, locationsQuery.isPending, permissions, resumeHint,
+  ]);
+
+  useEffect(() => {
+    if (!identity || !location) return;
+    if (explicitHomeRef.current && route.pathname !== '/') return;
+    explicitHomeRef.current = false;
+    const workspace = workspaceForPath(route.pathname);
+    if (workspace && !canUseWorkspace(permissions, workspace)) return;
+    if (route.pathname === '/' && resumePath && resumePath !== '/') return;
+    const next = {
+      identityKey: identity.username,
+      locationId: location.id,
+      workspacePath: workspace ? route.pathname : '/',
+    };
+    storeStaffResumeHint(next);
+    setResumeHint((current) => (
+      current?.identityKey === next.identityKey
+      && current.locationId === next.locationId
+      && current.workspacePath === next.workspacePath ? current : next
+    ));
+  }, [identity, location, permissions, resumePath, route.pathname]);
 
   const tenantQuery = useQuery({
     queryKey: ['staff', 'tenant', identity?.tenant_id],
     queryFn: staffApi.currentTenant,
-    enabled: Boolean(identity && hasPermission('tenant.read')),
+    enabled: Boolean(identity && hasTenantPermission('tenant.read')),
     retry: false,
   });
   const organizationQuery = useQuery({
@@ -65,9 +149,35 @@ export function StaffContextProvider({ children }: PropsWithChildren) {
 
   const selectLocation = (locationId: number) => {
     if (!activeLocations.some((item) => item.id === locationId)) return;
+    const selectedAuthority = identity?.location_authorities.find(
+      (value) => value.location_id === locationId,
+    );
+    const workspace = workspaceForPath(route.pathname);
+    const workspacePath = workspace
+      && canUseWorkspace(selectedAuthority?.permissions ?? [], workspace)
+      ? route.pathname
+      : '/';
+    if (identity) {
+      const next = { identityKey: identity.username, locationId, workspacePath };
+      storeStaffResumeHint(next);
+      setResumeHint(next);
+    }
     setSelectedId(locationId);
-    storeSelectedLocationId(locationId);
+    if (workspace && workspacePath === '/') navigate('/', { replace: true });
   };
+
+  const selectHome = useCallback(() => {
+    if (!identity || !location) return;
+    explicitHomeRef.current = true;
+    const next = {
+      identityKey: identity.username,
+      locationId: location.id,
+      workspacePath: '/',
+    };
+    storeStaffResumeHint(next);
+    setResumeHint(next);
+    navigate('/');
+  }, [identity, location, navigate]);
 
   let status: StaffContextValue['status'];
   if (!canReadLocations) status = 'unavailable';
@@ -90,9 +200,17 @@ export function StaffContextProvider({ children }: PropsWithChildren) {
     organization: organizationQuery.data ?? null,
     location,
     locations: activeLocations,
+    roles,
+    permissions,
+    resumePath,
+    hasPermission,
+    selectHome,
     selectLocation,
     retry: () => { void locationsQuery.refetch(); },
-  }), [status, tenant, organizationQuery.data, location, activeLocations, locationsQuery]);
+  }), [
+    status, tenant, organizationQuery.data, location, activeLocations, roles,
+    permissions, resumePath, hasPermission, selectHome, locationsQuery,
+  ]);
 
   return <StaffContext.Provider value={value}>{children}</StaffContext.Provider>;
 }

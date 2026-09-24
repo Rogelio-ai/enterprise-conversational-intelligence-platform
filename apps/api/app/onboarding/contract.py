@@ -103,7 +103,8 @@ ONBOARDING_CONTRACT: tuple[Group, ...] = (
     Group(
         "staff", "02_Staff", "Roster, membresía, rol solicitado y alcance de ubicación; nunca credenciales.", 20,
         "tenant / location", ("staff_key", "role_name", "location_code"),
-        "models.identity.User/TenantMembership/Role/MembershipRole/MembershipLocationGrant",
+        "models.identity.User/TenantMembership/Role/MembershipRole/"
+        "MembershipLocationGrant/MembershipLocationRole",
         (
             local_key("staff_key", "Clave personal", "Referencia del empleado en la captura"),
             ref("tenant_slug", "Tenant slug", "restaurant_profile.tenant_slug", "Tenant del empleado."),

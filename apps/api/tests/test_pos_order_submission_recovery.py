@@ -49,7 +49,7 @@ def _scope(
 ) -> Scope:
     tenant_id = _execute(connection, "INSERT INTO tenants (name,slug,status) VALUES ('POS Tenant',%s,'ACTIVE')", (prefix,))
     email = f'{prefix}@example.test'
-    user_id = _execute(connection, "INSERT INTO users (email,password_hash,display_name,status) VALUES (%s,%s,'Staff','ACTIVE')", (email, hash_password(PASSWORD)))
+    user_id = _execute(connection, "INSERT INTO users (username,email,password_hash,display_name,status) VALUES (%s,%s,%s,'Staff','ACTIVE')", (prefix.casefold(), email, hash_password(PASSWORD)))
     membership_id = _execute(connection, "INSERT INTO tenant_memberships (tenant_id,user_id,status) VALUES (%s,%s,'ACTIVE')", (tenant_id, user_id))
     role_id = _execute(connection, "INSERT INTO roles (tenant_id,name,description,status) VALUES (%s,%s,'Role','ACTIVE')", (tenant_id, f'POS_{uuid4().hex}'))
     _execute(connection, 'INSERT INTO membership_roles (tenant_id,membership_id,role_id) VALUES (%s,%s,%s)', (tenant_id, membership_id, role_id))
@@ -79,6 +79,12 @@ def _scope(
     )
     _execute(
         connection,
+        'INSERT INTO membership_location_roles '
+        '(tenant_id,membership_id,location_id,role_id) VALUES (%s,%s,%s,%s)',
+        (tenant_id, membership_id, location_id, role_id),
+    )
+    _execute(
+        connection,
         "INSERT INTO restaurant_tax_rules (tenant_id,organization_id,location_id,"
         "tax_classification_code,jurisdiction_code,tax_category,tax_treatment,tax_rate,"
         "calculation_policy,rounding_policy,effective_from,effective_to,status) "
@@ -93,7 +99,9 @@ def _scope(
 
 
 def _headers(client: TestClient, scope: Scope) -> dict[str, str]:
-    response = client.post('/auth/login', json={'email': scope.email, 'password': PASSWORD})
+    response = client.post('/auth/login', json={
+        'username': scope.email.partition('@')[0], 'password': PASSWORD,
+    })
     assert response.status_code == 200
     return {'Authorization': f"Bearer {response.json()['access_token']}"}
 
