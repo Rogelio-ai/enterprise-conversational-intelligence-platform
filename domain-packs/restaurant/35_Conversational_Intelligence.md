@@ -4308,3 +4308,15 @@ The objective of Conversational Intelligence is not to create a system that talk
 The objective is to create a platform that understands what people mean, understands the business they are interacting with, knows what the business can actually do, safely converts intent into action, preserves continuity across every channel, and transforms every conversation into reusable enterprise intelligence.
 
 That is the capability that turns ECIP from a conversational interface into the conversational brain of the restaurant.
+
+221. MULTILINGUAL PRODUCT CONTRACT
+
+APPROVED PRODUCT REQUIREMENT
+
+Each Location has a native language. ECIP detects or resolves input language and maintains a current language independently for each user and session. Diner UI, text, voice, account and ticket output use that current language. Internal operational output uses the Location native language.
+
+Language state must remain isolated between users and sessions. Monetary values and financial meaning remain invariant across translations. Unsupported languages use a safe fallback and preserve the original input as evidence.
+
+CURRENT EXECUTABLE IMPLEMENTATION: PARTIAL
+
+Current evidence includes some language metadata and localized presentation paths, but does not certify complete detection/resolution, per-user and per-session isolation, UI/text/voice coverage, ticket/account localization, native-language internal output, or safe fallback across the complete workflow. Those gaps remain executable alignment work.

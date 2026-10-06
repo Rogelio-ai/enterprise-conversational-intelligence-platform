@@ -93,6 +93,7 @@ def test_canonical_staff_authority_provisions_profiles_idempotently_with_locatio
                             session, tenant_id, location_id, PASSWORD, created,
                             profile, f'{prefix}-{profile.casefold()}@example.test',
                             f'{profile} Test', permissions,
+                            username=f'{prefix}-{profile.casefold()}',
                         )
                     await session.flush()
 
@@ -103,6 +104,7 @@ def test_canonical_staff_authority_provisions_profiles_idempotently_with_locatio
                             session, tenant_id, location_id, PASSWORD, replay_created,
                             profile, f'{prefix}-{profile.casefold()}@example.test',
                             f'{profile} Test', permissions,
+                            username=f'{prefix}-{profile.casefold()}',
                         )
                     await session.flush()
 

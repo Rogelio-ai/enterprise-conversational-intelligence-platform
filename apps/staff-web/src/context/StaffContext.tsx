@@ -74,7 +74,9 @@ export function StaffContextProvider({ children }: PropsWithChildren) {
     (value) => value.location_id === location?.id,
   );
   const roles = authority?.roles ?? [];
-  const permissions = authority?.permissions ?? [];
+  const permissions = (authority?.permissions ?? []).filter(
+    (permission) => identity?.permissions.includes(permission),
+  );
   const hasPermission = useCallback(
     (permission: string) => permissions.includes(permission),
     [permissions],

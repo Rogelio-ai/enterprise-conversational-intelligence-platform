@@ -2359,3 +2359,10 @@ Before ECIP recommends, creates, modifies or represents a Purchase as completed,
 
 Only after these conditions are resolved may ECIP reliably use Purchasing information for replenishment, Supplier management, Inventory planning, Production support or executive decision making.
 
+---
+
+# 129. CURRENT OPERATIONAL COVERAGE
+
+Current executable evidence supports Suppliers; Purchase Orders and lines; approval and receiving; direct and Purchase-Order-linked receiving; ordered and received quantities; receiving cost; open-order state; and suggested replenishment.
+
+These capabilities are current operational scope, not merely future intent, subject to their migrations, focused contract tests and applicable certification evidence. Older discovery language remains historical. Autonomous purchasing and optimization remain separate future capabilities.

@@ -2339,3 +2339,12 @@ Before ECIP concludes that a Cash Register, Cash Session, Employee custody or Ba
 
 Only after these conditions are resolved may ECIP reliably represent restaurant Cash as collected, held, transferred, deposited, reconciled or financially accounted for.
 
+---
+
+# 128. EXPENSE BOUNDARY
+
+A Petty Cash expense belongs to Cash Management and must preserve the cash movement, amount, purpose, actor, time, Location and supporting evidence required by cash-control policy.
+
+General Expenses are a required financial capability, but their full domain contract remains pending. That later contract must define categories, approvals, evidence, vendor and purchase relationships, accrual versus payment, lifecycle, accounting ownership and reporting.
+
+The presence of Petty Cash expense recording does not establish a complete standalone Expense domain.

@@ -5552,6 +5552,344 @@ def test_0065_staff_auth_session_migration_is_portable_and_reversible(
     _run_alembic(database_name, revision)
 
 
+def test_0066_table_management_migration_is_portable_and_reversible(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    previous_revision = '0065_staff_auth_session_foundation'
+    revision = '0066_restaurant_table_management'
+    tables = (
+        'dining_sections',
+        'restaurant_table_profiles',
+        'table_group_memberships',
+        'table_group_responsible_waiters',
+        'table_groups',
+        'table_management_history',
+    )
+    expected_constraints = {
+        'ck_dining_sections_status',
+        'ck_restaurant_table_profiles_admin_status',
+        'ck_restaurant_table_profiles_capacity',
+        'ck_restaurant_table_profiles_movable',
+        'ck_restaurant_table_profiles_version',
+        'ck_table_group_memberships_active_slot',
+        'ck_table_group_memberships_lifecycle',
+        'ck_table_group_memberships_representative',
+        'ck_table_groups_active_slot',
+        'ck_table_groups_lifecycle',
+        'ck_table_groups_status',
+        'ck_table_groups_version',
+        'ck_table_management_history_event_type',
+        'ck_table_management_history_version',
+        'fk_dining_sections_location_scope',
+        'fk_restaurant_table_profiles_resource_scope',
+        'fk_restaurant_table_profiles_section_scope',
+        'fk_table_group_memberships_group_scope',
+        'fk_table_group_memberships_table_scope',
+        'fk_table_group_responsible_waiters_group_scope',
+        'fk_table_group_responsible_waiters_waiter',
+        'fk_table_groups_closer',
+        'fk_table_groups_creator',
+        'fk_table_groups_representative_scope',
+        'fk_table_management_history_actor',
+        'fk_table_management_history_group_scope',
+        'uq_dining_sections_location_code',
+        'uq_dining_sections_scope',
+        'uq_restaurant_table_profiles_resource',
+        'uq_table_group_memberships_table_active',
+        'uq_table_group_responsible_waiters',
+        'uq_table_groups_representative_active',
+        'uq_table_groups_scope',
+    }
+    expected_indexes = {
+        'ix_dining_sections_location_status',
+        'ix_restaurant_table_profiles_section',
+        'ix_table_group_memberships_group_active',
+        'ix_table_groups_location_status',
+        'ix_table_management_history_group',
+        'ix_table_management_history_location_time',
+    }
+
+    _run_alembic(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES "
+                "('Table Migration Tenant','table-migration-tenant','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO roles (tenant_id,name,status) VALUES "
+                "(%s,'TENANT_ADMIN','ACTIVE')",
+                (tenant_id,),
+            )
+            admin_role_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            placeholders = ','.join(('%s',) * len(tables))
+            cursor.execute(
+                'SELECT TABLE_NAME AS inspected_table_name, '
+                'ENGINE AS inspected_engine, '
+                'TABLE_COLLATION AS inspected_table_collation '
+                'FROM information_schema.TABLES '
+                f'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ({placeholders}) '
+                'ORDER BY TABLE_NAME',
+                tables,
+            )
+            rows = cursor.fetchall()
+            actual_tables = {row['inspected_table_name'] for row in rows}
+            assert len(rows) == len(tables)
+            assert actual_tables == set(tables)
+            assert {row['inspected_engine'] for row in rows} == {'InnoDB'}
+            assert {
+                row['inspected_table_collation'] for row in rows
+            } == {'utf8mb4_unicode_ci'}
+            cursor.execute(
+                'SELECT CONSTRAINT_NAME AS inspected_constraint_name '
+                'FROM information_schema.TABLE_CONSTRAINTS '
+                f'WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME IN ({placeholders})',
+                tables,
+            )
+            constraints = {
+                row['inspected_constraint_name'] for row in cursor.fetchall()
+            }
+            assert expected_constraints <= constraints
+            cursor.execute(
+                'SELECT DISTINCT INDEX_NAME AS inspected_index_name '
+                'FROM information_schema.STATISTICS '
+                f'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ({placeholders})',
+                tables,
+            )
+            indexes = {row['inspected_index_name'] for row in cursor.fetchall()}
+            assert expected_indexes <= indexes
+            cursor.execute(
+                'SELECT COLLATION_NAME AS inspected_collation_name '
+                'FROM information_schema.COLUMNS '
+                "WHERE TABLE_SCHEMA=DATABASE() AND "
+                "TABLE_NAME='table_management_history' AND COLUMN_NAME='event_type'"
+            )
+            assert cursor.fetchone()['inspected_collation_name'] == 'ascii_bin'
+            cursor.execute(
+                'SELECT id,name,status FROM tenants WHERE id=%s', (tenant_id,),
+            )
+            assert cursor.fetchone() == {
+                'id': tenant_id,
+                'name': 'Table Migration Tenant',
+                'status': 'ACTIVE',
+            }
+            cursor.execute(
+                'SELECT rp.role_id,p.code FROM permissions p '
+                'JOIN role_permissions rp ON rp.permission_id=p.id '
+                'WHERE p.code=%s',
+                ('table_management.manage',),
+            )
+            assert cursor.fetchone() == {
+                'role_id': admin_role_id,
+                'code': 'table_management.manage',
+            }
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == revision
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            placeholders = ','.join(('%s',) * len(tables))
+            cursor.execute(
+                'SELECT COUNT(*) AS amount FROM information_schema.TABLES '
+                f'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ({placeholders})',
+                tables,
+            )
+            assert cursor.fetchone()['amount'] == 0
+            cursor.execute(
+                'SELECT COUNT(*) AS amount FROM permissions WHERE code=%s',
+                ('table_management.manage',),
+            )
+            assert cursor.fetchone()['amount'] == 0
+            cursor.execute(
+                'SELECT id,name,status FROM tenants WHERE id=%s', (tenant_id,),
+            )
+            assert cursor.fetchone() == {
+                'id': tenant_id,
+                'name': 'Table Migration Tenant',
+                'status': 'ACTIVE',
+            }
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == previous_revision
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            placeholders = ','.join(('%s',) * len(tables))
+            cursor.execute(
+                'SELECT TABLE_NAME AS inspected_table_name '
+                'FROM information_schema.TABLES '
+                f'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ({placeholders})',
+                tables,
+            )
+            assert {
+                row['inspected_table_name'] for row in cursor.fetchall()
+            } == set(tables)
+            cursor.execute(
+                'SELECT COUNT(*) AS amount FROM tenants WHERE id=%s', (tenant_id,),
+            )
+            assert cursor.fetchone()['amount'] == 1
+            cursor.execute(
+                'SELECT COUNT(*) AS amount FROM permissions p '
+                'JOIN role_permissions rp ON rp.permission_id=p.id '
+                'WHERE p.code=%s AND rp.role_id=%s',
+                ('table_management.manage', admin_role_id),
+            )
+            assert cursor.fetchone()['amount'] == 1
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == revision
+    finally:
+        connection.close()
+
+
+def test_0067_internal_message_migration_is_portable_and_reversible(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    previous_revision = '0066_restaurant_table_management'
+    revision = '0067_internal_operational_message_foundation'
+    tables = (
+        'internal_operational_messages',
+        'internal_operational_message_responses',
+        'internal_operational_message_history',
+    )
+    permissions = (
+        'internal_message.read', 'internal_message.send', 'internal_message.respond',
+    )
+    _run_alembic(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES "
+                "('Internal Message Tenant','internal-message-migration','ACTIVE')"
+            )
+            tenant_id = int(cursor.lastrowid)
+            cursor.execute(
+                "INSERT INTO roles (tenant_id,name,status) VALUES "
+                "(%s,'TENANT_ADMIN','ACTIVE')",
+                (tenant_id,),
+            )
+            admin_role_id = int(cursor.lastrowid)
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            placeholders = ','.join(('%s',) * len(tables))
+            cursor.execute(
+                'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION FROM information_schema.TABLES '
+                f'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ({placeholders})',
+                tables,
+            )
+            rows = cursor.fetchall()
+            assert {row['TABLE_NAME'] for row in rows} == set(tables)
+            assert {row['ENGINE'] for row in rows} == {'InnoDB'}
+            assert {row['TABLE_COLLATION'] for row in rows} == {'utf8mb4_unicode_ci'}
+            cursor.execute(
+                'SELECT CONSTRAINT_NAME FROM information_schema.TABLE_CONSTRAINTS '
+                f'WHERE CONSTRAINT_SCHEMA=DATABASE() AND TABLE_NAME IN ({placeholders})',
+                tables,
+            )
+            constraints = {row['CONSTRAINT_NAME'] for row in cursor.fetchall()}
+            assert {
+                'ck_internal_messages_enterado',
+                'ck_internal_messages_lifecycle',
+                'fk_internal_messages_location_scope',
+                'fk_internal_messages_creator',
+                'fk_internal_messages_recipient',
+                'fk_internal_message_responses_message_scope',
+                'fk_internal_message_history_message_scope',
+                'uq_internal_messages_create_replay',
+                'uq_internal_message_responses_replay',
+                'uq_internal_message_history_sequence',
+            } <= constraints
+            cursor.execute(
+                'SELECT DISTINCT INDEX_NAME FROM information_schema.STATISTICS '
+                f'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ({placeholders})',
+                tables,
+            )
+            indexes = {row['INDEX_NAME'] for row in cursor.fetchall()}
+            assert {
+                'ix_internal_messages_sent', 'ix_internal_messages_inbox',
+                'ix_internal_message_responses_message',
+                'ix_internal_message_history_message',
+            } <= indexes
+            cursor.execute(
+                'SELECT p.code,rp.role_id FROM permissions p '
+                'JOIN role_permissions rp ON rp.permission_id=p.id '
+                'WHERE p.code IN (%s,%s,%s) ORDER BY p.code',
+                permissions,
+            )
+            assert cursor.fetchall() == [
+                {'code': code, 'role_id': admin_role_id} for code in sorted(permissions)
+            ]
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == revision
+    finally:
+        connection.close()
+
+    _run_alembic_downgrade(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            placeholders = ','.join(('%s',) * len(tables))
+            cursor.execute(
+                'SELECT COUNT(*) AS amount FROM information_schema.TABLES '
+                f'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ({placeholders})',
+                tables,
+            )
+            assert cursor.fetchone()['amount'] == 0
+            cursor.execute(
+                'SELECT COUNT(*) AS amount FROM permissions '
+                'WHERE code IN (%s,%s,%s)',
+                permissions,
+            )
+            assert cursor.fetchone()['amount'] == 0
+            cursor.execute('SELECT COUNT(*) AS amount FROM tenants WHERE id=%s', (tenant_id,))
+            assert cursor.fetchone()['amount'] == 1
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == previous_revision
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT COUNT(*) AS amount FROM permissions p '
+                'JOIN role_permissions rp ON rp.permission_id=p.id '
+                'WHERE p.code IN (%s,%s,%s) AND rp.role_id=%s',
+                (*permissions, admin_role_id),
+            )
+            assert cursor.fetchone()['amount'] == 3
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == revision
+    finally:
+        connection.close()
+
+
 def test_0040_location_grants_are_portable_reversible_and_never_backfilled(
     isolated_database,
     integration_settings: Settings,

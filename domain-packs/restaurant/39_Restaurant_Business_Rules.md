@@ -4847,3 +4847,18 @@ MANAGEMENT BY EXCEPTION
 INCREASINGLY AUTONOMOUS RESTAURANT OPERATIONS
 
 The Restaurant Business Rules therefore become the semantic control system of the Restaurant Intelligence Platform.
+
+---
+
+# 201. SOURCE-OF-TRUTH CONFLICT RULE
+
+When documentation and executable behavior conflict:
+
+1. Identify the highest natural authoritative owner.
+2. Separate documented truth from executable evidence.
+3. Apply the explicit approved product or domain decision.
+4. Align the owning authority.
+5. Then align code, tests and UX.
+6. Certify the resulting contract.
+
+Code is evidence; it does not automatically override product or domain truth. Documentation must likewise distinguish an approved product contract from current executable implementation and must not claim unimplemented behavior as current.

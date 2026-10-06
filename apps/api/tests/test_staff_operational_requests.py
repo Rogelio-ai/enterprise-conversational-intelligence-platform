@@ -222,7 +222,10 @@ def test_diner_request_is_the_same_staff_listed_read_and_completed_object(
     scope = _scope(connection, prefix)
     membership_id = _enable_staff(connection, scope)
     with TestClient(create_app(settings=integration_settings)) as client:
-        _, diner_headers = _open_and_join(client, scope, name='Safe Diner Name')
+        staff_headers = _staff_headers(client, scope)
+        _, diner_headers = _open_and_join(
+            client, scope, name='Safe Diner Name', staff_headers=staff_headers,
+        )
         created = client.post(
             '/diner/operational-requests',
             headers={**diner_headers, 'Idempotency-Key': 'staff-interoperability'},
@@ -230,7 +233,6 @@ def test_diner_request_is_the_same_staff_listed_read_and_completed_object(
         )
         assert created.status_code == 201, created.text
         request_id = created.json()['id']
-        staff_headers = _staff_headers(client, scope)
         path = f'/staff/operational-requests?location_id={scope.location_id}'
 
         listing = client.get(path, headers=staff_headers)

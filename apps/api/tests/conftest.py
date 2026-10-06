@@ -158,6 +158,21 @@ def sql_connection(integration_settings: Settings):
                 (f'{prefix}%',),
             )
             cursor.execute(
+                'DELETE FROM internal_operational_message_history WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM internal_operational_message_responses WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM internal_operational_messages WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
                 'DELETE FROM operational_request_waiter_states WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),
@@ -457,6 +472,19 @@ def sql_connection(integration_settings: Settings):
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),
             )
+            for table in (
+                'table_management_history',
+                'table_group_responsible_waiters',
+                'table_group_memberships',
+                'table_groups',
+                'restaurant_table_profiles',
+                'dining_sections',
+            ):
+                cursor.execute(
+                    f'DELETE FROM {table} WHERE tenant_id IN '
+                    '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                    (f'{prefix}%',),
+                )
             cursor.execute(
                 'DELETE FROM resources WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',

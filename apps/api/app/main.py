@@ -32,6 +32,7 @@ from app.api.routes.inventory_fifo_transfers import router as inventory_b11_rout
 from app.api.routes.inventory_losses import router as inventory_losses_router
 from app.api.routes.inventory_counting import router as inventory_counting_router
 from app.api.routes.inventory_intelligence import router as inventory_intelligence_router
+from app.api.routes.internal_messages import router as internal_messages_router
 from app.api.routes.identity_invitations import router as identity_invitations_router
 from app.api.routes.identity_access import router as identity_access_router
 from app.api.routes.menus import router as menus_router
@@ -54,6 +55,7 @@ from app.api.routes.restaurant_checks import router as restaurant_checks_router
 from app.api.routes.restaurant_payments import router as restaurant_payments_router
 from app.api.routes.staff_operational_requests import router as staff_operational_requests_router
 from app.api.routes.table_waiter_assignments import router as table_waiter_assignments_router
+from app.api.routes.table_management import router as table_management_router
 from app.api.routes.tenants import router as tenants_router
 from app.api.routes.waiter_operational_requests import router as waiter_operational_requests_router
 from app.core.config import Settings, get_settings
@@ -212,6 +214,8 @@ def create_app(
     app.include_router(inventory_intelligence_router)
     app.include_router(resources_router)
     app.include_router(table_waiter_assignments_router)
+    app.include_router(table_management_router)
+    app.include_router(internal_messages_router)
     app.include_router(cash_sessions_router)
     app.include_router(restaurant_service_sessions_router)
     app.include_router(diner_sessions_router)

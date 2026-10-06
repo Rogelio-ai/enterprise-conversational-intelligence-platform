@@ -401,9 +401,9 @@ Seat-level management remains optional.
 
 ---
 
-# 21. HOST
+# 21. RECEPTION
 
-A Host may participate in:
+Reception may participate in:
 
 * Arrival.
 * Reservation check-in.
@@ -411,7 +411,7 @@ A Host may participate in:
 * Seating.
 * Table assignment.
 
-ECIP may assist the Host by providing relevant Customer and Operational Context.
+ECIP may assist Reception by providing relevant Customer and Operational Context.
 
 ---
 
@@ -1208,7 +1208,7 @@ ECIP recognizes:
 - Usually prefers quiet seating
 - Previous visit had resolved complaint
 
-Host context:
+Reception context:
 Relevant information available without exposing unnecessary private history.
 ```
 
@@ -1310,7 +1310,7 @@ Predictions shall preserve uncertainty.
 Dine-In state may support:
 
 * Waiter workload.
-* Host workload.
+* Reception workload.
 * Dining Area staffing.
 * Service bottleneck detection.
 
@@ -1438,7 +1438,7 @@ Reservation authority
 ECIP:
 Conversation and contextual orchestration
 
-Host System:
+Reception System:
 Table state, if externally managed
 ```
 
@@ -1771,3 +1771,58 @@ Before ECIP makes or executes a Dine-In commitment, it shall be able to determin
 
 Only after these conditions are resolved may ECIP reliably coordinate the in-restaurant dining experience.
 
+---
+
+# 99. TABLE AND TABLEGROUP PRODUCT CONTRACT
+
+## Approved product contract
+
+Operational Table states are AVAILABLE, OCCUPIED, RESERVED, PARTIAL_PAYMENT and FINAL_PAYMENT. Administrative states are SUSPENDED, OUT_OF_SERVICE and RETIRED. Administrative state must not be collapsed into an operational state.
+
+A TableGroup is created by selecting its representative Table first and joining at least one additional eligible AVAILABLE Table. Individual Table identities remain intact and the representative identifies the group. The Waiter may add or remove Tables and dissolve the group only while preserving these invariants; all group changes and movements are audited.
+
+Group capacity is authoritative in the backend/domain and is calculated as:
+
+`cg = sumcom - (nmu * 2)`
+
+where `nmu` is the number of additional joined Tables, excluding the representative. The frontend must not independently calculate authoritative capacity. Canonical preview and CREATE use the same authority, and CREATE revalidates current state.
+
+Tables are movable by default unless Table or Section configuration forbids movement. Same-Location Section movement is audited. A grouped Table must leave its group before an individual move. Cross-Location movement requires no active group and Table inventory control.
+
+## Current executable implementation
+
+Cross-Location Table movement is not currently implemented. The remaining Table/TableGroup implementation and its migration are working-tree evidence until focused certification is complete; this product contract must not be read as executable certification.
+
+---
+
+# 100. TABLE PREPARATION AND OPENING
+
+## Approved product contract
+
+Reception receives diners, records party size, explicitly selects a Waiter, and sends that Waiter a table-preparation request. The request lifecycle is Solicitado, Enterado, Responder and Listo; the response identifies the prepared Table or TableGroup.
+
+Reception may observe that lifecycle and the prepared assignment, but may not structurally manage Tables or TableGroups. The Waiter owns group creation, add/remove/dissolve and Table movement.
+
+Listo does not open service, occupy a Table or generate an access code. After the diners arrive at the prepared Table, the Waiter explicitly selects **Abrir mesa**. A successful open creates an OPEN ServiceSession, marks the Table OCCUPIED and generates its access code.
+
+---
+
+# 101. SERVICE ACCESS CODE
+
+The platform generates the access code automatically when the Waiter opens the Table. The code is bound to that ServiceSession and is immutable while the ServiceSession remains OPEN: it cannot be changed, regenerated, replaced or deleted.
+
+The product contract does not require an unsafe plaintext redisplay mechanism. Any display or recovery behavior must preserve credential secrecy and be defined and certified separately.
+
+## Current executable implementation
+
+Executable regeneration behavior still exists and conflicts with this approved contract. It must be removed or aligned in the executable-contract cycle; this documentation change does not certify that remediation.
+
+---
+
+# 102. PAYMENT AND SERVICE CLOSURE
+
+## Current certified executable behavior
+
+The dining flow supports account consultation and partial or final payment. Closure requires zero balance where applicable and is blocked by unresolved operational, order, preparation, payment or financial state.
+
+Before closure, the experience asks **¿Desean algo más?** YES keeps the ServiceSession OPEN. NO triggers fresh revalidation; closure occurs only if every closure invariant still holds. Recording a payment does not by itself close the ServiceSession.

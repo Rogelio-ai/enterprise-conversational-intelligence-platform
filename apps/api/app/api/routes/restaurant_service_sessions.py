@@ -116,6 +116,7 @@ def _error(exc: Exception) -> HTTPException:
         exc,
         (
             errors.ResourceAlreadyOccupiedError,
+            errors.TableUnavailableError,
             errors.ServiceStaffingConflictError,
             errors.ServiceSessionClosedError,
             errors.PartySizeConflictError,

@@ -38,6 +38,7 @@ from app.restaurant import (
     menu_provisioning,
     menu_section_provisioning,
     resource_provisioning,
+    table_management,
 )
 from app.restaurant.inventory import receiving
 from app.restaurant.inventory import service as inventory_service
@@ -88,7 +89,10 @@ AUTHORITY_BY_GROUP = {
     'uom_conversions': 'restaurant.inventory.service.append_item_uom_conversion',
     'suppliers': 'restaurant.inventory.receiving.create/update_supplier',
     'supplier_offerings': 'restaurant.inventory.receiving.create/update_offering',
-    'resources': 'restaurant.resource_provisioning.provision_resource',
+    'resources': (
+        'restaurant.resource_provisioning.provision_resource + '
+        'restaurant.table_management table metadata provisioning'
+    ),
     'preparation_configuration': (
         'restaurant.preparation.configuration_provisioning.provision_configuration'
     ),
@@ -346,6 +350,14 @@ async def build_import_plan(
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'inventory.supplier.manage permission is required')
     if 'resources' in populated and 'resource.manage' not in permissions:
         raise ImportRejectedError('INSUFFICIENT_PERMISSION', 'resource.manage permission is required')
+    if any(
+        row.group == 'resources' and row.values.get('dining_section_code')
+        for row in ordered_rows
+    ) and 'table_management.manage' not in permissions:
+        raise ImportRejectedError(
+            'INSUFFICIENT_PERMISSION',
+            'table_management.manage permission is required for Table metadata',
+        )
     if (
         populated & {
             'preparation_configuration', 'preparation_areas', 'preparation_routes',
@@ -501,13 +513,48 @@ async def build_import_plan(
         elif row.group == 'resources':
             blocker = None
             try:
+                metadata = any(value.get(key) is not None for key in (
+                    'dining_section_code', 'dining_section_name',
+                    'dining_section_movable', 'physical_capacity',
+                    'table_movable', 'table_administrative_status',
+                ))
+                if metadata and value['resource_type'] != 'TABLE':
+                    raise ValueError('Table metadata is only valid for TABLE resources')
+                if metadata and any(value.get(key) is None for key in (
+                    'dining_section_code', 'dining_section_name', 'physical_capacity',
+                )):
+                    raise ValueError(
+                        'Dining Section code/name and physical capacity are required together'
+                    )
+                if value.get('physical_capacity') is not None and not 1 <= value['physical_capacity'] <= 999:
+                    raise ValueError('physical_capacity must be between 1 and 999')
                 resource_plan = await resource_provisioning.plan_resource(
                     db, tenant_id=tenant_id, location_id=location.id,
                     resource_code=value['resource_code'], name=value['name'],
                     resource_type=value['resource_type'], status=value['status'],
                 )
                 operation, current_id = resource_plan.operation, resource_plan.resource_id
-            except resource_provisioning.ResourceProvisioningError as exc:
+                if metadata and current_id is not None:
+                    metadata_operation = await table_management.plan_table_profile(
+                        db, tenant_id=tenant_id,
+                        organization_id=organization.id,
+                        location_id=location.id, resource_id=current_id,
+                        dining_section_code=value['dining_section_code'],
+                        dining_section_name=value['dining_section_name'],
+                        section_movable=value.get('dining_section_movable') != 'NO',
+                        physical_capacity=value['physical_capacity'],
+                        table_movable=value.get('table_movable') != 'NO',
+                        administrative_status=(
+                            value.get('table_administrative_status') or 'ACTIVE'
+                        ),
+                    )
+                    if operation == 'UNCHANGED' and metadata_operation == 'UPDATE':
+                        operation = 'UPDATE'
+            except (
+                resource_provisioning.ResourceProvisioningError,
+                table_management.TableManagementError,
+                ValueError,
+            ) as exc:
                 operation, current_id, blocker = 'CREATE', None, str(exc)
             items.append(PlanItem(
                 row.group, row.row, row.business_key, operation,
@@ -1292,6 +1339,43 @@ async def confirm_import(
                     resource_type=value['resource_type'], status=value['status'],
                 )
                 actual_operation = result.operation
+                if value.get('dining_section_code') is not None:
+                    metadata_operation = await table_management.plan_table_profile(
+                        db, tenant_id=tenant_id,
+                        organization_id=plan.scope.organization_id,
+                        location_id=location_id, resource_id=result.resource.id,
+                        dining_section_code=value['dining_section_code'],
+                        dining_section_name=value['dining_section_name'],
+                        section_movable=value.get('dining_section_movable') != 'NO',
+                        physical_capacity=value['physical_capacity'],
+                        table_movable=value.get('table_movable') != 'NO',
+                        administrative_status=(
+                            value.get('table_administrative_status') or 'ACTIVE'
+                        ),
+                    )
+                    section = await table_management.provision_dining_section(
+                        db, tenant_id=tenant_id,
+                        organization_id=plan.scope.organization_id,
+                        location_id=location_id,
+                        code=value['dining_section_code'],
+                        name=value['dining_section_name'],
+                        movable=value.get('dining_section_movable') != 'NO',
+                    )
+                    await table_management.provision_table_profile(
+                        db, tenant_id=tenant_id,
+                        organization_id=plan.scope.organization_id,
+                        location_id=location_id,
+                        resource_id=result.resource.id,
+                        dining_section_id=section.id,
+                        physical_capacity=value['physical_capacity'],
+                        movable=value.get('table_movable') != 'NO',
+                        administrative_status=(
+                            value.get('table_administrative_status') or 'ACTIVE'
+                        ),
+                    )
+                    await db.commit()
+                    if actual_operation == 'UNCHANGED':
+                        actual_operation = metadata_operation
             elif item.group == 'preparation_configuration':
                 result = await configuration_provisioning.provision_configuration(
                     db, tenant_id=tenant_id,

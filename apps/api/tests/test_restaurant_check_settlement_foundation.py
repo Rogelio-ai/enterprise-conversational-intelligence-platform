@@ -59,7 +59,10 @@ def test_personal_check_ordering_lock_views_gratuity_freeze_and_close_guard(
     scope = _scope(connection, prefix)
     _grant_check_permissions(connection, scope.tenant_id)
     with _client(integration_settings) as client:
-        opened, diner_headers = _open_and_join(client, scope)
+        staff_headers = _staff_headers(client, scope)
+        opened, diner_headers = _open_and_join(
+            client, scope, staff_headers=staff_headers,
+        )
         order = _accepted_order(client, connection, scope, diner_headers)
         created = client.post(
             '/diner/restaurant-checks', headers={**diner_headers, 'Idempotency-Key': 'personal-check'},
@@ -117,7 +120,7 @@ def test_personal_check_ordering_lock_views_gratuity_freeze_and_close_guard(
         assert frozen.json()['status'] == 'FROZEN'
         close = client.post(
             f"/restaurant-service-sessions/{opened['id']}/close",
-            headers=_staff_headers(client, scope),
+            headers=staff_headers,
         )
         assert close.status_code == 409
         assert close.json()['error']['code'] == 'TABLE_OUTSTANDING_BALANCE_NOT_ZERO'
@@ -141,7 +144,7 @@ def test_personal_check_ordering_lock_views_gratuity_freeze_and_close_guard(
     with _client(integration_settings) as client:
         balance = client.get(
             f"/restaurant-service-sessions/{opened['id']}/outstanding-balance",
-            headers=_staff_headers(client, scope),
+            headers=staff_headers,
         )
         assert balance.status_code == 200, balance.text
         assert Decimal(balance.json()['outstanding_confirmed_balance']) == Decimal('0')

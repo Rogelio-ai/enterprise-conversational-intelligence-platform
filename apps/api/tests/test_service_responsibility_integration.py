@@ -90,10 +90,13 @@ def _scope(connection, prefix: str, *, waiter_count: int = 3) -> IntegrationScop
     )
 
 
-def _open(client: TestClient, scope: IntegrationScope):
+def _open(
+    client: TestClient, scope: IntegrationScope,
+    *, headers: dict[str, str] | None = None,
+):
     return client.post(
         f'/resources/{scope.table_id}/service-sessions',
-        headers=_login(client, scope.actor),
+        headers=headers or _login(client, scope.actor),
         json={'party_size': 2},
     )
 
@@ -130,7 +133,7 @@ def test_open_initializes_exact_table_responsible_set_and_source_version(
         assert changed.status_code == 200
         source_version = 4
 
-    opened = _open(client, scope)
+    opened = _open(client, scope, headers=headers)
     assert opened.status_code == 201, opened.text
     service_session_id = opened.json()['id']
     current = _call(
@@ -462,7 +465,7 @@ def test_concurrent_transition_and_close_preserve_lifecycle(
     assert _assign(
         client, headers, scope.location_id, scope.table_id, second, 1,
     ).status_code == 201
-    opened = _open(client, scope).json()
+    opened = _open(client, scope, headers=headers).json()
 
     async def exercise():
         manager = DatabaseManager(integration_settings)

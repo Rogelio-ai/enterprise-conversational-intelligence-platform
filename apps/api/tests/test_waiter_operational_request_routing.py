@@ -33,7 +33,7 @@ def _grant_operational_permissions(connection, membership_ids: tuple[int, ...]) 
 
 def _waiter_headers(client: TestClient, prefix: str, index: int) -> dict[str, str]:
     response = client.post('/auth/login', json={
-        'email': f'{prefix}-mp2-{index}@example.test',
+        'username': f'{prefix}-mp2-{index}'.casefold(),
         'password': PASSWORD,
     })
     assert response.status_code == 200, response.text
@@ -49,7 +49,7 @@ def _prepare(client: TestClient, connection, prefix: str):
             client, actor_headers, scope.location_id, scope.table_id, waiter_id, version,
         )
         assert assigned.status_code == 201, assigned.text
-    opened = _open(client, scope)
+    opened = _open(client, scope, headers=actor_headers)
     assert opened.status_code == 201, opened.text
     joined = client.post('/diner-sessions/join', json={
         'join_context_key': opened.json()['join_context_key'],

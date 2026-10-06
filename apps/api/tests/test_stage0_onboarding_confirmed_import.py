@@ -11,7 +11,7 @@ import pytest
 
 from app.main import create_app
 from app.onboarding.importer import coverage
-from app.onboarding.contract import CONTRACT_VERSION
+from app.onboarding.contract import CONTRACT_VERSION, ONBOARDING_CONTRACT
 from app.onboarding.xlsx import deterministic_bytes
 from app.restaurant.catalog import category_provisioning
 from app.restaurant.catalog import provisioning as product_provisioning
@@ -75,6 +75,17 @@ def _set_row(workbook, sheet: str, values: tuple[object, ...], row: int = 2) -> 
         workbook[sheet].cell(row, column, value)
 
 
+def _set_resource_value(workbook, key: str, value: object, row: int = 2) -> None:
+    resource_group = next(
+        group for group in ONBOARDING_CONTRACT if group.key == 'resources'
+    )
+    column = next(
+        index for index, field in enumerate(resource_group.fields, start=1)
+        if field.key == key
+    )
+    workbook[resource_group.sheet].cell(row, column).value = value
+
+
 def _workbook(
     tenant_slug: str, *, item_code: str = 'FLOUR', product: bool = False,
     category_product: bool = False, resource: bool = False,
@@ -118,7 +129,8 @@ def _workbook(
         ))
     if resource:
         _set_row(workbook, '03_Resources', (
-            'LOC', f'RESOURCE-{item_code}', f'Resource {item_code}', 'TABLE', 'ACTIVE',
+            'LOC', f'RESOURCE-{item_code}', f'Resource {item_code}', 'TABLE',
+            'MAIN', 'Main Dining Section', 'YES', 4, 'YES', 'ACTIVE', 'ACTIVE',
         ))
     if preparation_configuration:
         _set_row(workbook, '04_Prep_Config', ('LOC', 'PLATFORM'))
@@ -187,7 +199,7 @@ def _prepare(connection, prefix: str):
         )
     for permission in (
         'location.manage', 'inventory.manage', 'inventory.supplier.manage', 'product.manage',
-        'resource.manage', 'preparation.configure',
+        'resource.manage', 'table_management.manage', 'preparation.configure',
         'menu.manage',
         'pricing.manage',
     ):
@@ -331,9 +343,14 @@ def test_resource_import_create_update_replay_and_no_operational_session(
     assert _count(connection, 'resources', scope.tenant_id) == 1
 
     workbook = load_workbook(BytesIO(content), data_only=False)
-    workbook['03_Resources']['C2'] = 'Updated Resource'
-    workbook['03_Resources']['D2'] = 'EQUIPMENT'
-    workbook['03_Resources']['E2'] = 'INACTIVE'
+    _set_resource_value(workbook, 'name', 'Updated Resource')
+    _set_resource_value(workbook, 'resource_type', 'EQUIPMENT')
+    for key in (
+        'dining_section_code', 'dining_section_name', 'dining_section_movable',
+        'physical_capacity', 'table_movable', 'table_administrative_status',
+    ):
+        _set_resource_value(workbook, key, None)
+    _set_resource_value(workbook, 'status', 'INACTIVE')
     output = BytesIO()
     workbook.save(output)
     workbook.close()
@@ -411,7 +428,7 @@ def test_new_inactive_resource_is_plan_blocked_without_resource_write(
     headers = _headers(client, scope)
     content = _workbook(f'{prefix}-onboarding', item_code='INACTIVE', resource=True)
     workbook = load_workbook(BytesIO(content), data_only=False)
-    workbook['03_Resources']['E2'] = 'INACTIVE'
+    _set_resource_value(workbook, 'status', 'INACTIVE')
     output = BytesIO()
     workbook.save(output)
     workbook.close()

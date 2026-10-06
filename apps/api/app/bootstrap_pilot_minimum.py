@@ -71,12 +71,18 @@ FISCAL_PREFIX = 'DEMO' if DEMO_MODE else 'PREPILOT'
 
 
 OPERATIONAL_PROFILE_PERMISSIONS = {
-    'HOST': ('location.read', 'resource.read', 'restaurant_service.read'),
+    'HOST': (
+        'location.read', 'resource.read', 'resource.manage',
+        'restaurant_service.read', 'restaurant_service.manage',
+        'table_management.manage', 'internal_message.read',
+        'internal_message.send', 'internal_message.respond',
+    ),
     'WAITER': (
         'location.read', 'order_draft.read', 'order_draft.manage',
         'restaurant_service.read', 'restaurant_service.manage',
         'restaurant_order.read', 'restaurant_check.read',
-        'operational_request.read',
+        'operational_request.read', 'resource.read',
+        'internal_message.read', 'internal_message.respond',
     ),
     'KITCHEN': (
         'location.read', 'preparation.read', 'preparation.execute',
@@ -241,9 +247,9 @@ async def _grant(
 async def _staff(
     session: AsyncSession, tenant_id: int, location_id: int, password: str,
     created: list[str], role_code: str, email: str, display_name: str,
-    permission_codes: tuple[str, ...],
+    permission_codes: tuple[str, ...], *, username: str | None = None,
 ) -> TenantMembership:
-    username = role_code.casefold()
+    username = username or role_code.casefold()
     user = await _one(session, select(User).where(User.email == email), f'{role_code} user')
     if user is None:
         user = User(

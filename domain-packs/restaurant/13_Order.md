@@ -1801,3 +1801,16 @@ Before ECIP confirms or modifies an Order, it shall be able to determine:
 
 Only after these conditions are satisfied may ECIP execute the corresponding Order action.
 
+---
+
+# 100. DINER CONFIRMATION AND PREPARATION HANDOFF
+
+## Approved product contract
+
+The diner creates and confirms the Order directly. Successful confirmation is the authoritative handoff: the platform automatically routes each confirmed Item to its appropriate preparation area. The Waiter does not manually forward a confirmed diner Order.
+
+Confirmation must revalidate the Order, be safe against duplicate submission, and communicate failures without representing an unconfirmed Order as accepted. Preparation routing follows only successful confirmation.
+
+## Current executable implementation
+
+Current executable evidence includes direct diner confirmation and automatic preparation routing. Earlier planning or discovery language that describes a manual Waiter-forwarding step is historical and does not define the current product contract.

@@ -298,6 +298,102 @@ export interface EligibleWaiter {
 
 export interface EligibleWaiterListResponse { items: EligibleWaiter[] }
 
+export interface DiningSection {
+  id: number;
+  organization_id: number;
+  location_id: number;
+  code: string;
+  name: string;
+  movable: boolean;
+  status: string;
+}
+
+export interface ManagedTable {
+  resource_id: number;
+  code: string;
+  name: string;
+  physical_capacity: number | null;
+  dining_section_id: number | null;
+  dining_section_code: string | null;
+  dining_section_name: string | null;
+  administrative_status: string | null;
+  individually_movable: boolean;
+  section_movable: boolean;
+  effective_movable: boolean;
+  metadata_version: number | null;
+  operational_status: string;
+  active_group_id: number | null;
+  is_group_representative: boolean;
+}
+
+export interface TableGroup {
+  id: number;
+  representative_resource_id: number;
+  representative_code: string;
+  status: string;
+  version: number;
+  member_resource_ids: number[];
+  member_codes: string[];
+  responsible_membership_ids: number[];
+  derived_capacity: number;
+  created_by_membership_id: number;
+  created_at: string;
+  closed_by_membership_id: number | null;
+  closed_at: string | null;
+}
+
+export interface ProposedTableGroupMember {
+  resource_id: number;
+  code: string;
+  name: string;
+  physical_capacity: number;
+  is_representative: boolean;
+}
+
+export interface TableGroupPreview {
+  eligible: true;
+  representative: ProposedTableGroupMember;
+  members: ProposedTableGroupMember[];
+  derived_capacity: number;
+  assigned_membership_ids: number[];
+  automatic_responsible_membership_ids: number[];
+  responsibility_selection_required: boolean;
+}
+
+export interface InternalMessagePerson { membership_id: number; display_name: string; email: string | null }
+export interface InternalMessageSummary {
+  id: number;
+  organization_id: number;
+  location_id: number;
+  creator: InternalMessagePerson;
+  recipient: InternalMessagePerson;
+  type: 'TABLE_PREPARATION_REQUEST';
+  text: string;
+  party_size: number;
+  status: string;
+  entered_at: string | null;
+  ready_at: string | null;
+  created_at: string;
+  updated_at: string;
+  version: number;
+}
+export interface PreparedTableMember { resource_id: number; code: string; name: string; physical_capacity: number }
+export interface PreparedTable extends PreparedTableMember {
+  is_group_representative: boolean;
+  group_id: number | null;
+  members: PreparedTableMember[];
+  derived_group_capacity: number | null;
+}
+export interface InternalMessageDetail extends InternalMessageSummary {
+  enterado: { membership_id: number; entered_at: string } | null;
+  ready: { membership_id: number; ready_at: string } | null;
+  responses: Array<{ id: number; sequence: number; author: InternalMessagePerson; content: string; created_at: string }>;
+  history: Array<{ sequence: number; event_type: string; actor: InternalMessagePerson; response_id: number | null; occurred_at: string }>;
+  prepared_table: PreparedTable | null;
+  allowed_actions: Array<'ENTERADO' | 'RESPOND' | 'READY'>;
+}
+export interface InternalMessageListResponse { items: InternalMessageSummary[]; limit: number; offset: number }
+
 export interface ServiceResponsibleWaiter {
   membership_id: number;
   display_name: string;

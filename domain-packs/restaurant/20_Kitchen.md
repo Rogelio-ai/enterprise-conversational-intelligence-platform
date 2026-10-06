@@ -2064,3 +2064,18 @@ Before ECIP concludes that a Product can be prepared, an Order is delayed or a K
 
 Only after these conditions are resolved may ECIP reliably estimate, explain, recommend or execute Kitchen-related actions.
 
+---
+
+# 109. CURRENT PREPARATION PRODUCT CONTRACT
+
+## Approved product contract
+
+Each preparation area has its own operational UI. Successful diner Order confirmation automatically routes each confirmed Item to the appropriate preparation area; the Waiter does not manually forward the Order.
+
+The current preparation lifecycle remains authoritative: CREATED, QUEUED, READY_TO_START, IN_PROGRESS, READY and COMPLETED, with BLOCKED, PAUSED, CANCELLED, FAILED and REWORK_REQUIRED where applicable. Pickup and delivery are distinct operational responsibilities and must not be collapsed into one preparation action.
+
+A dedicated printer per preparation area is an approved product requirement.
+
+## Current executable implementation
+
+Current executable configuration can associate multiple destinations, so one-printer-per-area cardinality must not be claimed as implemented until the executable contract is aligned and certified.

@@ -296,7 +296,7 @@ Where appropriate, ECIP may:
 * Provide updated estimates.
 * Explain known delays.
 * Offer authorized alternatives.
-* Notify Host or Manager.
+* Notify Reception or Manager.
 * Detect risk of customer abandonment.
 
 The platform shall not invent causes.
@@ -567,7 +567,7 @@ Compliments contribute to Customer History and enterprise learning.
 
 Employee interactions may include:
 
-* Host.
+* Reception.
 * Waiter.
 * Manager.
 * Sommelier.
@@ -1849,4 +1849,3 @@ Before ECIP concludes that a Dining Experience is good, poor, at risk or require
 > Can the complete Customer journey and its operational causes be reconstructed?
 
 Only after these conditions are resolved may ECIP use the Dining Experience to personalize future interactions, guide service recovery, generate intelligence or influence business decisions.
-

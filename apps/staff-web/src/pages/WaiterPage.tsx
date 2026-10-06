@@ -4,6 +4,8 @@ import { ApiError, staffApi } from '../api/client';
 import type { StaffOperationalRequest, StaffOperationalRequestListResponse, WaiterOperationalRequestView } from '../api/contracts';
 import { useStaffContext } from '../context/StaffContext';
 import { useAuth } from '../session/AuthContext';
+import { TableManagementPanel } from '../components/TableManagementPanel';
+import { WaiterInternalInbox } from '../components/WaiterInternalInbox';
 
 const requestLabels = {
   HUMAN_ASSISTANCE: 'Ayuda al comensal',
@@ -170,6 +172,8 @@ export function WaiterPage() {
         <div><p className="eyebrow">Centro de mensajes</p><h1 id="waiter-heading">Solicitudes</h1><p>Atención compartida de {location?.name}. Cada acción se confirma con el estado canónico.</p></div>
         <button className="secondary-button" type="button" onClick={() => void requests.refetch()} disabled={requests.isFetching}>{requests.isFetching && !requests.isPending ? 'Actualizando…' : 'Actualizar'}</button>
       </header>
+      <WaiterInternalInbox />
+      <TableManagementPanel title="Preparar o unir mesas" />
       <div className="message-view-tabs" role="tablist" aria-label="Vista del centro de mensajes">
         {(['active', 'hidden'] as const).map((value) => <button key={value} type="button" role="tab" aria-selected={view === value} className={view === value ? 'active' : ''} onClick={() => { setView(value); setFeedback(null); }}>{value === 'active' ? 'ACTIVOS' : 'OCULTOS'}</button>)}
       </div>

@@ -34,6 +34,11 @@ from app.models.identity import (
     User,
 )
 from app.models.intelligence import IntelligenceDerivation, RestaurantMessageIntent
+from app.models.internal_operational_message import (
+    InternalOperationalMessage,
+    InternalOperationalMessageHistory,
+    InternalOperationalMessageResponse,
+)
 from app.models.inventory import (
     GoodsReceipt,
     GoodsReceiptLine,
@@ -106,6 +111,14 @@ from app.models.table_waiter_assignment import (
     TableWaiterAssignment,
     TableWaiterAssignmentAudit,
 )
+from app.models.table_management import (
+    DiningSection,
+    RestaurantTableProfile,
+    TableGroup,
+    TableGroupMembership,
+    TableGroupResponsibleWaiter,
+    TableManagementHistory,
+)
 from app.models.restaurant_service import DinerSession, RestaurantServiceSession
 from app.models.restaurant_order import (
     RestaurantOrder,
@@ -172,6 +185,12 @@ __all__ = [
     'CustomerFiscalProfile',
     'DinerOperationalRequest',
     'OperationalRequestWaiterState',
+    'DiningSection',
+    'RestaurantTableProfile',
+    'TableGroup',
+    'TableGroupMembership',
+    'TableGroupResponsibleWaiter',
+    'TableManagementHistory',
     'Conversation',
     'ConversationMessage',
     'ConversationParticipant',
@@ -188,6 +207,9 @@ __all__ = [
     'Location',
     'IntelligenceDerivation',
     'InventoryItem',
+    'InternalOperationalMessage',
+    'InternalOperationalMessageHistory',
+    'InternalOperationalMessageResponse',
     'GoodsReceipt',
     'GoodsReceiptLine',
     'InventoryLoss',

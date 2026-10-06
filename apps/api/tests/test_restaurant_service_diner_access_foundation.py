@@ -45,7 +45,12 @@ def _execute(connection, statement: str, parameters=()) -> int:
 def _scope(connection, prefix: str, *, resource_type: str = 'TABLE', resource_status: str = 'ACTIVE') -> Scope:
     tenant_id = _execute(connection, "INSERT INTO tenants (name,slug,status) VALUES ('Service Tenant',%s,'ACTIVE')", (prefix,))
     email = f'{prefix}@example.test'
-    user_id = _execute(connection, "INSERT INTO users (email,password_hash,display_name,status) VALUES (%s,%s,'Staff','ACTIVE')", (email, hash_password(PASSWORD)))
+    user_id = _execute(
+        connection,
+        "INSERT INTO users (username,email,password_hash,display_name,status) "
+        "VALUES (%s,%s,%s,'Staff','ACTIVE')",
+        (prefix.casefold(), email, hash_password(PASSWORD)),
+    )
     membership_id = _execute(connection, "INSERT INTO tenant_memberships (tenant_id,user_id,status) VALUES (%s,%s,'ACTIVE')", (tenant_id, user_id))
     role_id = _execute(connection, "INSERT INTO roles (tenant_id,name,description,status) VALUES (%s,%s,'Role','ACTIVE')", (tenant_id, f'SERVICE_{uuid4().hex}'))
     _execute(connection, 'INSERT INTO membership_roles (tenant_id,membership_id,role_id) VALUES (%s,%s,%s)', (tenant_id, membership_id, role_id))
@@ -66,6 +71,12 @@ def _scope(connection, prefix: str, *, resource_type: str = 'TABLE', resource_st
         )
         _execute(
             connection,
+            'INSERT INTO membership_location_roles '
+            '(tenant_id,membership_id,location_id,role_id) VALUES (%s,%s,%s,%s)',
+            (tenant_id, membership_id, location_id, role_id),
+        )
+        _execute(
+            connection,
             'INSERT INTO table_waiter_assignments '
             '(tenant_id,location_id,table_resource_id,waiter_membership_id,is_responsible) '
             'VALUES (%s,%s,%s,%s,1)',
@@ -75,13 +86,22 @@ def _scope(connection, prefix: str, *, resource_type: str = 'TABLE', resource_st
 
 
 def _headers(client: TestClient, scope: Scope) -> dict[str, str]:
-    response = client.post('/auth/login', json={'email': scope.email, 'password': PASSWORD})
+    response = client.post('/auth/login', json={
+        'username': scope.email.partition('@')[0], 'password': PASSWORD,
+    })
     assert response.status_code == 200
     return {'Authorization': f"Bearer {response.json()['access_token']}"}
 
 
-def _open(client: TestClient, scope: Scope, party_size: int = 4):
-    response = client.post(f'/resources/{scope.resource_id}/service-sessions', headers=_headers(client, scope), json={'party_size': party_size})
+def _open(
+    client: TestClient, scope: Scope, party_size: int = 4,
+    *, headers: dict[str, str] | None = None,
+):
+    response = client.post(
+        f'/resources/{scope.resource_id}/service-sessions',
+        headers=headers or _headers(client, scope),
+        json={'party_size': party_size},
+    )
     assert response.status_code == 201, response.text
     return response.json()
 
@@ -107,24 +127,25 @@ def test_code_generation_is_four_digit_text_and_preserves_leading_zero(monkeypat
 def test_staff_open_read_validation_regenerate_close_and_resource_lifecycle(client, sql_connection):
     connection, prefix = sql_connection
     scope = _scope(connection, prefix)
-    opened = _open(client, scope, party_size=2)
+    headers = _headers(client, scope)
+    opened = _open(client, scope, party_size=2, headers=headers)
     assert len(opened['access_code']) == 4 and opened['access_code'].isdigit()
     with connection.cursor() as cursor:
         cursor.execute('SELECT access_code_digest,status FROM restaurant_service_sessions WHERE id=%s', (opened['id'],))
         persisted = cursor.fetchone()
     assert persisted['access_code_digest'] != opened['access_code']
     assert opened['access_code'] not in persisted['access_code_digest']
-    current = client.get(f'/resources/{scope.resource_id}/service-sessions/current', headers=_headers(client, scope))
+    current = client.get(f'/resources/{scope.resource_id}/service-sessions/current', headers=headers)
     assert current.status_code == 200
     assert 'access_code' not in current.json() and 'access_code_digest' not in current.json()
-    assert client.post(f'/resources/{scope.resource_id}/service-sessions', headers=_headers(client, scope), json={'party_size': 2}).status_code == 409
-    regenerated = client.post(f"/restaurant-service-sessions/{opened['id']}/access-code/regenerate", headers=_headers(client, scope))
+    assert client.post(f'/resources/{scope.resource_id}/service-sessions', headers=headers, json={'party_size': 2}).status_code == 409
+    regenerated = client.post(f"/restaurant-service-sessions/{opened['id']}/access-code/regenerate", headers=headers)
     assert regenerated.status_code == 200 and regenerated.json()['access_code_version'] == 2
     assert _join(client, opened, 'Old Code').status_code == 401
     opened['access_code'] = regenerated.json()['access_code']
     joined = _join(client, opened, 'Diner')
     assert joined.status_code == 201
-    closed = client.post(f"/restaurant-service-sessions/{opened['id']}/close", headers=_headers(client, scope))
+    closed = client.post(f"/restaurant-service-sessions/{opened['id']}/close", headers=headers)
     assert closed.status_code == 200 and closed.json()['status'] == 'CLOSED'
     closed_diner = client.get(
         '/diner-session',
@@ -137,7 +158,7 @@ def test_staff_open_read_validation_regenerate_close_and_resource_lifecycle(clie
         assert cursor.fetchone()['status'] == 'ACTIVE'
         cursor.execute('SELECT COUNT(*) AS count FROM restaurant_service_sessions WHERE resource_id=%s', (scope.resource_id,))
         assert cursor.fetchone()['count'] == 1
-    reopened = _open(client, scope, party_size=1)
+    reopened = _open(client, scope, party_size=1, headers=headers)
     assert reopened['id'] != opened['id']
 
 

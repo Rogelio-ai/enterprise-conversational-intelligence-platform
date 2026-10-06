@@ -97,10 +97,13 @@ def _staff_headers(client: TestClient, scope: Scope) -> dict[str, str]:
     return {'Authorization': f"Bearer {login.json()['access_token']}"}
 
 
-def _open_and_join(client: TestClient, scope: Scope, *, name: str = 'Diner') -> tuple[dict, dict[str, str]]:
+def _open_and_join(
+    client: TestClient, scope: Scope, *, name: str = 'Diner',
+    staff_headers: dict[str, str] | None = None,
+) -> tuple[dict, dict[str, str]]:
     opened = client.post(
         f'/resources/{scope.resource_id}/service-sessions',
-        headers=_staff_headers(client, scope),
+        headers=staff_headers or _staff_headers(client, scope),
         json={'party_size': 4},
     )
     assert opened.status_code == 201, opened.text

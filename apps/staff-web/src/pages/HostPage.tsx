@@ -12,6 +12,8 @@ import type {
 } from '../api/contracts';
 import { useStaffContext } from '../context/StaffContext';
 import { useAuth } from '../session/AuthContext';
+import { ReceptionPreparationRequests } from '../components/ReceptionPreparationRequests';
+import { TableManagementPanel } from '../components/TableManagementPanel';
 
 type Feedback = { kind: 'success' | 'error' | 'conflict'; message: string };
 type Handoff = { table: Resource; sessionId: number; accessCode: string; joinContextKey: string; version: number };
@@ -364,6 +366,9 @@ export function HostPage() {
       </header>
 
       {feedback ? <div className={`host-feedback host-feedback--${feedback.kind}`} role={feedback.kind === 'success' ? 'status' : 'alert'}><strong>{feedback.kind === 'conflict' ? 'El estado cambió' : feedback.kind === 'success' ? 'Operación confirmada' : 'No se completó la operación'}</strong><span>{feedback.message}</span>{feedback.kind === 'conflict' ? <small>La vista se revalidó con el estado más reciente.</small> : null}</div> : null}
+
+      <ReceptionPreparationRequests />
+      <TableManagementPanel />
 
       <div className="host-metrics" aria-label="Resumen de mesas">
         <div><strong>{counts.available}</strong><span>Disponibles</span></div>

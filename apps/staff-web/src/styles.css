@@ -681,3 +681,43 @@ a { color: inherit; }
   text-transform: uppercase;
   white-space: nowrap;
 }
+
+.preparation-requests, .table-management-panel, .waiter-internal-inbox {
+  display: grid;
+  gap: var(--space-md);
+  margin-block: var(--space-lg);
+  padding: var(--space-lg);
+  border: 1px solid var(--color-border);
+  border-radius: var(--radius-md);
+  background: var(--color-surface);
+}
+.operational-section-heading { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-md); }
+.operational-section-heading h2, .managed-table h3, .internal-message-card h3 { margin: 0; }
+.arrival-form { display: grid; grid-template-columns: minmax(10rem,.7fr) minmax(14rem,1fr) auto; align-items: end; gap: var(--space-md); }
+.arrival-form .field { margin: 0; }
+.arrival-form select, .table-management-panel select, .waiter-internal-inbox select { min-height: 44px; padding: .65rem; color: var(--color-text-primary); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface-elevated); }
+.managed-table-grid, .internal-message-list { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,18rem),1fr)); gap: var(--space-md); }
+.managed-table, .internal-message-card { display: grid; align-content: start; gap: var(--space-sm); padding: var(--space-md); border: 1px solid var(--color-border); border-radius: var(--radius-sm); background: var(--color-surface-elevated); }
+.managed-table > header, .internal-message-card > header { display: flex; align-items: flex-start; justify-content: space-between; gap: var(--space-sm); }
+.managed-table > header > span, .message-progress { padding: .25rem .55rem; border-radius: var(--radius-pill); background: var(--color-surface-subtle); font-size: .75rem; font-weight: 800; }
+.message-progress--enterado { color: var(--color-accent); background: var(--color-accent-soft); }
+.message-progress--listo { color: var(--color-success); border: 1px solid var(--color-success); }
+.managed-table dl { display: grid; grid-template-columns: repeat(3,1fr); gap: .35rem; margin: 0; }
+.managed-table dl > div { padding: .5rem; background: var(--color-surface-subtle); }
+.managed-table dt { color: var(--color-text-secondary); font-size: .7rem; }
+.managed-table dd { margin: .2rem 0 0; font-weight: 800; }
+.managed-table__actions, .internal-message-card footer { display: flex; flex-wrap: wrap; gap: var(--space-xs); }
+.table-group-summary, .group-preview, .prepared-table-result { display: grid; gap: .3rem; padding: var(--space-sm); border-left: .25rem solid var(--color-accent); background: var(--color-surface-subtle); }
+.table-group-summary ul { margin: .25rem 0 0; padding-left: 1.25rem; }
+.message-responses { display: grid; gap: .35rem; margin: 0; padding-left: 1.3rem; }
+.message-responses small { display: block; color: var(--color-text-secondary); }
+.prepared-table-members { margin: .2rem 0; padding-left: 1.25rem; }
+.operational-notice { margin: 0; padding: .75rem; border: 1px solid; border-radius: var(--radius-sm); }
+.operational-notice--success { color: var(--color-success); }
+.operational-notice--error { color: var(--color-danger); }
+
+@media (max-width: 48rem) {
+  .arrival-form { grid-template-columns: 1fr; }
+  .operational-section-heading { flex-direction: column; }
+  .managed-table dl { grid-template-columns: 1fr; }
+}

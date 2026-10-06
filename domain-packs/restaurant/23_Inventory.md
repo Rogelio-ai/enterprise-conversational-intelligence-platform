@@ -1955,3 +1955,10 @@ Before ECIP concludes that stock is available, unavailable, low, excess or suita
 
 Only after these conditions are resolved may ECIP reliably use Inventory information for Product offerability, Production, Purchasing, Customer commitments or business intelligence.
 
+---
+
+# 111. CURRENT OPERATIONAL COVERAGE
+
+Current executable evidence supports warehouses; governed Recipe-based consumption; stock movements; waste and loss; physical counts and reconciliation; transfers; Lots and expiration; FIFO where applicable; inventory costing and valuation; receiving costs; and suggested replenishment.
+
+These capabilities are current operational scope, not merely future intent, subject to their migrations, focused contract tests and applicable certification evidence. Autonomous optimization remains a separate future capability.

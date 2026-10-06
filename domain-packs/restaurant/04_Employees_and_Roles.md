@@ -127,7 +127,7 @@ Management
 
 Dining Room
 
-* Host
+* Reception (`HOST` may remain an internal role identifier)
 * Waiter
 * Captain
 
@@ -173,7 +173,7 @@ Restaurant Manager
 * Customer satisfaction
 * Staff supervision
 
-Host
+Reception
 
 * Welcome guests
 * Manage reservations
@@ -590,3 +590,38 @@ Implementations shall preserve the semantics defined in this model while remaini
 * Restaurant Resources Model
 * Canonical Enterprise Intelligence Model
 
+---
+
+# 27. STAFF ACCESS CONTRACT
+
+## Approved product contract
+
+Staff access uses username and password. Only one active authenticated Staff session is allowed per Employee; a second concurrent login must be rejected.
+
+When the Employee belongs to one Location, that Location is selected automatically. When the Employee belongs to multiple Locations, the Employee selects the Location before entering the operational experience. Roles and permissions are evaluated in the selected Location scope.
+
+The Staff experience does not expose forgot-password, change-password or password-management interfaces. This is a product boundary, not permission to weaken credential storage or authentication controls.
+
+## Current executable implementation
+
+Current executable evidence supports username-and-password Staff access, rejection of a second concurrent login, automatic selection for one Location, explicit selection for multiple Locations, and Location-scoped roles and permissions. The Staff UI exposes no forgot-password, change-password or password-management flow. Focused executable evidence remains the authority for implementation status.
+
+---
+
+# 28. RECEPTION AND WAITER RESPONSIBILITIES
+
+## Approved product contract
+
+The user-visible role name is **Recepción**. `HOST` may remain an internal technical identifier, but must not be presented to restaurant users.
+
+Reception:
+
+* Receives diners and captures party size.
+* Selects the Waiter explicitly.
+* Sends the table-preparation request to that Waiter.
+* Observes the request states Solicitado, Enterado and Listo.
+* Sees the prepared Table or TableGroup.
+
+Reception must not create TableGroups, add or remove Tables, dissolve groups, move Tables, or otherwise manage Table or TableGroup structure. The Waiter owns those operational actions.
+
+Listo records preparation completion only. It does not open a ServiceSession, mark a Table OCCUPIED or generate a diner access code.

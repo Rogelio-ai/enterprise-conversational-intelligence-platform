@@ -152,6 +152,14 @@ async def open_service_session(
         )
         if current is not None:
             raise errors.ResourceAlreadyOccupiedError('Resource already has an open Service Session')
+        from app.restaurant import table_management as table_management_service
+        try:
+            await table_management_service.assert_table_can_open_service(
+                db, tenant_id=tenant_id, location_id=location.id,
+                resource_id=resource.id,
+            )
+        except table_management_service.TableManagementConflictError as exc:
+            raise errors.TableUnavailableError(str(exc)) from exc
         try:
             staffing = await table_waiter_service.get_locked_service_opening_responsibility_source(
                 db,
@@ -699,6 +707,11 @@ async def close_service_session(
         _reset_failures(session)
         session.closed_by_membership_id = membership_id
         session.closed_at = now
+        from app.restaurant import table_management as table_management_service
+        await table_management_service.close_group_for_service_session(
+            db, session=session, actor_membership_id=membership_id,
+            correlation_id=correlation_id,
+        )
         await db.commit()
         await db.refresh(session)
     except OperationalError as exc:

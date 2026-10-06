@@ -4,7 +4,7 @@
 **Document Type:** Authoritative Frontend Design, UX, Interaction, Experience, Boundary and Change-Control Rules
 **Status:** ACTIVE — AUTHORITATIVE
 **Initial Scope:** Diner Experience
-**Future Scope:** Diner, Host, Waiter, Kitchen, Cashier, Manager and future operational interfaces
+**Future Scope:** Diner, Reception, Waiter, Kitchen, Cashier, Manager and future operational interfaces
 **Applies To:** Frontend architecture, frontend functionality, frontend design, frontend/backend boundaries, UX implementation and Codex-assisted frontend changes
 
 ---
@@ -578,6 +578,16 @@ Avoid:
 * dense administrative terminology.
 
 Prices and important totals MUST be visually easy to identify.
+
+---
+
+# 23A. UNIVERSAL USER-VISIBLE LANGUAGE
+
+All user-visible language MUST be clear, colloquial, concise and understandable without technical knowledge across a broad age range. It must not infantilize the user.
+
+Technical identifiers may remain internal, but they do not authorize technical labels in the interface. Translate them into natural restaurant language or omit them when they add no user value. In restaurant UI, use **Recepción** instead of Host, **Grupo de mesas** instead of TableGroup, and **Sucursal** instead of Location.
+
+Do not expose terms such as ServiceSession, tenant, membership, canonical, workspace or v0 when a natural expression or omission is better.
 
 ---
 
@@ -2209,7 +2219,7 @@ This boundary is mandatory.
 The same design foundation will later support:
 
 ```text
-HOST
+RECEPTION
 WAITER
 KITCHEN
 CASHIER

@@ -51,6 +51,12 @@ import type {
   EligibleWaiterListResponse,
   ServiceResponsibility,
   ServiceResponsibilityHistory,
+  DiningSection,
+  ManagedTable,
+  TableGroup,
+  TableGroupPreview,
+  InternalMessageDetail,
+  InternalMessageListResponse,
 } from './contracts';
 import { readCredential } from '../session/storage';
 
@@ -223,6 +229,54 @@ export const staffApi = {
   },
   eligibleTableWaiters(locationId: number): Promise<EligibleWaiterListResponse> {
     return request(`/locations/${locationId}/tables/eligible-waiters`);
+  },
+  managedTables(locationId: number): Promise<{ items: ManagedTable[] }> {
+    return request(`/locations/${locationId}/table-management/tables`);
+  },
+  diningSections(locationId: number): Promise<{ items: DiningSection[] }> {
+    return request(`/locations/${locationId}/table-management/sections`);
+  },
+  activeTableGroup(locationId: number, representativeResourceId: number): Promise<TableGroup | null> {
+    return request(`/locations/${locationId}/table-management/tables/${representativeResourceId}/active-group`);
+  },
+  previewTableGroup(locationId: number, representativeResourceId: number, joinedResourceIds: number[]): Promise<TableGroupPreview> {
+    return request(`/locations/${locationId}/table-management/groups:preview`, { method: 'POST', body: JSON.stringify({ representative_resource_id: representativeResourceId, joined_resource_ids: joinedResourceIds }) });
+  },
+  createTableGroup(locationId: number, representativeResourceId: number, joinedResourceIds: number[], responsibleMembershipIds: number[]): Promise<TableGroup> {
+    return request(`/locations/${locationId}/table-management/groups`, { method: 'POST', body: JSON.stringify({ representative_resource_id: representativeResourceId, joined_resource_ids: joinedResourceIds, responsible_membership_ids: responsibleMembershipIds }) });
+  },
+  addTableToGroup(locationId: number, groupId: number, tableResourceId: number, expectedVersion: number): Promise<TableGroup> {
+    return request(`/locations/${locationId}/table-management/groups/${groupId}/tables`, { method: 'POST', body: JSON.stringify({ table_resource_id: tableResourceId, expected_version: expectedVersion }) });
+  },
+  removeTableFromGroup(locationId: number, groupId: number, tableResourceId: number, expectedVersion: number): Promise<TableGroup> {
+    return request(`/locations/${locationId}/table-management/groups/${groupId}/tables/${tableResourceId}:remove`, { method: 'POST', body: JSON.stringify({ expected_version: expectedVersion }) });
+  },
+  dissolveTableGroup(locationId: number, groupId: number, expectedVersion: number): Promise<TableGroup> {
+    return request(`/locations/${locationId}/table-management/groups/${groupId}:dissolve`, { method: 'POST', body: JSON.stringify({ expected_version: expectedVersion }) });
+  },
+  moveManagedTable(locationId: number, tableResourceId: number, destinationSectionId: number, expectedVersion: number): Promise<ManagedTable> {
+    return request(`/locations/${locationId}/table-management/tables/${tableResourceId}:move-section`, { method: 'POST', body: JSON.stringify({ destination_section_id: destinationSectionId, expected_version: expectedVersion }) });
+  },
+  sentInternalMessages(locationId: number): Promise<InternalMessageListResponse> {
+    return request(`/locations/${locationId}/internal-messages/sent?limit=50&offset=0`);
+  },
+  internalMessageInbox(locationId: number): Promise<InternalMessageListResponse> {
+    return request(`/locations/${locationId}/internal-messages/inbox?limit=50&offset=0`);
+  },
+  internalMessage(locationId: number, messageId: number): Promise<InternalMessageDetail> {
+    return request(`/locations/${locationId}/internal-messages/${messageId}`);
+  },
+  createTablePreparationRequest(locationId: number, recipientMembershipId: number, partySize: number, key: string): Promise<InternalMessageDetail> {
+    return request(`/locations/${locationId}/internal-messages`, { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ recipient_membership_id: recipientMembershipId, type: 'TABLE_PREPARATION_REQUEST', text: `Se requiere mesa para ${partySize} personas.`, party_size: partySize }) });
+  },
+  enterInternalMessage(locationId: number, messageId: number): Promise<InternalMessageDetail> {
+    return request(`/locations/${locationId}/internal-messages/${messageId}/enterado`, { method: 'POST' });
+  },
+  respondInternalMessage(locationId: number, messageId: number, content: string, key: string): Promise<InternalMessageDetail> {
+    return request(`/locations/${locationId}/internal-messages/${messageId}/responses`, { method: 'POST', headers: { 'Idempotency-Key': key }, body: JSON.stringify({ content }) });
+  },
+  readyInternalMessage(locationId: number, messageId: number, preparedTableResourceId: number): Promise<InternalMessageDetail> {
+    return request(`/locations/${locationId}/internal-messages/${messageId}/ready`, { method: 'POST', body: JSON.stringify({ prepared_table_resource_id: preparedTableResourceId }) });
   },
   assignTableWaiter(locationId: number, tableId: number, membershipId: number, expectedVersion: number): Promise<TableWaiterAssignmentSet> {
     return request(`/locations/${locationId}/tables/${tableId}/waiter-assignments`, {

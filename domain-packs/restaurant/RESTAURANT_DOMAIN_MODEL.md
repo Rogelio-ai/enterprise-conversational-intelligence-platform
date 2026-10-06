@@ -554,3 +554,18 @@ It shall extend the canonical model exclusively through approved Domain Pack ext
 
 This separation preserves platform reusability, long-term maintainability and support for future industry-specific Domain Packs.
 
+---
+
+# SOURCE-OF-TRUTH READING INDEX
+
+Use the existing authorities in this order and according to their natural scope:
+
+* **Platform truth:** repository-level `PRODUCT_CONSTITUTION.md` and `PLATFORM_CAPABILITY_MAP.md`.
+* **Enterprise Core truth:** repository-level `CANONICAL_ENTERPRISE_INTELLIGENCE_MODEL.md`.
+* **Restaurant Domain truth:** this master document, followed by Restaurant documents 01–36 for the natural owning domain.
+* **Cross-domain Restaurant rules:** Restaurant documents 37–40.
+* **Frontend and UX truth:** `docs/frontend/FRONTEND_DESIGN_SYSTEM_AND_UX_RULES.md`.
+
+Implementation status is determined from current migrations, production code, focused contract tests and applicable certification evidence, not from the old implementation plan alone. Approved product/domain truth and current executable implementation are distinct assertions.
+
+For conflicts, apply the source-of-truth conflict rule in `39_Restaurant_Business_Rules.md`.
