@@ -42,12 +42,6 @@ class OpenedServiceSession:
 
 
 @dataclass(frozen=True)
-class RegeneratedAccessCode:
-    session: RestaurantServiceSession
-    access_code: str
-
-
-@dataclass(frozen=True)
 class JoinedDiner:
     diner: DinerSession
 
@@ -278,37 +272,6 @@ async def update_party_size(
         raise
     _event('restaurant_service_party_size_changed', session=session, correlation_id=correlation_id, previous_party_size=previous, party_size=party_size)
     return session, active_count
-
-
-async def regenerate_access_code(
-    db: AsyncSession,
-    *,
-    settings: Settings,
-    tenant_id: int,
-    session_id: int,
-    correlation_id: str | None = None,
-) -> RegeneratedAccessCode:
-    try:
-        session = await db.scalar(
-            select(RestaurantServiceSession)
-            .where(RestaurantServiceSession.id == session_id, RestaurantServiceSession.tenant_id == tenant_id)
-            .with_for_update()
-        )
-        if session is None:
-            raise errors.ServiceSessionNotFoundError('Service Session not found')
-        if session.status != 'OPEN':
-            raise errors.ServiceSessionClosedError('Service Session is closed')
-        code = generate_access_code()
-        session.access_code_version += 1
-        session.access_code_digest = _digest(settings=settings, join_context_key=session.join_context_key, access_code=code, version=session.access_code_version)
-        _reset_failures(session)
-        await db.commit()
-        await db.refresh(session)
-    except Exception:
-        await db.rollback()
-        raise
-    _event('restaurant_service_access_code_regenerated', session=session, correlation_id=correlation_id, access_code_version=session.access_code_version)
-    return RegeneratedAccessCode(session=session, access_code=code)
 
 
 def _reset_failures(session: RestaurantServiceSession) -> None:

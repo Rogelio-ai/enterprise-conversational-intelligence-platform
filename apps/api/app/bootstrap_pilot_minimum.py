@@ -72,16 +72,15 @@ FISCAL_PREFIX = 'DEMO' if DEMO_MODE else 'PREPILOT'
 
 OPERATIONAL_PROFILE_PERMISSIONS = {
     'HOST': (
-        'location.read', 'resource.read', 'resource.manage',
-        'restaurant_service.read', 'restaurant_service.manage',
-        'table_management.manage', 'internal_message.read',
+        'location.read', 'resource.read',
+        'restaurant_service.read', 'internal_message.read',
         'internal_message.send', 'internal_message.respond',
     ),
     'WAITER': (
         'location.read', 'order_draft.read', 'order_draft.manage',
         'restaurant_service.read', 'restaurant_service.manage',
         'restaurant_order.read', 'restaurant_check.read',
-        'operational_request.read', 'resource.read',
+        'operational_request.read', 'resource.read', 'table_management.manage',
         'internal_message.read', 'internal_message.respond',
     ),
     'KITCHEN': (
@@ -312,6 +311,14 @@ async def _staff(
         if assignment is None:
             session.add(RolePermission(role_id=role.id, permission_id=permission.id))
             created.append(f'{role_code}:role_permission')
+    configured_permission_ids = {permission.id for permission in permissions}
+    stale_assignments = tuple((await session.scalars(select(RolePermission).where(
+        RolePermission.role_id == role.id,
+        RolePermission.permission_id.not_in(configured_permission_ids),
+    ))).all())
+    for assignment in stale_assignments:
+        await session.delete(assignment)
+        created.append(f'{role_code}:role_permission_removed')
 
     membership_role = await _one(session, select(MembershipRole).where(
         MembershipRole.tenant_id == tenant_id,

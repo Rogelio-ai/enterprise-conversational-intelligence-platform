@@ -1,7 +1,7 @@
 import { type FormEvent, useEffect, useRef, useState } from 'react';
 import { useMutation, useQueries, useQuery, useQueryClient } from '@tanstack/react-query';
 import { ApiError, staffApi } from '../api/client';
-import type { InternalMessageDetail } from '../api/contracts';
+import type { InternalMessageDetail, OpenServiceSessionResponse } from '../api/contracts';
 import { useStaffContext } from '../context/StaffContext';
 
 function formatTime(value: string): string {
@@ -23,13 +23,15 @@ export function WaiterInternalInbox() {
   const canRead = hasPermission('internal_message.read');
   const canRespond = hasPermission('internal_message.respond');
   const canReadTables = hasPermission('resource.read');
+  const canOpenService = hasPermission('restaurant_service.manage');
   const [responseFor, setResponseFor] = useState<number | null>(null);
   const [responseText, setResponseText] = useState('');
   const [prepared, setPrepared] = useState<Record<number, string>>({});
   const [feedback, setFeedback] = useState<{ kind: 'success' | 'error'; text: string } | null>(null);
+  const [handoff, setHandoff] = useState<{ messageId: number; tableName: string; accessCode: string } | null>(null);
   const responseIntents = useRef(new Map<number, { content: string; key: string }>());
   useEffect(() => {
-    setResponseFor(null); setResponseText(''); setPrepared({}); setFeedback(null); responseIntents.current.clear();
+    setResponseFor(null); setResponseText(''); setPrepared({}); setFeedback(null); setHandoff(null); responseIntents.current.clear();
   }, [location?.id]);
   const inbox = useQuery({
     queryKey: ['internal-messages', location?.id, 'inbox'],
@@ -53,6 +55,15 @@ export function WaiterInternalInbox() {
     enabled: Boolean(location && canReadTables),
     retry: false,
     refetchInterval: 12_000,
+  });
+  const currentSessions = useQueries({
+    queries: details.map((query) => ({
+      queryKey: ['waiter', 'prepared-table-session', location?.id, query.data?.prepared_table?.resource_id ?? 'none'],
+      queryFn: () => staffApi.currentServiceSession(query.data!.prepared_table!.resource_id),
+      enabled: Boolean(location && query.data?.ready_at && query.data.prepared_table),
+      retry: false,
+      refetchInterval: query.data?.ready_at && query.data.prepared_table ? 12_000 : false,
+    })),
   });
   const representativeTables = tables.data?.items.filter((table) => table.is_group_representative && table.active_group_id) ?? [];
   const tableGroups = useQueries({
@@ -83,8 +94,25 @@ export function WaiterInternalInbox() {
       await refresh(action.messageId);
     },
     onError: async (error, action) => {
-      setFeedback({ kind: 'error', text: error instanceof ApiError && error.status === 409 ? 'El estado cambió. Mostramos la versión canónica más reciente.' : error instanceof ApiError ? error.message : 'No fue posible completar la acción.' });
+      setFeedback({ kind: 'error', text: error instanceof ApiError && error.status === 409 ? 'El estado cambió. Mostramos la información más reciente.' : error instanceof ApiError ? error.message : 'No fue posible completar la acción.' });
       if (error instanceof ApiError && (error.status === 409 || error.status === 404)) await refresh(action.messageId);
+    },
+  });
+  const openMutation = useMutation({
+    mutationFn: ({ detail }: { detail: InternalMessageDetail }) => staffApi.openServiceSession(
+      detail.prepared_table!.resource_id, detail.party_size,
+    ),
+    onSuccess: async (opened: OpenServiceSessionResponse, variables) => {
+      setHandoff({ messageId: variables.detail.id, tableName: variables.detail.prepared_table!.name, accessCode: opened.access_code });
+      setFeedback({ kind: 'success', text: `${variables.detail.prepared_table!.name} quedó abierta y ocupada.` });
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: ['waiter', 'prepared-table-session', location?.id, variables.detail.prepared_table!.resource_id] }),
+        queryClient.invalidateQueries({ queryKey: ['table-management', location?.id] }),
+      ]);
+    },
+    onError: async (error, variables) => {
+      setFeedback({ kind: 'error', text: error instanceof ApiError ? error.message : 'No fue posible abrir la mesa.' });
+      await queryClient.invalidateQueries({ queryKey: ['waiter', 'prepared-table-session', location?.id, variables.detail.prepared_table!.resource_id] });
     },
   });
   const submitResponse = (event: FormEvent, messageId: number) => {
@@ -100,7 +128,7 @@ export function WaiterInternalInbox() {
   const candidates = tables.data?.items.filter((table) => table.operational_status === 'AVAILABLE' && (!table.active_group_id || table.is_group_representative)) ?? [];
   return (
     <section className="waiter-internal-inbox" aria-labelledby="internal-inbox-heading">
-      <div className="operational-section-heading"><div><p className="eyebrow">Recepción · IMP-B</p><h2 id="internal-inbox-heading">Preparación de mesas</h2><p>Solicitudes internas separadas de la atención a comensales.</p></div><button type="button" className="secondary-button" onClick={() => void inbox.refetch()} disabled={inbox.isFetching}>Actualizar</button></div>
+      <div className="operational-section-heading"><div><p className="eyebrow">Solicitudes de Recepción</p><h2 id="internal-inbox-heading">Preparación de mesas</h2><p>Solicitudes internas separadas de la atención a comensales.</p></div><button type="button" className="secondary-button" onClick={() => void inbox.refetch()} disabled={inbox.isFetching}>Actualizar</button></div>
       {feedback ? <p className={`operational-notice operational-notice--${feedback.kind}`} role={feedback.kind === 'error' ? 'alert' : 'status'}>{feedback.text}</p> : null}
       {inbox.isPending ? <p>Cargando solicitudes internas…</p> : null}
       {inbox.isError ? <p role="alert">No fue posible consultar las solicitudes de Recepción.</p> : null}
@@ -117,6 +145,11 @@ export function WaiterInternalInbox() {
           const selectedGroup = selectedCandidate?.active_group_id
             ? tableGroups.find((query) => query.data?.id === selectedCandidate.active_group_id)?.data
             : undefined;
+          const currentSession = currentSessions[index];
+          const openEligible = Boolean(
+            canOpenService && detail.ready_at && detail.prepared_table
+            && currentSession?.isSuccess && currentSession.data === null,
+          );
           return <article className="internal-message-card" role="listitem" key={detail.id}>
             <header><div><p className="request-kind">Mesa para {detail.party_size} personas</p><h3>{detail.creator.display_name}</h3></div><span className={`message-progress message-progress--${detail.ready_at ? 'listo' : detail.entered_at ? 'enterado' : 'solicitado'}`}>{detail.ready_at ? 'Listo' : detail.entered_at ? 'Enterado' : 'Solicitado'}</span></header>
             <p>{detail.text}</p><small>Recibida {formatTime(detail.created_at)}</small>
@@ -130,7 +163,11 @@ export function WaiterInternalInbox() {
               {enterAllowed ? <button type="button" className="primary-button" disabled={mutation.isPending} onClick={() => mutation.mutate({ kind: 'enterado', messageId: detail.id })}>Enterado</button> : null}
               {respondAllowed && responseFor !== detail.id ? <button type="button" className="secondary-button" disabled={mutation.isPending} onClick={() => { setResponseFor(detail.id); setResponseText(''); }}>Responder</button> : null}
               {readyAllowed ? <button type="button" className="primary-button" disabled={!selectedTable || mutation.isPending} onClick={() => mutation.mutate({ kind: 'ready', messageId: detail.id, tableId: Number(selectedTable) })}>Listo</button> : null}
+              {openEligible ? <button type="button" className="primary-button" disabled={openMutation.isPending} onClick={() => openMutation.mutate({ detail })}>{openMutation.isPending ? 'Abriendo…' : 'Abrir mesa'}</button> : null}
             </footer>
+            {detail.ready_at && detail.prepared_table && currentSession?.isPending ? <p>Verificando si la mesa puede abrirse…</p> : null}
+            {detail.ready_at && currentSession?.data ? <p className="operational-notice operational-notice--success">Mesa abierta para este grupo.</p> : null}
+            {handoff?.messageId === detail.id ? <div className="access-handoff" role="dialog" aria-label={`Código de acceso para ${handoff.tableName}`}><p>Comparte este código con los comensales. Por seguridad, se muestra solamente al abrir la mesa.</p><div className="access-code"><span>Código de acceso</span><strong>{handoff.accessCode}</strong></div><button type="button" className="primary-button" onClick={() => setHandoff(null)}>Entendido</button></div> : null}
           </article>;
         })}
       </div>

@@ -10,8 +10,8 @@ import { storeCredential } from '../session/storage';
 import { ThemeProvider } from '../theme/ThemeContext';
 
 const location = { id: 21, tenant_id: 11, organization_id: 31, code: 'CENTRO', name: 'Sucursal Centro', timezone: 'America/Mexico_City', status: 'ACTIVE' };
-const hostPermissions = ['location.read', 'resource.read', 'resource.manage', 'restaurant_service.read', 'restaurant_service.manage', 'table_management.manage', 'internal_message.read', 'internal_message.send'];
-const waiterPermissions = ['location.read', 'resource.read', 'restaurant_service.read', 'restaurant_order.read', 'restaurant_check.read', 'operational_request.read', 'operational_request.manage', 'table_management.manage', 'internal_message.read', 'internal_message.respond'];
+const hostPermissions = ['location.read', 'resource.read', 'restaurant_service.read', 'internal_message.read', 'internal_message.send'];
+const waiterPermissions = ['location.read', 'resource.read', 'restaurant_service.read', 'restaurant_service.manage', 'restaurant_order.read', 'restaurant_check.read', 'operational_request.read', 'operational_request.manage', 'table_management.manage', 'internal_message.read', 'internal_message.respond'];
 function identity(kind: 'host' | 'waiter'): StaffIdentity {
   const permissions = kind === 'host' ? hostPermissions : waiterPermissions;
   return { user_id: 7, username: kind, email: `${kind}@example.test`, display_name: kind === 'host' ? 'Ana Recepción' : 'Luis Mesero', tenant_id: 11, membership_id: kind === 'host' ? 13 : 201, authorized_location_ids: [21], roles: [kind.toUpperCase()], permissions, location_authorities: [{ location_id: 21, roles: [kind.toUpperCase()], permissions }] };
@@ -41,6 +41,7 @@ function installApi(kind: 'host' | 'waiter', initial = detail(), options: { crea
     if (url.includes('/locations?')) return json({ items: [location], limit: 100, offset: 0 });
     if (url.includes('/resources?')) return json({ items: managedTables.map((table) => ({ id: table.resource_id, tenant_id: 11, location_id: 21, code: table.code, name: table.name, resource_type: 'TABLE', status: 'ACTIVE', created_at: message.created_at, updated_at: message.updated_at })), limit: 100, offset: 0 });
     if (/\/resources\/\d+\/service-sessions\/current$/.test(url)) return json({ detail: 'Not found' }, 404);
+    if (url.endsWith('/resources/101/service-sessions') && init?.method === 'POST') return json({ id: 801, resource_id: 101, party_size: 6, status: 'OPEN', join_context_key: 'secure-context', access_code: '4827', access_code_version: 1, opened_at: '2026-09-28T12:12:00Z' }, 201);
     if (url.endsWith('/locations/21/tables/eligible-waiters')) return json({ items: [{ membership_id: 201, display_name: 'Luis Mesero', email: 'luis@example.test' }, { membership_id: 202, display_name: 'María Mesera', email: 'maria@example.test' }] });
     const assignments = url.match(/\/locations\/21\/tables\/(\d+)\/waiter-assignments$/);
     if (assignments) {
@@ -106,30 +107,31 @@ afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 describe('IMP-C Reception and Waiter integration', () => {
   it('shows sections, capacities and the active group without exposing its technical id', async () => {
     installApi('host'); renderRoute('/host');
-    const panel = (await screen.findByRole('heading', { name: 'Organización de mesas' })).closest('section')!;
+    const panel = (await screen.findByRole('heading', { name: 'Mesas y grupos preparados' })).closest('section')!;
     const representative = within(panel).getByRole('heading', { name: '*Mesa 1' }).closest('article')!;
     expect(within(representative).getByText('Terraza')).toBeVisible();
     expect(await within(representative).findByText('Capacidad del grupo: 6')).toBeVisible();
     expect(within(representative).getByText('Mesa 2')).toBeVisible();
-    expect(within(representative).getByRole('button', { name: 'Agregar mesa' })).toBeVisible();
-    expect(within(representative).getByRole('button', { name: 'Disolver grupo' })).toBeVisible();
+    expect(within(representative).queryByRole('button', { name: 'Agregar mesa' })).not.toBeInTheDocument();
+    expect(within(representative).queryByRole('button', { name: 'Disolver grupo' })).not.toBeInTheDocument();
     const member = within(panel).getByRole('heading', { name: 'Mesa 2' }).closest('article')!;
-    expect(within(member).getByRole('button', { name: 'Retirar mesa' })).toBeVisible();
-    expect(within(member).getByRole('button', { name: 'Mover mesa' })).toBeDisabled();
-    expect(within(member).getByRole('button', { name: 'Mover mesa' })).toHaveAttribute('title', 'Primero separa la mesa del grupo.');
+    expect(within(member).queryByRole('button', { name: 'Retirar mesa' })).not.toBeInTheDocument();
+    expect(within(member).queryByRole('button', { name: 'Mover mesa' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Abrir mesa' })).not.toBeInTheDocument();
+    expect(screen.queryByRole('button', { name: 'Nuevo código' })).not.toBeInTheDocument();
     expect(panel).not.toHaveTextContent('Grupo 5');
   });
 
   it('requires explicit responsibility when joining tables assigned to different waiters', async () => {
-    const api = installApi('host', detail(), { deferAssignments: true, deferPreview: true }); renderRoute('/host'); const user = userEvent.setup();
-    const panel = (await screen.findByRole('heading', { name: 'Organización de mesas' })).closest('section')!;
+    const api = installApi('waiter', detail(), { deferAssignments: true, deferPreview: true }); renderRoute('/waiter'); const user = userEvent.setup();
+    const panel = (await screen.findByRole('heading', { name: 'Preparar o unir mesas' })).closest('section')!;
     const mesa3 = within(panel).getByRole('heading', { name: 'Mesa 3' }).closest('article')!;
     await user.click(within(mesa3).getByRole('button', { name: 'Unir mesas' }));
     await user.click(screen.getByRole('checkbox', { name: /Mesa 4/ }));
     await user.click(screen.getByRole('checkbox', { name: /Mesa 5/ }));
     const confirm = screen.getByRole('button', { name: 'Confirmar unión' });
     expect(confirm).toBeDisabled();
-    expect(screen.getByText('Calculando capacidad canónica…')).toBeVisible();
+    expect(screen.getByText('Calculando capacidad…')).toBeVisible();
     api.resolvePreview();
     expect(await screen.findByText('Capacidad: 10')).toBeVisible();
     expect(api.calls.some((call) => call.url.endsWith('/table-management/groups:preview') && call.init?.method === 'POST')).toBe(true);
@@ -138,15 +140,15 @@ describe('IMP-C Reception and Waiter integration', () => {
     expect(await screen.findByRole('checkbox', { name: 'Luis Mesero' })).toBeVisible();
     await user.click(screen.getByRole('checkbox', { name: 'Luis Mesero' }));
     await user.click(confirm);
-    expect(await screen.findByText('Grupo confirmado por IMP-A con capacidad 10.')).toBeVisible();
+    expect(await screen.findByText('Grupo confirmado con capacidad 10.')).toBeVisible();
     await waitFor(() => expect(api.calls.some((call) => call.url.endsWith('/table-management/groups') && call.init?.method === 'POST')).toBe(true));
     const call = api.calls.find((value) => value.url.endsWith('/table-management/groups') && value.init?.method === 'POST')!;
     expect(JSON.parse(String(call.init?.body))).toMatchObject({ representative_resource_id: 103, joined_resource_ids: [104, 105], responsible_membership_ids: [201] });
   });
 
   it('surfaces a CREATE conflict after preview and refetches canonical tables', async () => {
-    const api = installApi('host', detail(), { createGroupConflict: true }); renderRoute('/host'); const user = userEvent.setup();
-    const panel = (await screen.findByRole('heading', { name: 'Organización de mesas' })).closest('section')!;
+    const api = installApi('waiter', detail(), { createGroupConflict: true }); renderRoute('/waiter'); const user = userEvent.setup();
+    const panel = (await screen.findByRole('heading', { name: 'Preparar o unir mesas' })).closest('section')!;
     const mesa3 = within(panel).getByRole('heading', { name: 'Mesa 3' }).closest('article')!;
     await user.click(within(mesa3).getByRole('button', { name: 'Unir mesas' }));
     await user.click(screen.getByRole('checkbox', { name: /Mesa 4/ }));
@@ -221,6 +223,12 @@ describe('IMP-C Reception and Waiter integration', () => {
     expect(within(card).queryByRole('button', { name: 'Listo' })).not.toBeInTheDocument();
     expect(api.calls.some((call) => call.url.endsWith('/internal-messages/700/ready') && call.init?.method === 'POST')).toBe(true);
     expect(api.calls.some((call) => call.url.includes('/service-sessions') && call.init?.method === 'POST')).toBe(false);
+    const openButton = await within(card).findByRole('button', { name: 'Abrir mesa' });
+    await user.click(openButton);
+    expect(await within(card).findByText('4827')).toBeVisible();
+    const openCall = api.calls.find((call) => call.url.endsWith('/resources/101/service-sessions') && call.init?.method === 'POST');
+    expect(JSON.parse(String(openCall?.init?.body))).toEqual({ party_size: 6 });
+    expect(api.calls.some((call) => call.url.includes('/access-code/regenerate'))).toBe(false);
 
     const tablePanel = screen.getByRole('heading', { name: 'Preparar o unir mesas' }).closest('section')!;
     const mesa3 = within(tablePanel).getByRole('heading', { name: 'Mesa 3' }).closest('article')!;

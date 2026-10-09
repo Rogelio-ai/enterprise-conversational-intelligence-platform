@@ -55,12 +55,6 @@ class CurrentServiceSessionResponse(BaseModel):
     opened_at: datetime
 
 
-class RegeneratedCodeResponse(BaseModel):
-    id: int
-    access_code: str
-    access_code_version: int
-
-
 class ClosedServiceSessionResponse(BaseModel):
     id: int
     resource_id: int
@@ -407,30 +401,6 @@ async def put_party_size(
         join_context_key=value.join_context_key,
         access_code_version=value.access_code_version,
         opened_at=value.opened_at,
-    )
-
-
-@router.post('/restaurant-service-sessions/{session_id}/access-code/regenerate', response_model=RegeneratedCodeResponse)
-async def regenerate_code(
-    session_id: Annotated[int, Path(gt=0)],
-    request: Request,
-    context: Annotated[AuthenticatedContext, Depends(require_permission('restaurant_service.manage'))],
-    db: Annotated[AsyncSession, Depends(get_db)],
-) -> RegeneratedCodeResponse:
-    try:
-        regenerated = await service.regenerate_access_code(
-            db,
-            settings=request.app.state.settings,
-            tenant_id=context.tenant_id,
-            session_id=session_id,
-            correlation_id=get_correlation_id(),
-        )
-    except Exception as exc:
-        raise _error(exc) from exc
-    return RegeneratedCodeResponse(
-        id=regenerated.session.id,
-        access_code=regenerated.access_code,
-        access_code_version=regenerated.session.access_code_version,
     )
 
 

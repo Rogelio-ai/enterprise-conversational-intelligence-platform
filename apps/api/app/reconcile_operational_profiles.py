@@ -27,6 +27,7 @@ class ReconciliationResult:
     profiles_checked: int
     roles_created: int
     permission_links_added: int
+    permission_links_removed: int
 
 
 async def resolve_operational_tenant_id(session: AsyncSession) -> int:
@@ -51,7 +52,7 @@ async def reconcile_operational_profiles(
     *,
     tenant_id: int,
 ) -> ReconciliationResult:
-    """Add only missing roles and RolePermission links from the current contract."""
+    """Make canonical operational roles match the current permission contract."""
     required_codes = {
         code
         for codes in OPERATIONAL_PROFILE_PERMISSIONS.values()
@@ -75,6 +76,7 @@ async def reconcile_operational_profiles(
 
     roles_created = 0
     permission_links_added = 0
+    permission_links_removed = 0
     for profile, permission_codes in OPERATIONAL_PROFILE_PERMISSIONS.items():
         role_name = operational_role_name(profile)
         roles = tuple((await session.scalars(
@@ -103,15 +105,19 @@ async def reconcile_operational_profiles(
         required_permission_ids = {
             permissions_by_code[code].id for code in permission_codes
         }
-        existing_permission_ids = set((await session.scalars(
-            select(RolePermission.permission_id).where(
+        existing_links = tuple((await session.scalars(
+            select(RolePermission).where(
                 RolePermission.role_id == role.id,
-                RolePermission.permission_id.in_(required_permission_ids),
             ).with_for_update()
         )).all())
+        existing_permission_ids = {link.permission_id for link in existing_links}
         for permission_id in required_permission_ids - existing_permission_ids:
             session.add(RolePermission(role_id=role.id, permission_id=permission_id))
             permission_links_added += 1
+        for link in existing_links:
+            if link.permission_id not in required_permission_ids:
+                await session.delete(link)
+                permission_links_removed += 1
 
     await session.flush()
     return ReconciliationResult(
@@ -119,6 +125,7 @@ async def reconcile_operational_profiles(
         profiles_checked=len(OPERATIONAL_PROFILE_PERMISSIONS),
         roles_created=roles_created,
         permission_links_added=permission_links_added,
+        permission_links_removed=permission_links_removed,
     )
 
 
@@ -132,7 +139,7 @@ async def _main() -> None:
         output = asdict(result)
         output['status'] = (
             'reconciled'
-            if result.roles_created or result.permission_links_added
+            if result.roles_created or result.permission_links_added or result.permission_links_removed
             else 'already_current'
         )
         print(json.dumps(output, ensure_ascii=False, sort_keys=True))

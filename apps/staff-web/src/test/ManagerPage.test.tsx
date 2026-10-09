@@ -100,7 +100,7 @@ describe('Manager operational overview', () => {
     await user.click(screen.getByRole('button', { name: 'Actualizar panorama' }));
     await waitFor(() => expect(screen.queryByText('PAGO INCIERTO')).not.toBeInTheDocument());
     expect(screen.getByText(/No hay Checks con exposición financiera/)).toBeVisible();
-    expect(screen.getByRole('link', { name: 'Ver Host' })).toHaveAttribute('href', '/host');
+    expect(screen.getByRole('link', { name: 'Ver Recepción' })).toHaveAttribute('href', '/host');
     expect(screen.getByRole('link', { name: 'Ver solicitudes' })).toHaveAttribute('href', '/waiter');
     expect(screen.getByRole('link', { name: 'Ver Cocina' })).toHaveAttribute('href', '/kitchen');
     expect(screen.getByRole('link', { name: 'Ver Caja' })).toHaveAttribute('href', '/cashier');

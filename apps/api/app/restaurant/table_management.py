@@ -359,6 +359,13 @@ async def list_tables(
         Resource.resource_type == 'TABLE',
     ).order_by(Resource.code, Resource.id))).all()
     memberships = await _active_membership_map(db, tenant_id=tenant_id, location_id=location_id)
+    group_representatives = dict((await db.execute(select(
+        TableGroup.id, TableGroup.representative_resource_id,
+    ).where(
+        TableGroup.tenant_id == tenant_id,
+        TableGroup.location_id == location_id,
+        TableGroup.status == 'ACTIVE',
+    ))).all())
     open_rows = (await db.execute(select(
         RestaurantServiceSession.resource_id, RestaurantServiceSession.id,
     ).where(
@@ -384,9 +391,16 @@ async def list_tables(
         individually_movable = True if profile is None else bool(profile.movable)
         section_movable = True if section is None else bool(section.movable)
         admin = None if profile is None else profile.administrative_status
-        if resource.id in open_sessions:
-            operational = payment_states.get(resource.id, 'OCCUPIED')
-        elif resource.status != 'ACTIVE' or admin not in {None, 'ACTIVE'} or (group and not group[1]):
+        service_resource_id = (
+            group_representatives.get(group[0], resource.id) if group else resource.id
+        )
+        if service_resource_id in open_sessions:
+            operational = payment_states.get(service_resource_id, 'OCCUPIED')
+        elif (
+            resource.status != 'ACTIVE'
+            or admin not in {None, 'ACTIVE'}
+            or (group and not group[1])
+        ):
             operational = 'UNAVAILABLE'
         else:
             operational = 'AVAILABLE'

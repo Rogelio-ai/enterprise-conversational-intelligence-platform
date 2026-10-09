@@ -17,7 +17,6 @@ import type {
   PaidCheckDispatch,
   PreparationConnector,
   RecipientFiscalProfile,
-  RegeneratedAccessCodeResponse,
   ResourceListResponse,
   RestaurantCheckDetail,
   RestaurantCheckListResponse,
@@ -424,9 +423,6 @@ export const staffApi = {
       method: 'POST',
       body: JSON.stringify({ party_size: partySize }),
     });
-  },
-  regenerateAccessCode(sessionId: number): Promise<RegeneratedAccessCodeResponse> {
-    return request(`/restaurant-service-sessions/${sessionId}/access-code/regenerate`, { method: 'POST' });
   },
   closeServiceSession(sessionId: number): Promise<ClosedServiceSessionResponse> {
     return request(`/restaurant-service-sessions/${sessionId}/close`, { method: 'POST' });

@@ -66,7 +66,7 @@ export function ReceptionPreparationRequests() {
       await queryClient.invalidateQueries({ queryKey: ['internal-messages', location?.id, 'sent'] });
     },
     onError: async (error) => {
-      setValidation(error instanceof ApiError && error.status === 409 ? 'La solicitud cambió. Actualizamos el estado canónico.' : error instanceof ApiError ? error.message : 'No fue posible enviar la solicitud.');
+      setValidation(error instanceof ApiError && error.status === 409 ? 'La solicitud cambió. Actualizamos la información.' : error instanceof ApiError ? error.message : 'No fue posible enviar la solicitud.');
       if (error instanceof ApiError && error.status === 409) await sent.refetch();
     },
   });

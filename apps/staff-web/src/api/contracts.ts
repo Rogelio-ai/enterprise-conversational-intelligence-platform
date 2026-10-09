@@ -765,12 +765,6 @@ export interface OpenServiceSessionResponse {
   opened_at: string;
 }
 
-export interface RegeneratedAccessCodeResponse {
-  id: number;
-  access_code: string;
-  access_code_version: number;
-}
-
 export interface ClosedServiceSessionResponse {
   id: number;
   resource_id: number;

@@ -85,6 +85,10 @@ def test_reconciliation_repairs_stale_waiter_and_preserves_unrelated_state(
     connection, prefix = sql_connection
     tenant_id, organization_id, location_id = _scope(connection, prefix)
     waiter_role_id = _role(connection, tenant_id, 'WAITER')
+    host_role_id = _role(connection, tenant_id, 'HOST')
+    _grant_permissions(connection, host_role_id, (
+        'resource.manage', 'restaurant_service.manage', 'table_management.manage',
+    ))
     stale_waiter_permissions = tuple(
         code for code in OPERATIONAL_PROFILE_PERMISSIONS['WAITER']
         if code not in {'location.read', 'operational_request.read'}
@@ -170,15 +174,20 @@ def test_reconciliation_repairs_stale_waiter_and_preserves_unrelated_state(
     first, second, evidence = asyncio.run(exercise())
 
     assert first.profiles_checked == 5
-    assert first.roles_created == 4
+    assert first.roles_created == 3
     assert first.permission_links_added > 2
+    assert first.permission_links_removed == 3
     assert second.permission_links_added == 0
+    assert second.permission_links_removed == 0
     assert second.roles_created == 0
     for expected, actual in evidence.values():
-        assert expected <= actual
+        assert expected == actual
         assert 'tenant.manage' not in actual
     assert set(stale_waiter_permissions) <= evidence['WAITER'][1]
     assert {'location.read', 'operational_request.read'} <= evidence['WAITER'][1]
+    assert {
+        'resource.manage', 'restaurant_service.manage', 'table_management.manage',
+    }.isdisjoint(evidence['HOST'][1])
     assert _rows(
         connection,
         'SELECT id,tenant_id,user_id,status FROM tenant_memberships WHERE tenant_id=%s',

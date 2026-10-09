@@ -29,7 +29,7 @@ function actionLabel(action: Action): string {
 
 function errorFeedback(error: unknown): Feedback {
   if (error instanceof ApiError && error.status === 403) return { kind: 'error', title: 'Acceso actualizado', message: 'Ya no tienes permiso para realizar esta acción.' };
-  if (error instanceof ApiError && error.status === 409) return { kind: 'conflict', title: 'Estado actualizado', message: 'La solicitud cambió. Mostramos el estado canónico más reciente.' };
+  if (error instanceof ApiError && error.status === 409) return { kind: 'conflict', title: 'Estado actualizado', message: 'La solicitud cambió. Mostramos el estado más reciente.' };
   if (error instanceof ApiError && error.status === 404) return { kind: 'conflict', title: 'Solicitud no disponible', message: 'La solicitud ya no está en tu ruta. Actualizamos el centro de mensajes.' };
   return { kind: 'error', title: 'No se pudo actualizar', message: error instanceof ApiError ? error.message : 'No fue posible conectar con el servicio. Intenta nuevamente.' };
 }
@@ -154,7 +154,7 @@ export function WaiterPage() {
       if (action === 'respond' && intent) await staffApi.respondToWaiterOperationalRequest(request.id, location.id, content, intent.key);
       if (canonical) updateCanonicalRequest(canonical);
       if (action === 'respond') { responseIntents.current.delete(request.id); setComposerRequestId(null); setResponseText(''); }
-      setFeedback({ kind: 'success', title: 'Cambio confirmado', message: action === 'respond' ? 'Respuesta disponible para el comensal.' : `${actionLabel(action)} registrado con evidencia canónica.` });
+      setFeedback({ kind: 'success', title: 'Cambio confirmado', message: action === 'respond' ? 'Respuesta disponible para el comensal.' : `${actionLabel(action)} registrado correctamente.` });
       await requests.refetch();
     } catch (error) {
       setFeedback(errorFeedback(error));
@@ -169,7 +169,7 @@ export function WaiterPage() {
   return (
     <section className="waiter-page" aria-labelledby="waiter-heading">
       <header className="waiter-heading">
-        <div><p className="eyebrow">Centro de mensajes</p><h1 id="waiter-heading">Solicitudes</h1><p>Atención compartida de {location?.name}. Cada acción se confirma con el estado canónico.</p></div>
+        <div><p className="eyebrow">Centro de mensajes</p><h1 id="waiter-heading">Solicitudes</h1><p>Atención compartida de {location?.name}. Cada acción se confirma con el estado más reciente.</p></div>
         <button className="secondary-button" type="button" onClick={() => void requests.refetch()} disabled={requests.isFetching}>{requests.isFetching && !requests.isPending ? 'Actualizando…' : 'Actualizar'}</button>
       </header>
       <WaiterInternalInbox />

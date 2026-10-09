@@ -26,12 +26,12 @@ function friendlyError(error: unknown): string {
   return error.message;
 }
 
-export function TableManagementPanel({ title = 'Organización de mesas' }: { title?: string }) {
+export function TableManagementPanel({ title = 'Organización de mesas', readOnly = false }: { title?: string; readOnly?: boolean }) {
   const { location, hasPermission } = useStaffContext();
   const locationId = location?.id;
   const queryClient = useQueryClient();
   const canRead = hasPermission('resource.read') && Boolean(locationId);
-  const canManage = hasPermission('table_management.manage');
+  const canManage = !readOnly && hasPermission('table_management.manage');
   const [notice, setNotice] = useState<Notice | null>(null);
   const [joining, setJoining] = useState<number | null>(null);
   const [joinedIds, setJoinedIds] = useState<number[]>([]);
@@ -121,7 +121,7 @@ export function TableManagementPanel({ title = 'Organización de mesas' }: { tit
       setNotice({
         kind: 'success',
         text: action.kind === 'join'
-          ? `Grupo confirmado por IMP-A con capacidad ${'derived_capacity' in result ? result.derived_capacity : 'canónica'}.`
+          ? `Grupo confirmado con capacidad ${'derived_capacity' in result ? result.derived_capacity : 'calculada'}.`
           : 'La organización de mesas quedó actualizada.',
       });
       setJoining(null); setJoinedIds([]); setResponsibleIds([]); setAdding(null); setAddTableId(''); setMoving(null); setSectionId('');
@@ -133,7 +133,7 @@ export function TableManagementPanel({ title = 'Organización de mesas' }: { tit
   if (!canRead) return null;
   return (
     <section className="table-management-panel" aria-labelledby="table-management-heading">
-      <div className="operational-section-heading"><div><p className="eyebrow">IMP-A · estado canónico</p><h2 id="table-management-heading">{title}</h2></div></div>
+      <div className="operational-section-heading"><div><p className="eyebrow">Organización confirmada</p><h2 id="table-management-heading">{title}</h2></div></div>
       {notice ? <p className={`operational-notice operational-notice--${notice.kind}`} role={notice.kind === 'error' ? 'alert' : 'status'}>{notice.text}</p> : null}
       {tablesQuery.isPending ? <p>Cargando organización de mesas…</p> : null}
       {tablesQuery.isError ? <p>No fue posible consultar la organización de mesas.</p> : null}
@@ -158,7 +158,7 @@ export function TableManagementPanel({ title = 'Organización de mesas' }: { tit
       {joining ? <div className="modal-backdrop" role="presentation"><section className="operation-dialog" role="dialog" aria-modal="true" aria-labelledby="join-heading">
         <p className="eyebrow">Unir mesas</p><h2 id="join-heading">*{tableById.get(joining)?.name}</h2>
         <fieldset><legend>Mesas disponibles</legend>{available.filter((table) => table.resource_id !== joining).map((table) => <label key={table.resource_id}><input type="checkbox" checked={joinedIds.includes(table.resource_id)} onChange={() => { setJoinedIds((current) => current.includes(table.resource_id) ? current.filter((id) => id !== table.resource_id) : [...current, table.resource_id]); setResponsibleIds([]); }} />{table.name} · capacidad {table.physical_capacity ?? 'sin definir'}</label>)}</fieldset>
-        <div className="group-preview"><strong>Grupo: *{tableById.get(joining)?.name}</strong><span>Mesas: {selectedIds.map((id) => tableById.get(id)?.name).join(' + ')}</span>{preview.isPending && joinedIds.length ? <span>Calculando capacidad canónica…</span> : null}{preview.isError ? <span role="alert">{friendlyError(preview.error)}</span> : null}{preview.data ? <span>Capacidad: {preview.data.derived_capacity}</span> : null}</div>
+        <div className="group-preview"><strong>Grupo: *{tableById.get(joining)?.name}</strong><span>Mesas: {selectedIds.map((id) => tableById.get(id)?.name).join(' + ')}</span>{preview.isPending && joinedIds.length ? <span>Calculando capacidad…</span> : null}{preview.isError ? <span role="alert">{friendlyError(preview.error)}</span> : null}{preview.data ? <span>Capacidad: {preview.data.derived_capacity}</span> : null}</div>
         {joinedIds.length && (!preview.isSuccess || !responsibilityResolved) ? <p>Consultando responsabilidad de meseros…</p> : null}
         {responsibilityResolved && automaticResponsibleIds.length === 1 ? <p>Responsable automático: {waiterById.get(automaticResponsibleIds[0])}</p> : null}
         {responsibilityResolved && responsibilitySelectionRequired ? <fieldset><legend>Selecciona responsable(s) del grupo</legend>{selectedWaiterIds.map((id) => <label key={id}><input type="checkbox" checked={responsibleIds.includes(id)} onChange={() => setResponsibleIds((current) => current.includes(id) ? current.filter((value) => value !== id) : [...current, id])} />{waiterById.get(id)}</label>)}</fieldset> : null}

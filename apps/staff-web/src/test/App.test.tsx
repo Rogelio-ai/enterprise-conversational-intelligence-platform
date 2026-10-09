@@ -230,7 +230,7 @@ describe('staff foundation', () => {
     mockApi();
     renderApp('/');
     const navigation = await screen.findByRole('navigation', { name: 'Espacios de trabajo' });
-    expect(within(navigation).getByRole('link', { name: /Host/ })).toBeVisible();
+    expect(within(navigation).getByRole('link', { name: /Recepción/ })).toBeVisible();
     expect(within(navigation).queryByRole('link', { name: /Cocina/ })).not.toBeInTheDocument();
     expect(within(navigation).queryByRole('link', { name: /Caja/ })).not.toBeInTheDocument();
     expect(within(navigation).queryByRole('link', { name: /Mesero/ })).not.toBeInTheDocument();
@@ -245,7 +245,7 @@ describe('staff foundation', () => {
   });
 
   it.each([
-    ['HOST', 'Host', ['location.read', 'resource.read', 'restaurant_service.read']],
+    ['HOST', 'Recepción', ['location.read', 'resource.read', 'restaurant_service.read']],
     ['WAITER', 'Mesero', ['location.read', 'restaurant_service.read', 'restaurant_order.read', 'restaurant_check.read', 'operational_request.read']],
     ['KITCHEN', 'Cocina', ['location.read', 'preparation.read']],
     ['CASHIER', 'Caja', ['location.read', 'resource.read', 'cash_management.read', 'restaurant_check.read', 'restaurant_payment.read']],
@@ -332,19 +332,19 @@ describe('staff foundation', () => {
     const user = userEvent.setup();
     await user.selectOptions(await screen.findByRole('combobox', { name: 'Sucursal' }), '21');
     let navigation = await screen.findByRole('navigation', { name: 'Espacios de trabajo' });
-    expect(within(navigation).getByRole('link', { name: 'Host' })).toBeVisible();
+    expect(within(navigation).getByRole('link', { name: 'Recepción' })).toBeVisible();
     expect(within(navigation).queryByRole('link', { name: 'Cocina' })).not.toBeInTheDocument();
     await user.selectOptions(screen.getByRole('combobox', { name: 'Sucursal operativa' }), '22');
     navigation = await screen.findByRole('navigation', { name: 'Espacios de trabajo' });
     expect(within(navigation).getByRole('link', { name: 'Cocina' })).toBeVisible();
-    expect(within(navigation).queryByRole('link', { name: 'Host' })).not.toBeInTheDocument();
+    expect(within(navigation).queryByRole('link', { name: 'Recepción' })).not.toBeInTheDocument();
   });
 
   it('restores a valid Location and workspace after logout and a later login by the same Staff', async () => {
     storedCredential();
     const api = mockApi();
     const first = renderApp('/host');
-    expect(await screen.findByRole('heading', { name: 'Mesas en servicio' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'Llegada de comensales' })).toBeVisible();
     await userEvent.setup().click(screen.getByRole('button', { name: 'Salir' }));
     expect(await screen.findByRole('heading', { name: 'Bienvenido de vuelta' })).toBeVisible();
     expect(readStaffResumeHint()).toEqual({
@@ -357,7 +357,7 @@ describe('staff foundation', () => {
     await user.type(screen.getByLabelText('Usuario'), identity.username);
     await user.type(screen.getByLabelText('Contraseña'), 'correct-password');
     await user.click(screen.getByRole('button', { name: 'Ingresar a operación' }));
-    expect(await screen.findByRole('heading', { name: 'Mesas en servicio' })).toBeVisible();
+    expect(await screen.findByRole('heading', { name: 'Llegada de comensales' })).toBeVisible();
     expect(api.calls.filter((call) => call.url.endsWith('/auth/logout'))).toHaveLength(1);
   });
 
@@ -421,7 +421,7 @@ describe('staff foundation', () => {
     expect(await screen.findByRole('heading', { name: 'Todo en contexto.' })).toBeVisible();
     const navigation = screen.getByRole('navigation', { name: 'Espacios de trabajo' });
     expect(within(navigation).getByRole('link', { name: 'Cocina' })).toBeVisible();
-    expect(within(navigation).queryByRole('link', { name: 'Host' })).not.toBeInTheDocument();
+    expect(within(navigation).queryByRole('link', { name: 'Recepción' })).not.toBeInTheDocument();
   });
 
   it('never restores a resume hint belonging to different Staff', async () => {

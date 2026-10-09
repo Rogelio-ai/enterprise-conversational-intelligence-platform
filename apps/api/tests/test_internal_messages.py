@@ -18,7 +18,7 @@ from test_resource_foundation import (
     _seed_authority,
 )
 from test_table_management import _profile, _section
-from test_table_waiter_assignments import _membership_id, _waiter
+from test_table_waiter_assignments import _assign, _membership_id, _waiter
 
 
 @pytest.fixture
@@ -105,6 +105,7 @@ def test_pre_service_message_participant_visibility_enterado_responses_and_ready
             (creator.tenant_id, location_id),
         )
         assert cursor.fetchone()['amount'] == 0
+
 
     sent = client.get(
         f'/locations/{location_id}/internal-messages/sent', headers=creator_headers,
@@ -350,3 +351,134 @@ def test_prepared_individual_and_active_group_representative_projection(
             (creator.tenant_id, location_id),
         )
         assert cursor.fetchone()['amount'] == 0
+
+
+def test_reception_waiter_ready_open_group_and_immutable_code_contract(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    creator, organization_id, location_id, recipient_id, recipient, _ = _prepare(
+        connection, prefix,
+    )
+    _assign_permission(connection, creator.role_id, 'resource.manage')
+    _assign_permission(connection, creator.role_id, 'resource.read')
+    _assign_permission(connection, recipient.role_id, 'table_management.manage')
+    _assign_permission(connection, recipient.role_id, 'restaurant_service.read')
+    creator_headers = _login(client, creator)
+    recipient_headers = _login(client, recipient)
+    scope = type('Scope', (), {
+        'actor': creator, 'organization_id': organization_id,
+        'location_id': location_id,
+    })()
+    section_id = _section(connection, scope)
+    tables = tuple(
+        _resource(connection, creator.tenant_id, location_id, f'TABLE-{index}', 'TABLE')
+        for index in range(1, 4)
+    )
+    for table_id, capacity in zip(tables, (4, 4, 6), strict=True):
+        _profile(connection, scope, table_id, section_id, capacity)
+        assigned = _assign(
+            client, creator_headers, location_id, table_id, recipient_id, 0,
+        )
+        assert assigned.status_code == 201, assigned.text
+
+    individual_message = _create(
+        client, creator_headers, location_id, recipient_id,
+        key='e2e-individual', party_size=4,
+    ).json()['id']
+    assert client.post(
+        f'/locations/{location_id}/internal-messages/{individual_message}/enterado',
+        headers=recipient_headers,
+    ).status_code == 200
+    individual_ready = client.post(
+        f'/locations/{location_id}/internal-messages/{individual_message}/ready',
+        headers=recipient_headers,
+        json={'prepared_table_resource_id': tables[0]},
+    )
+    assert individual_ready.status_code == 200, individual_ready.text
+    assert individual_ready.json()['status'] == 'READY'
+    assert client.get(
+        f'/resources/{tables[0]}/service-sessions/current', headers=recipient_headers,
+    ).status_code == 404
+    before_open = client.get(
+        f'/locations/{location_id}/table-management/tables', headers=creator_headers,
+    ).json()['items']
+    assert next(value for value in before_open if value['resource_id'] == tables[0])['operational_status'] == 'AVAILABLE'
+
+    opened = client.post(
+        f'/resources/{tables[0]}/service-sessions', headers=recipient_headers,
+        json={'party_size': 4},
+    )
+    assert opened.status_code == 201, opened.text
+    assert opened.json()['status'] == 'OPEN'
+    assert len(opened.json()['access_code']) == 4
+    responsibility = client.get(
+        f"/locations/{location_id}/restaurant-service-sessions/{opened.json()['id']}/responsibility",
+        headers=recipient_headers,
+    )
+    assert responsibility.status_code == 200, responsibility.text
+    assert responsibility.json()['responsible_membership_ids'] == [recipient_id]
+    occupied = client.get(
+        f'/locations/{location_id}/table-management/tables', headers=creator_headers,
+    ).json()['items']
+    assert next(value for value in occupied if value['resource_id'] == tables[0])['operational_status'] == 'OCCUPIED'
+    assert client.post(
+        f"/restaurant-service-sessions/{opened.json()['id']}/access-code/regenerate",
+        headers=recipient_headers,
+    ).status_code == 404
+
+    denied = client.post(
+        f'/locations/{location_id}/table-management/groups:preview',
+        headers=creator_headers,
+        json={'representative_resource_id': tables[1], 'joined_resource_ids': [tables[2]]},
+    )
+    assert denied.status_code == 403
+    preview = client.post(
+        f'/locations/{location_id}/table-management/groups:preview',
+        headers=recipient_headers,
+        json={'representative_resource_id': tables[1], 'joined_resource_ids': [tables[2]]},
+    )
+    assert preview.status_code == 200, preview.text
+    assert preview.json()['derived_capacity'] == 8
+    grouped = client.post(
+        f'/locations/{location_id}/table-management/groups',
+        headers=recipient_headers,
+        json={
+            'representative_resource_id': tables[1],
+            'joined_resource_ids': [tables[2]],
+            'responsible_membership_ids': [recipient_id],
+        },
+    )
+    assert grouped.status_code == 201, grouped.text
+    assert grouped.json()['derived_capacity'] == preview.json()['derived_capacity']
+
+    group_message = _create(
+        client, creator_headers, location_id, recipient_id,
+        key='e2e-group', party_size=8,
+    ).json()['id']
+    client.post(
+        f'/locations/{location_id}/internal-messages/{group_message}/enterado',
+        headers=recipient_headers,
+    )
+    group_ready = client.post(
+        f'/locations/{location_id}/internal-messages/{group_message}/ready',
+        headers=recipient_headers,
+        json={'prepared_table_resource_id': tables[1]},
+    )
+    assert group_ready.status_code == 200, group_ready.text
+    assert client.get(
+        f'/resources/{tables[1]}/service-sessions/current', headers=recipient_headers,
+    ).status_code == 404
+    group_opened = client.post(
+        f'/resources/{tables[1]}/service-sessions', headers=recipient_headers,
+        json={'party_size': 8},
+    )
+    assert group_opened.status_code == 201, group_opened.text
+    group_tables = client.get(
+        f'/locations/{location_id}/table-management/tables', headers=creator_headers,
+    ).json()['items']
+    states = {
+        value['resource_id']: value['operational_status'] for value in group_tables
+        if value['resource_id'] in {tables[1], tables[2]}
+    }
+    assert states == {tables[1]: 'OCCUPIED', tables[2]: 'OCCUPIED'}

@@ -9,7 +9,7 @@ export interface Workspace {
 export const workspaces: Workspace[] = [
   {
     key: 'host',
-    label: 'Host',
+    label: 'Recepción',
     description: 'Servicio y mesas',
     path: '/host',
     permissions: ['location.read', 'resource.read', 'restaurant_service.read'],

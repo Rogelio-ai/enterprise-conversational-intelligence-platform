@@ -251,7 +251,7 @@ describe('Waiter Message Center MP8', () => {
     await user.click(await screen.findByRole('button', { name: 'Responder' }));
     await user.type(screen.getByLabelText('Respuesta al comensal'), 'Confirmo tu solicitud');
     await user.click(screen.getByRole('button', { name: 'Enviar' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('estado canónico');
+    expect(await screen.findByRole('alert')).toHaveTextContent('estado más reciente');
     expect(api.calls.filter((call) => call.url.includes('/waiter/operational-requests?')).length).toBeGreaterThanOrEqual(2);
     await user.click(screen.getByRole('button', { name: 'Enviar' }));
     expect(await screen.findByRole('status')).toHaveTextContent('Respuesta disponible');
@@ -264,7 +264,7 @@ describe('Waiter Message Center MP8', () => {
     const conflict = mockWaiterApi({ conflictAction: 'acknowledge' });
     renderWaiter();
     await userEvent.setup().click(await screen.findByRole('button', { name: 'Atendido' }));
-    expect(await screen.findByRole('alert')).toHaveTextContent('estado canónico');
+    expect(await screen.findByRole('alert')).toHaveTextContent('estado más reciente');
     expect(conflict.calls.filter((call) => call.url.includes('/waiter/operational-requests?')).length).toBeGreaterThanOrEqual(2);
     expect(screen.getByText('Pendiente')).toBeVisible();
 

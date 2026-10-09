@@ -24,7 +24,8 @@ PASSWORD = 'Test Password 123!'
 WORKSPACE_REQUIREMENTS = {
     'HOST': {'location.read', 'resource.read', 'restaurant_service.read'},
     'WAITER': {
-        'location.read', 'restaurant_service.read', 'restaurant_order.read',
+        'location.read', 'restaurant_service.read', 'restaurant_service.manage',
+        'table_management.manage', 'restaurant_order.read',
         'restaurant_check.read', 'operational_request.read',
     },
     'KITCHEN': {'location.read', 'preparation.read'},
@@ -36,7 +37,10 @@ WORKSPACE_REQUIREMENTS = {
 }
 
 UNRELATED_HIGH_VALUE_PERMISSIONS = {
-    'HOST': {'tenant.manage', 'operational_request.manage', 'inventory.manage'},
+    'HOST': {
+        'tenant.manage', 'operational_request.manage', 'inventory.manage',
+        'resource.manage', 'restaurant_service.manage', 'table_management.manage',
+    },
     'WAITER': {'tenant.manage', 'cash_session.manage', 'inventory.manage'},
     'KITCHEN': {'tenant.manage', 'cash_session.manage', 'restaurant_payment.manage'},
     'CASHIER': {'tenant.manage', 'restaurant_service.manage', 'inventory.manage'},

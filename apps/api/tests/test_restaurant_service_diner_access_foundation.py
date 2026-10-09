@@ -124,7 +124,7 @@ def test_code_generation_is_four_digit_text_and_preserves_leading_zero(monkeypat
     assert service.generate_access_code() == '0042'
 
 
-def test_staff_open_read_validation_regenerate_close_and_resource_lifecycle(client, sql_connection):
+def test_staff_open_read_immutable_access_code_close_and_resource_lifecycle(client, sql_connection):
     connection, prefix = sql_connection
     scope = _scope(connection, prefix)
     headers = _headers(client, scope)
@@ -139,10 +139,16 @@ def test_staff_open_read_validation_regenerate_close_and_resource_lifecycle(clie
     assert current.status_code == 200
     assert 'access_code' not in current.json() and 'access_code_digest' not in current.json()
     assert client.post(f'/resources/{scope.resource_id}/service-sessions', headers=headers, json={'party_size': 2}).status_code == 409
-    regenerated = client.post(f"/restaurant-service-sessions/{opened['id']}/access-code/regenerate", headers=headers)
-    assert regenerated.status_code == 200 and regenerated.json()['access_code_version'] == 2
-    assert _join(client, opened, 'Old Code').status_code == 401
-    opened['access_code'] = regenerated.json()['access_code']
+    mutation = client.post(f"/restaurant-service-sessions/{opened['id']}/access-code/regenerate", headers=headers)
+    assert mutation.status_code == 404
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT access_code_digest,access_code_version FROM restaurant_service_sessions WHERE id=%s',
+            (opened['id'],),
+        )
+        unchanged = cursor.fetchone()
+    assert unchanged['access_code_digest'] == persisted['access_code_digest']
+    assert unchanged['access_code_version'] == 1
     joined = _join(client, opened, 'Diner')
     assert joined.status_code == 201
     closed = client.post(f"/restaurant-service-sessions/{opened['id']}/close", headers=headers)
@@ -172,7 +178,8 @@ def test_open_rejects_non_serviceable_resource(client, sql_connection, resource_
 def test_join_identity_capacity_conversation_draft_end_and_token_separation(client, sql_connection, integration_settings):
     connection, prefix = sql_connection
     scope = _scope(connection, prefix)
-    opened = _open(client, scope, party_size=2)
+    staff_headers = _headers(client, scope)
+    opened = _open(client, scope, party_size=2, headers=staff_headers)
     first = _join(client, opened, '  Alex  ', '  DINER@Example.Test ')
     assert first.status_code == 201, first.text
     first_body = first.json()
@@ -208,7 +215,7 @@ def test_join_identity_capacity_conversation_draft_end_and_token_separation(clie
     assert second.status_code == 201
     assert _join(client, opened, 'Over Capacity').status_code == 409
     assert client.get('/auth/me', headers=diner_headers).status_code == 401
-    staff_token = _headers(client, scope)['Authorization'].split()[1]
+    staff_token = staff_headers['Authorization'].split()[1]
     assert client.get('/diner-session', headers={'Authorization': f'Bearer {staff_token}'}).status_code == 401
     ended = client.post('/diner-session/end', headers=diner_headers)
     assert ended.status_code == 200 and ended.json()['status'] == 'ENDED'
