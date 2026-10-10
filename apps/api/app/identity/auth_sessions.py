@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import hmac
 from uuid import uuid4
 
 from sqlalchemy import func, select, update
@@ -19,12 +20,17 @@ async def create_staff_auth_session(
     user_id: int,
     tenant_id: int,
     membership_id: int,
+    expected_password_hash: str,
 ) -> StaffAuthSession:
-    locked_user = await db.scalar(
-        select(User).where(User.id == user_id).with_for_update()
-    )
+    locked_user = (await db.execute(
+        select(User.password_hash, User.status)
+        .where(User.id == user_id)
+        .with_for_update()
+    )).one_or_none()
     if locked_user is None or locked_user.status != 'ACTIVE':
         raise ValueError('Staff identity is not active')
+    if not hmac.compare_digest(locked_user.password_hash, expected_password_hash):
+        raise ValueError('Staff credentials changed during authentication')
 
     active_session = await db.scalar(
         select(StaffAuthSession.id)

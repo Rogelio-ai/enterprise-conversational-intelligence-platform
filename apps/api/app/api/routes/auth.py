@@ -123,6 +123,7 @@ async def login(
             user_id=user.id,
             tenant_id=tenant.id,
             membership_id=membership.id,
+            expected_password_hash=user.password_hash,
         )
     except ActiveStaffSessionConflict as exc:
         await db.rollback()

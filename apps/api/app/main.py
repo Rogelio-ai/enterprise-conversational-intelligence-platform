@@ -35,6 +35,7 @@ from app.api.routes.inventory_intelligence import router as inventory_intelligen
 from app.api.routes.internal_messages import router as internal_messages_router
 from app.api.routes.identity_invitations import router as identity_invitations_router
 from app.api.routes.identity_access import router as identity_access_router
+from app.api.routes.staff_credentials import router as staff_credentials_router
 from app.api.routes.menus import router as menus_router
 from app.api.routes.manager_overview import router as manager_overview_router
 from app.api.routes.organizations import router as organizations_router
@@ -197,6 +198,7 @@ def create_app(
     app.include_router(auth_router)
     app.include_router(identity_invitations_router)
     app.include_router(identity_access_router)
+    app.include_router(staff_credentials_router)
     app.include_router(connector_auth_router)
     app.include_router(connector_api_router)
     app.include_router(connector_admin_router)

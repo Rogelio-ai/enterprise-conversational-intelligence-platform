@@ -23,6 +23,9 @@ CORE_PERMISSIONS = {
     'tenant.manage': 'Manage Tenant core settings.',
     'user.read': 'Read Tenant user information.',
     'user.manage': 'Manage Tenant users.',
+    'staff_credentials.manage': (
+        'Administratively change existing Staff credentials and revoke their sessions.'
+    ),
     'role.read': 'Read Tenant roles and permissions.',
     'role.manage': 'Manage Tenant roles and permission assignments.',
     'organization.read': 'Read Tenant organizations.',
