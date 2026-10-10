@@ -10,6 +10,11 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.identity.invitations import normalize_email
+from app.identity.permission_catalog import (
+    ADMIN_BOOTSTRAP_PERMISSION_CODES,
+    CANONICAL_PERMISSIONS,
+    initialize_canonical_permissions,
+)
 from app.identity.usernames import normalize_username
 from app.core.config import Settings, get_settings
 from app.core.security import hash_password, validate_password
@@ -19,67 +24,8 @@ from app.models import MembershipRole, Permission, Role, RolePermission, Tenant,
 
 ADMIN_ROLE_NAME = 'TENANT_ADMIN'
 CORE_PERMISSIONS = {
-    'tenant.read': 'Read the current Tenant context.',
-    'tenant.manage': 'Manage Tenant core settings.',
-    'user.read': 'Read Tenant user information.',
-    'user.manage': 'Manage Tenant users.',
-    'staff_credentials.manage': (
-        'Administratively change existing Staff credentials and revoke their sessions.'
-    ),
-    'role.read': 'Read Tenant roles and permissions.',
-    'role.manage': 'Manage Tenant roles and permission assignments.',
-    'organization.read': 'Read Tenant organizations.',
-    'organization.manage': 'Manage Tenant organizations.',
-    'location.read': 'Read Tenant locations.',
-    'location.manage': 'Manage Tenant locations.',
-    'operational_request.read': 'Read diner operational requests for authorized locations.',
-    'operational_request.manage': 'Acknowledge and complete diner operational requests.',
-    'resource.read': 'Read Tenant resources.',
-    'resource.manage': 'Manage Tenant resources.',
-    'table_management.manage': 'Manage dining sections, table lifecycle, movement, and groups.',
-    'internal_message.read': 'Read participant-scoped internal operational messages.',
-    'internal_message.send': 'Send internal operational messages in authorized locations.',
-    'internal_message.respond': 'Acknowledge, respond to, and complete addressed internal messages.',
-    'customer.read': 'Read Tenant customers.',
-    'customer.manage': 'Manage Tenant customers.',
-    'product.read': 'Read Organization products and categories.',
-    'product.manage': 'Manage Organization products and categories.',
-    'menu.read': 'Read Organization menus.',
-    'menu.manage': 'Manage Organization menus.',
-    'pricing.read': 'Read Organization product prices.',
-    'pricing.manage': 'Manage Organization product prices.',
-    'promotion.read': 'Read Organization promotions.',
-    'promotion.manage': 'Manage Organization promotions.',
-    'conversation.read': 'Read Tenant conversations, participants, and messages.',
-    'conversation.manage': 'Manage Tenant conversations, participants, and messages.',
-    'order_draft.read': 'Read canonical Restaurant Order Drafts.',
-    'order_draft.manage': 'Manage canonical Restaurant Order Drafts.',
-    'restaurant_service.read': 'Read Restaurant service sessions.',
-    'restaurant_service.manage': 'Manage Restaurant service sessions.',
-    'restaurant_order.read': 'Read immutable accepted Restaurant Orders.',
-    'restaurant_check.read': 'Read canonical Restaurant Checks and table balances.',
-    'restaurant_check.manage': 'Manage canonical Restaurant Checks.',
-    'restaurant_payment.read': 'Read canonical Restaurant Payments and settlements.',
-    'restaurant_payment.manage': 'Initiate and confirm canonical Restaurant Payments.',
-    'restaurant_payment.recover': 'Recover uncertain Restaurant Payment execution.',
-    'cash_management.read': 'Read cash-management sessions.',
-    'cash_session.manage': 'Open and manage cash sessions.',
-    'cash_movement.manage': 'Record authorized manual cash movements.',
-    'inventory.read': 'Read location inventory, stock, recipes, and current costs.',
-    'inventory.manage': 'Manage location inventory, recipes, and stock movements.',
-    'inventory.count.read': 'Read physical count evidence.',
-    'inventory.count.approve': 'Approve submitted physical counts.',
-    'inventory.count.post': 'Post approved physical count adjustments.',
-    'pos_submission.read': 'Read POS order submission state and history.',
-    'pos_submission.submit': 'Submit accepted Restaurant Orders to a POS.',
-    'pos_submission.retry': 'Retry safely retryable POS order submissions.',
-    'pos_submission.recover': 'Recover uncertain POS order submissions.',
-    'preparation.read': 'Read preparation configuration, routing, and work.',
-    'preparation.route': 'Route accepted Restaurant Orders to preparation.',
-    'preparation.configure': 'Configure preparation ownership, areas, and product routes.',
-    'preparation.execute': 'Execute native Preparation Work Items.',
-    'preparation.dispatch': 'Perform human preparation dispatch interventions.',
-    'preparation.connector.manage': 'Manage Restaurant Local Connector machine credentials.',
+    code: CANONICAL_PERMISSIONS[code]
+    for code in ADMIN_BOOTSTRAP_PERMISSION_CODES
 }
 _SLUG_PATTERN = re.compile(r'^[a-z0-9]+(?:-[a-z0-9]+)*$')
 
@@ -218,14 +164,16 @@ async def _bootstrap_in_session(
     elif role.status != 'ACTIVE':
         raise RuntimeError('Existing bootstrap Role is not active')
 
+    permission_initialization = await initialize_canonical_permissions(session)
+    created.extend(
+        f'permission:{code}' for code in permission_initialization.created_codes
+    )
+
     permission_ids: list[int] = []
-    for code, description in CORE_PERMISSIONS.items():
+    for code in CORE_PERMISSIONS:
         permission = await session.scalar(select(Permission).where(Permission.code == code))
         if permission is None:
-            permission = Permission(code=code, description=description)
-            session.add(permission)
-            await session.flush()
-            created.append(f'permission:{code}')
+            raise RuntimeError(f'Canonical permission initialization omitted {code}')
         permission_ids.append(permission.id)
 
     for permission_id in permission_ids:
