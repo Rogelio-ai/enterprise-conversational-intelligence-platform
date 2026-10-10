@@ -90,11 +90,18 @@ def _scope(connection, prefix: str, *, order_read: bool = True) -> Scope:
 
 
 def _staff_headers(client: TestClient, scope: Scope) -> dict[str, str]:
+    cached = getattr(client, '_ecip_staff_headers', {}).get(scope.tenant_id)
+    if cached is not None:
+        return cached
     login = client.post('/auth/login', json={
         'username': scope.email.partition('@')[0], 'password': PASSWORD,
     })
     assert login.status_code == 200
-    return {'Authorization': f"Bearer {login.json()['access_token']}"}
+    headers = {'Authorization': f"Bearer {login.json()['access_token']}"}
+    cache = getattr(client, '_ecip_staff_headers', {})
+    cache[scope.tenant_id] = headers
+    setattr(client, '_ecip_staff_headers', cache)
+    return headers
 
 
 def _open_and_join(

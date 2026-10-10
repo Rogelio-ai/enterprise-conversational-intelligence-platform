@@ -161,6 +161,7 @@ def _accepted_order(
         )
         assert replay.status_code == 200, replay.text
         assert replay.json()['id'] == accepted.json()['id']
+    assert client.post('/auth/logout', headers=staff).status_code == 204
     return accepted.json()['id'], product_id, opened.json()['id']
 
 
@@ -215,6 +216,7 @@ def _accepted_complex_order(
     preview = client.get('/diner/checkout-preview', headers=diner).json()
     accepted = client.post('/diner/order/confirm', headers={**diner, 'Idempotency-Key': uuid4().hex}, json={'expected_draft_version': preview['draft_version'], 'expected_commercial_fingerprint': preview['commercial_fingerprint']})
     assert accepted.status_code == 201, accepted.text
+    assert client.post('/auth/logout', headers=staff).status_code == 204
     return accepted.json()['id'], parent, fixed, option_product, promotion
 
 

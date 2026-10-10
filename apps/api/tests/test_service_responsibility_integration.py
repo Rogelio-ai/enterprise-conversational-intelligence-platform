@@ -235,7 +235,7 @@ def test_table_mutations_are_independent_but_open_service_blocks_unassignment(
     assert _responsible(
         client, headers, scope.location_id, scope.table_id, [first, second], 3,
     ).status_code == 200
-    opened = _open(client, scope)
+    opened = _open(client, scope, headers=headers)
     assert opened.status_code == 201
     service_session_id = opened.json()['id']
 
@@ -418,7 +418,7 @@ def test_concurrent_open_and_table_responsibility_change_use_one_snapshot(
     ).status_code == 201
 
     with ThreadPoolExecutor(max_workers=2) as executor:
-        opening = executor.submit(_open, client, scope)
+        opening = executor.submit(_open, client, scope, headers=headers)
         changing = executor.submit(
             _responsible,
             client,
@@ -533,7 +533,7 @@ def test_concurrent_unassign_and_transition_never_orphan_responsibility(
     assert _responsible(
         client, headers, scope.location_id, scope.table_id, [first, second], 3,
     ).status_code == 200
-    service_session_id = _open(client, scope).json()['id']
+    service_session_id = _open(client, scope, headers=headers).json()['id']
 
     async def exercise():
         manager = DatabaseManager(integration_settings)

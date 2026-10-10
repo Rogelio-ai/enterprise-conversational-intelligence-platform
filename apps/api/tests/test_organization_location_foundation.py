@@ -60,10 +60,11 @@ def _seed_authority(connection, slug: str, permissions=WS_02_PERMISSIONS) -> Aut
         ('Test Tenant', slug, 'ACTIVE'),
     )
     email = f'{slug}@example.test'
+    username = email.partition('@')[0]
     user_id = _execute(
         connection,
-        'INSERT INTO users (email, password_hash, display_name, status) VALUES (%s, %s, %s, %s)',
-        (email, hash_password(PASSWORD), 'Test User', 'ACTIVE'),
+        'INSERT INTO users (username, email, password_hash, display_name, status) VALUES (%s, %s, %s, %s, %s)',
+        (username, email, hash_password(PASSWORD), 'Test User', 'ACTIVE'),
     )
     membership_id = _execute(
         connection,
@@ -93,7 +94,10 @@ def _seed_authority(connection, slug: str, permissions=WS_02_PERMISSIONS) -> Aut
 def _login(client: TestClient, authority: Authority) -> dict[str, str]:
     response = client.post(
         '/auth/login',
-        json={'email': authority.email, 'password': PASSWORD},
+        json={
+            'username': authority.email.partition('@')[0],
+            'password': PASSWORD,
+        },
     )
     assert response.status_code == 200, response.text
     return {'Authorization': f"Bearer {response.json()['access_token']}"}
@@ -115,6 +119,24 @@ def _location(connection, tenant_id: int, organization_id: int, code: str) -> in
         VALUES (%s, %s, %s, %s, 'America/Mexico_City', 'ACTIVE')
         ''',
         (tenant_id, organization_id, code, f'Location {code}'),
+    )
+
+
+def _grant_location(connection, authority: Authority, location_id: int) -> None:
+    _execute(
+        connection,
+        'INSERT INTO membership_location_grants (tenant_id, membership_id, location_id) '
+        'VALUES (%s, %s, %s)',
+        (authority.tenant_id, authority.membership_id, location_id),
+    )
+    _execute(
+        connection,
+        'INSERT INTO membership_location_roles '
+        '(tenant_id, membership_id, location_id, role_id) VALUES (%s, %s, %s, %s)',
+        (
+            authority.tenant_id, authority.membership_id, location_id,
+            authority.role_id,
+        ),
     )
 
 
@@ -304,6 +326,13 @@ def test_inactive_and_cross_tenant_parent_rules_are_enforced(client, sql_connect
     connection, prefix = sql_connection
     authority = _seed_authority(connection, prefix)
     other = _seed_authority(connection, f'{prefix}-other')
+    readable_organization_id = _organization(
+        connection, authority.tenant_id, 'READABLE',
+    )
+    readable_location_id = _location(
+        connection, authority.tenant_id, readable_organization_id, 'READABLE',
+    )
+    _grant_location(connection, authority, readable_location_id)
     headers = _login(client, authority)
     inactive_organization_id = _organization(connection, authority.tenant_id, 'INACTIVE', 'INACTIVE')
     foreign_organization_id = _organization(connection, other.tenant_id, 'FOREIGN')
@@ -325,12 +354,7 @@ def test_inactive_and_cross_tenant_parent_rules_are_enforced(client, sql_connect
 
     active_organization_id = _organization(connection, authority.tenant_id, 'ACTIVE')
     location_id = _location(connection, authority.tenant_id, active_organization_id, 'OWN')
-    _execute(
-        connection,
-        'INSERT INTO membership_location_grants (tenant_id, membership_id, location_id) '
-        'VALUES (%s, %s, %s)',
-        (authority.tenant_id, authority.membership_id, location_id),
-    )
+    _grant_location(connection, authority, location_id)
     _execute(
         connection,
         'UPDATE organizations SET status = %s WHERE id = %s',

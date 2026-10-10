@@ -19,6 +19,7 @@ from test_canonical_order_commercial_acceptance import (
     _open_and_join,
     _scope,
     _staff_headers,
+    _staff_table,
 )
 from test_cash_payment_integration import _grant_cash_permissions
 from test_fiscal_issuance_service import _command, _execution, _run
@@ -138,9 +139,12 @@ def test_waiter_and_kitchen_mutations_reconstruct_in_manager(
             (scope.tenant_id, scope.location_id),
         )
         kitchen_scope = replace(scope, resource_id=kitchen_resource_id)
+        _staff_table(connection, kitchen_scope, kitchen_resource_id)
+        assert client.post('/auth/logout', headers=staff_headers).status_code == 204
         kitchen_headers, _, _, work_id, item_id = _native_item(
             client, connection, kitchen_scope, name='Journey Kitchen Item'
         )
+        staff_headers = kitchen_headers
         waiting = _overview(client, staff_headers, scope.location_id)
         assert waiting['preparation_item_counts']['NEW'] == 1
         started = _transition(
@@ -246,6 +250,9 @@ def test_settled_check_billing_and_paid_print_reconstruct_in_manager_and_isolate
     with TestClient(create_app(settings=integration_settings)) as client:
         source = _source(client, connection, prefix)
         scope = source.scope
+        _enable_staff(
+            connection, scope, permissions=('operational_request.read',),
+        )
         _grant_manager_reads(connection, scope.tenant_id)
         _grant_cash_permissions(connection, scope.tenant_id)
         _grant_connector_permissions(connection, scope.tenant_id)
@@ -314,6 +321,9 @@ def test_settled_check_billing_and_paid_print_reconstruct_in_manager_and_isolate
             params={'location_id': scope.location_id},
         )
         assert denied.status_code == 404
-        assert str(document_id) not in denied.text
-        assert str(dispatch_id) not in denied.text
-        assert 'credential_binding' not in denied.text
+        denied_body = denied.json()
+        assert denied_body['error'] == {
+            'code': 'http_error',
+            'message': 'Location not found',
+        }
+        assert set(denied_body) == {'error', 'correlation_id'}

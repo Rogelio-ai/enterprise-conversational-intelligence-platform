@@ -364,6 +364,7 @@ def test_roles_and_permissions_are_composed_only_within_the_assigned_location(
         connection, tenant_id, f'{prefix}-WAITER-READ', 'location.read',
     )
     _grant(connection, staff, location_a, second_waiter_role)
+    assert client.post('/auth/logout', headers=headers).status_code == 204
     refreshed_headers = _login(client, staff)
     assert client.get(f'/locations/{location_a}', headers=refreshed_headers).status_code == 200
     assert client.get(f'/locations/{location_b}', headers=refreshed_headers).status_code == 403
