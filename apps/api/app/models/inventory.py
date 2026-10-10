@@ -880,6 +880,10 @@ class GoodsReceipt(TimestampMixin, Base):
             'ix_goods_receipts_location_status', 'tenant_id', 'location_id',
             'status', 'id',
         ),
+        Index(
+            'ix_goods_receipts_purchase_order', 'tenant_id',
+            'purchase_order_id', 'status', 'id',
+        ),
         OPTIONS,
     )
 
@@ -1000,6 +1004,10 @@ class GoodsReceiptLine(Base):
             "normalized_quantity=0 AND conversion_factor > 0 AND "
             "base_uom_evidence IS NOT NULL AND extended_cost=0)",
             name='ck_goods_receipt_lines_evidence',
+        ),
+        Index(
+            'ix_goods_receipt_lines_purchase_order_line', 'tenant_id',
+            'purchase_order_line_id', 'goods_receipt_id',
         ),
         OPTIONS,
     )

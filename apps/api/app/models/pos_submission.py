@@ -242,7 +242,10 @@ class PosOrderSubmissionAttempt(Base):
     correlation_id: Mapped[str | None] = mapped_column(String(128), nullable=True)
     started_at: Mapped[datetime] = mapped_column(DateTime(), nullable=False)
     ended_at: Mapped[datetime | None] = mapped_column(DateTime(), nullable=True)
-    result: Mapped[str] = mapped_column(String(32), nullable=False, default='IN_PROGRESS')
+    result: Mapped[str] = mapped_column(
+        String(32), nullable=False, default='IN_PROGRESS',
+        server_default=text("'IN_PROGRESS'"),
+    )
     error_kind: Mapped[str | None] = mapped_column(String(32), nullable=True)
     error_message: Mapped[str | None] = mapped_column(String(500), nullable=True)
     external_order_id: Mapped[str | None] = mapped_column(String(200, collation='utf8mb4_bin'), nullable=True)

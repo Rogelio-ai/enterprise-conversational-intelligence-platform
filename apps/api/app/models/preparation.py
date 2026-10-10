@@ -416,6 +416,7 @@ class PreparationDispatch(TimestampMixin, Base):
         Index('ix_preparation_dispatches_eligibility', 'tenant_id', 'location_id', 'state', 'available_at', 'id'),
         Index('ix_preparation_dispatches_work', 'tenant_id', 'preparation_work_id', 'generation', 'id'),
         Index('ix_preparation_dispatches_destination', 'tenant_id', 'destination_id', 'state', 'id'),
+        Index('ix_preparation_dispatches_connector_eligibility', 'tenant_id', 'connector_id_snapshot', 'state', 'available_at', 'id'),
         OPTIONS,
     )
     id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=True)

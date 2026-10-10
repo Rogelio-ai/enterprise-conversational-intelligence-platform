@@ -107,18 +107,35 @@ POST_0026_APPLICATION_TABLES = {
     'cash_movements',
     'cash_sessions',
     'diner_operational_requests',
+    'dining_sections',
     'goods_receipt_lines',
     'goods_receipts',
+    'identity_invitations',
+    'internal_operational_message_history',
+    'internal_operational_message_responses',
+    'internal_operational_messages',
+    'inventory_cost_layers',
     'inventory_cost_revisions',
     'inventory_items',
     'inventory_loss_policies',
     'inventory_losses',
+    'inventory_movement_cost_allocations',
     'inventory_reconciliations',
     'inventory_lots',
+    'inventory_transfer_lines',
+    'inventory_transfer_receipts',
+    'inventory_transfers',
+    'inventory_valuation_snapshot_fifo_layers',
     'inventory_valuation_snapshots',
     'inventory_valuation_snapshot_lines',
     'item_uom_conversions',
     'membership_location_grants',
+    'membership_location_roles',
+    'menu_external_mappings',
+    'menu_section_external_mappings',
+    'onboarding_imports',
+    'onboarding_staff_continuations',
+    'operational_request_waiter_states',
     'staff_auth_sessions',
     'paid_check_dispatch_attempts',
     'paid_check_dispatches',
@@ -136,6 +153,7 @@ POST_0026_APPLICATION_TABLES = {
     'product_consumption_definitions',
     'product_consumption_version_components',
     'product_consumption_versions',
+    'product_category_external_mappings',
     'product_fiscal_classifications',
     'restaurant_order_consumptions',
     'restaurant_order_item_fiscal_snapshots',
@@ -148,6 +166,11 @@ POST_0026_APPLICATION_TABLES = {
     'table_waiter_assignment_audits',
     'service_responsible_waiters',
     'service_responsibility_transitions',
+    'restaurant_table_profiles',
+    'table_group_memberships',
+    'table_group_responsible_waiters',
+    'table_groups',
+    'table_management_history',
 }
 MODEL_APPLICATION_TABLES = APPLICATION_TABLES | POST_0026_APPLICATION_TABLES
 
@@ -1775,6 +1798,43 @@ def test_model_metadata_declares_portable_mysql_table_options() -> None:
         assert options['collate'] == 'utf8mb4_unicode_ci'
 
 
+def test_model_metadata_declares_migration_owned_indexes_and_defaults() -> None:
+    expected_indexes = {
+        'goods_receipts': {
+            'ix_goods_receipts_purchase_order': (
+                'tenant_id', 'purchase_order_id', 'status', 'id',
+            ),
+        },
+        'goods_receipt_lines': {
+            'ix_goods_receipt_lines_purchase_order_line': (
+                'tenant_id', 'purchase_order_line_id', 'goods_receipt_id',
+            ),
+        },
+        'preparation_dispatches': {
+            'ix_preparation_dispatches_connector_eligibility': (
+                'tenant_id', 'connector_id_snapshot', 'state', 'available_at', 'id',
+            ),
+        },
+    }
+
+    for table_name, expected_table_indexes in expected_indexes.items():
+        table_indexes = {
+            index.name: tuple(column.name for column in index.columns)
+            for index in Base.metadata.tables[table_name].indexes
+        }
+        for index_name, expected_columns in expected_table_indexes.items():
+            assert table_indexes[index_name] == expected_columns
+
+    assert (
+        str(Base.metadata.tables['pos_order_submission_attempts'].c.result.server_default.arg)
+        == "'IN_PROGRESS'"
+    )
+    assert (
+        str(Base.metadata.tables['staff_auth_sessions'].c.status.server_default.arg)
+        == "'ACTIVE'"
+    )
+
+
 def test_authoritative_tax_evidence_metadata_contract() -> None:
     products = Base.metadata.tables['products']
     rules = Base.metadata.tables['restaurant_tax_rules']
@@ -2181,6 +2241,118 @@ def test_fresh_install_reaches_portable_database_contract(
     connection = _connect_isolated_database(integration_settings, database_name)
     try:
         _assert_database_contract(connection)
+    finally:
+        connection.close()
+
+
+def test_0068_schema_collation_alignment_changes_only_table_defaults(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    previous_revision = '0067_internal_operational_message_foundation'
+    revision = '0068_schema_collation_alignment'
+    target_tables = (
+        'billing_fiscal_results',
+        'billing_fiscal_artifacts',
+        'membership_location_roles',
+        'staff_auth_sessions',
+    )
+
+    _run_alembic(database_name, previous_revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION,CREATE_OPTIONS '
+                'FROM information_schema.TABLES '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE' "
+                "AND TABLE_NAME<>'alembic_version' ORDER BY TABLE_NAME"
+            )
+            before_tables = {
+                row['TABLE_NAME']: row for row in cursor.fetchall()
+            }
+            placeholders = ','.join(('%s',) * len(target_tables))
+            cursor.execute(
+                'SELECT TABLE_NAME,COLUMN_NAME,ORDINAL_POSITION,COLUMN_TYPE,'
+                'IS_NULLABLE,COLUMN_DEFAULT,COLLATION_NAME,EXTRA,GENERATION_EXPRESSION '
+                'FROM information_schema.COLUMNS '
+                f'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ({placeholders}) '
+                'ORDER BY TABLE_NAME,ORDINAL_POSITION',
+                target_tables,
+            )
+            before_columns = cursor.fetchall()
+            assert {
+                before_tables[table_name]['TABLE_COLLATION']
+                for table_name in target_tables
+            } == {'latin1_swedish_ci'}
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, revision)
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT TABLE_NAME,ENGINE,TABLE_COLLATION,CREATE_OPTIONS '
+                'FROM information_schema.TABLES '
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_TYPE='BASE TABLE' "
+                "AND TABLE_NAME<>'alembic_version' ORDER BY TABLE_NAME"
+            )
+            after_tables = {
+                row['TABLE_NAME']: row for row in cursor.fetchall()
+            }
+            assert set(after_tables) == set(before_tables)
+            for table_name, before in before_tables.items():
+                after = after_tables[table_name]
+                if table_name in target_tables:
+                    assert after['TABLE_COLLATION'] == 'utf8mb4_unicode_ci'
+                    assert after['ENGINE'] == before['ENGINE']
+                    assert after['CREATE_OPTIONS'] == before['CREATE_OPTIONS']
+                else:
+                    assert after == before
+
+            placeholders = ','.join(('%s',) * len(target_tables))
+            cursor.execute(
+                'SELECT TABLE_NAME,COLUMN_NAME,ORDINAL_POSITION,COLUMN_TYPE,'
+                'IS_NULLABLE,COLUMN_DEFAULT,COLLATION_NAME,EXTRA,GENERATION_EXPRESSION '
+                'FROM information_schema.COLUMNS '
+                f'WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN ({placeholders}) '
+                'ORDER BY TABLE_NAME,ORDINAL_POSITION',
+                target_tables,
+            )
+            assert cursor.fetchall() == before_columns
+            cursor.execute(
+                'SELECT kcu.COLUMN_NAME,kcu.REFERENCED_COLUMN_NAME,rc.DELETE_RULE '
+                'FROM information_schema.KEY_COLUMN_USAGE kcu '
+                'JOIN information_schema.REFERENTIAL_CONSTRAINTS rc '
+                'ON rc.CONSTRAINT_SCHEMA=kcu.CONSTRAINT_SCHEMA '
+                'AND rc.TABLE_NAME=kcu.TABLE_NAME '
+                'AND rc.CONSTRAINT_NAME=kcu.CONSTRAINT_NAME '
+                "WHERE kcu.CONSTRAINT_SCHEMA=DATABASE() "
+                "AND kcu.TABLE_NAME='membership_location_roles' "
+                "AND kcu.CONSTRAINT_NAME='fk_membership_location_roles_grant' "
+                'ORDER BY kcu.ORDINAL_POSITION'
+            )
+            assert cursor.fetchall() == [
+                {
+                    'COLUMN_NAME': 'membership_id',
+                    'REFERENCED_COLUMN_NAME': 'membership_id',
+                    'DELETE_RULE': 'CASCADE',
+                },
+                {
+                    'COLUMN_NAME': 'location_id',
+                    'REFERENCED_COLUMN_NAME': 'location_id',
+                    'DELETE_RULE': 'CASCADE',
+                },
+                {
+                    'COLUMN_NAME': 'tenant_id',
+                    'REFERENCED_COLUMN_NAME': 'tenant_id',
+                    'DELETE_RULE': 'CASCADE',
+                },
+            ]
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == revision
     finally:
         connection.close()
 

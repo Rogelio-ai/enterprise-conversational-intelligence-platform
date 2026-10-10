@@ -103,7 +103,10 @@ class StaffAuthSession(TimestampMixin, Base):
     tenant_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     user_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
     membership_id: Mapped[int] = mapped_column(BigInteger, nullable=False)
-    status: Mapped[str] = mapped_column(String(16), nullable=False, default='ACTIVE')
+    status: Mapped[str] = mapped_column(
+        String(16), nullable=False, default='ACTIVE',
+        server_default=text("'ACTIVE'"),
+    )
     active_slot: Mapped[int | None] = mapped_column(
         SmallInteger, nullable=True, default=1, server_default=text('1'),
     )
