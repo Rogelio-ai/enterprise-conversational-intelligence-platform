@@ -1,0 +1,428 @@
+# Restaurant Intelligence Platform
+
+> Navigation guide for LLMs and AI development agents working with this repository.
+
+This file is an orientation index.
+
+It is NOT a source of product, domain, architectural, or capability truth.
+
+For authority and precedence, read:
+
+- `docs/SDD/DOCUMENT_AUTHORITY_HIERARCHY.md`
+
+---
+
+## Project
+
+This repository contains the Restaurant Intelligence Platform (RIP).
+
+The platform is an enterprise-grade, multi-tenant restaurant operations and intelligence platform designed to support restaurant workflows, integrations, automation, AI, and future agent-based capabilities.
+
+The current priority is to complete and commercialize the Restaurant Intelligence Platform.
+
+---
+
+## Start Here
+
+An AI development agent working in this repository should normally begin with:
+
+1. `AGENTS.md`
+2. `docs/SDD/DOCUMENT_AUTHORITY_HIERARCHY.md`
+3. `docs/SDD/GLOBAL_SDD.md`
+4. the applicable Capability SDD
+5. only the additional authoritative documents required by that SDD
+6. the applicable Skill for the requested workflow
+
+Do not read the entire repository documentation tree by default.
+
+Use the minimum authoritative context required for the task.
+
+---
+
+## Agent Instructions
+
+Repository-wide agent behavior:
+
+- `AGENTS.md`
+
+This defines how AI development agents must behave while working in this repository.
+
+It includes rules for:
+
+- repository safety;
+- Minimal Change;
+- ownership;
+- authority;
+- reuse;
+- SDD governance;
+- verification;
+- stop conditions.
+
+`AGENTS.md` is an agent instruction document, not product or domain authority.
+
+---
+
+## Document Authority
+
+Official source-of-truth hierarchy:
+
+- `docs/SDD/DOCUMENT_AUTHORITY_HIERARCHY.md`
+
+Use this document to determine:
+
+- which artifacts are authoritative;
+- precedence;
+- conflict handling;
+- the role of SDDs;
+- the role of executable contracts;
+- the role of implementation and tests;
+- why prompts and conversations are not permanent sources of truth.
+
+---
+
+## Product Authority
+
+Primary product documents may include:
+
+- `PRODUCT_CONSTITUTION.md`
+- `PRODUCT_VISION.md`
+
+Use Product Authority for:
+
+- product purpose;
+- strategic boundaries;
+- product-level requirements;
+- non-negotiable product behavior.
+
+Verify exact repository paths before relying on them.
+
+---
+
+## Domain Authority
+
+Primary restaurant-domain documentation includes:
+
+- `RESTAURANT_DOMAIN_MODEL.md`
+- applicable restaurant-domain specifications and subdocuments
+
+Use Domain Authority for:
+
+- business concepts;
+- terminology;
+- business rules;
+- invariants;
+- lifecycle meaning;
+- operational behavior.
+
+Capability SDDs must not silently redefine domain truth.
+
+Verify exact repository paths when necessary.
+
+---
+
+## Global Architecture
+
+Relevant global architectural authority may include:
+
+- `ARCHITECTURE_DECISION_LOG.md`
+- `DEVELOPMENT_PRINCIPLES.md`
+- `REUSE_POLICY.md`
+- `SECURITY_BASELINE.md`
+- approved ADRs
+
+Use these documents only when relevant to the task.
+
+---
+
+## Global Technical Design
+
+Platform-wide technical design:
+
+- `docs/SDD/GLOBAL_SDD.md`
+
+This document defines cross-cutting technical design including applicable:
+
+- tenancy;
+- ownership;
+- authentication;
+- authorization;
+- persistence;
+- transactions;
+- concurrency;
+- API conventions;
+- audit;
+- integrations;
+- frontend/backend boundaries;
+- localization;
+- observability;
+- reuse.
+
+Capability designs inherit the Global SDD.
+
+---
+
+## Capability Technical Design
+
+Capability-specific technical designs are located under:
+
+- `docs/SDD/capabilities/`
+
+Expected naming convention:
+
+`<CAPABILITY_NAME>_SDD.md`
+
+Examples may include:
+
+- `RECEPTION_SDD.md`
+- `WAITER_SDD.md`
+- `DINER_SDD.md`
+- `ORDERING_SDD.md`
+- `PREPARATION_SDD.md`
+- `CHECK_PAYMENT_SDD.md`
+- `CASH_MANAGEMENT_SDD.md`
+- `EXPENSES_SDD.md`
+
+Do not assume an example Capability SDD exists until verified in the repository.
+
+For capability implementation, read the applicable Capability SDD before modifying code.
+
+---
+
+## SDD Templates
+
+Canonical SDD templates:
+
+- `docs/SDD/GLOBAL_SDD_TEMPLATE.md`
+- `docs/SDD/CAPABILITY_SDD_TEMPLATE.md`
+
+Templates define document structure.
+
+They are not substitutes for populated authoritative SDDs.
+
+---
+
+## Skills
+
+Reusable AI-agent workflows are located under:
+
+- `skills/`
+
+Each Skill uses:
+
+`skills/<skill-name>/SKILL.md`
+
+Currently defined or planned workflows may include:
+
+- `repository-discover`
+- `capability-sdd-authoring`
+- `sdd-gap-review`
+- `sdd-implementation`
+- `capability-certification`
+
+Do not assume a planned Skill exists until verified.
+
+Skills define how an agent performs a class of work.
+
+Skills are NOT product or capability design authority.
+
+---
+
+## Repository Discovery
+
+For evidence-based, read-only inspection of repository reality, use:
+
+- `skills/repository-discover/SKILL.md`
+
+Use repository discovery before capability design when current repository ownership, reuse, dependencies, or implementation state are uncertain.
+
+Discovery does not implement or remediate.
+
+---
+
+## Capability SDD Authoring
+
+For creating or updating a Capability SDD, use:
+
+- `skills/capability-sdd-authoring/SKILL.md`
+
+The workflow consumes:
+
+- approved domain requirements;
+- higher authority;
+- `GLOBAL_SDD.md`;
+- repository-discovery evidence;
+- `CAPABILITY_SDD_TEMPLATE.md`.
+
+It does not implement product code.
+
+---
+
+## Source Code
+
+Source code represents current implementation reality.
+
+Source code answers:
+
+> What does the software currently do?
+
+It does not automatically answer:
+
+> What is the software supposed to do?
+
+When implementation conflicts with approved authority, follow `DOCUMENT_AUTHORITY_HIERARCHY.md`.
+
+---
+
+## Executable Contracts
+
+Executable contracts may include:
+
+- database migrations;
+- schemas;
+- DTOs;
+- OpenAPI/API contracts;
+- Protocol definitions;
+- configuration;
+- database constraints.
+
+Executable contracts must conform to applicable approved design.
+
+---
+
+## Tests and Certification
+
+Tests provide executable evidence.
+
+Certification establishes conformity between approved design and implementation.
+
+Tests must not silently create undocumented product or domain rules.
+
+Capability-specific verification and certification requirements belong in the applicable Capability SDD.
+
+---
+
+## Prompts
+
+Codex and other AI-agent prompts are temporary execution artifacts.
+
+Prompts answer:
+
+> What should the agent execute now?
+
+Prompts are NOT permanent sources of:
+
+- product truth;
+- domain truth;
+- architecture;
+- capability design.
+
+Permanent decisions discovered during execution must be promoted to the appropriate authoritative artifact.
+
+---
+
+## Recommended New-Capability Workflow
+
+For a new material capability:
+
+```text
+Operational / Domain Knowledge
+            ↓
+Domain Discovery
+            ↓
+Approved Domain Decisions
+            ↓
+repository-discover
+            ↓
+capability-sdd-authoring
+            ↓
+sdd-gap-review
+            ↓
+SDD Approval
+            ↓
+sdd-implementation
+            ↓
+capability-certification
+            ↓
+Certified As-Built SDD
+```
+
+Do not begin implementation while blocking domain or design decisions remain unresolved.
+
+---
+
+## Context Efficiency
+
+Do not load every project document automatically.
+
+Prefer:
+
+```text
+Task
+  ↓
+AGENTS.md
+  ↓
+Authority hierarchy
+  ↓
+Applicable Global / Capability SDD
+  ↓
+Applicable Skill
+  ↓
+Only necessary referenced authority
+```
+
+Expand context only when required by ownership, dependencies, conflicts, or verification.
+
+---
+
+## Fundamental Navigation Rule
+
+When uncertain where a rule belongs or which source governs:
+
+1. read `docs/SDD/DOCUMENT_AUTHORITY_HIERARCHY.md`;
+2. identify the authority level;
+3. read the applicable authoritative artifact;
+4. do not infer permanent requirements from historical prompts or conversations.
+
+---
+
+## Quick Reference
+
+```text
+llms.txt
+→ Where is the relevant knowledge?
+
+AGENTS.md
+→ How must the agent behave?
+
+SKILL.md
+→ How is this type of work performed?
+
+GLOBAL_SDD.md
+→ What global technical design applies?
+
+<CAPABILITY>_SDD.md
+→ What technical design applies to this capability?
+
+Prompt
+→ What must be executed now?
+
+Code
+→ What is currently implemented?
+
+Tests / Certification
+→ What has been verified?
+```
+
+---
+
+## Final Rule
+
+Use this file to navigate.
+
+Do not use this file to override authoritative sources.
+
+When this file and an authoritative artifact disagree, the authoritative artifact governs.
+
+If the disagreement creates material ambiguity:
+
+> STOP, identify the conflict, and resolve the authoritative source before proceeding.
