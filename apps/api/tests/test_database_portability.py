@@ -131,11 +131,13 @@ POST_0026_APPLICATION_TABLES = {
     'item_uom_conversions',
     'membership_location_grants',
     'membership_location_roles',
+    'minimal_provisioning_runs',
     'menu_external_mappings',
     'menu_section_external_mappings',
     'onboarding_imports',
     'onboarding_staff_continuations',
     'operational_request_waiter_states',
+    'organization_headquarters_changes',
     'staff_auth_sessions',
     'paid_check_dispatch_attempts',
     'paid_check_dispatches',
@@ -2353,6 +2355,81 @@ def test_0068_schema_collation_alignment_changes_only_table_defaults(
             ]
             cursor.execute('SELECT version_num FROM alembic_version')
             assert cursor.fetchone()['version_num'] == revision
+    finally:
+        connection.close()
+
+
+def test_0069_headquarters_backfill_is_unambiguous_and_scope_safe(
+    isolated_database,
+    integration_settings: Settings,
+) -> None:
+    database_name, _ = isolated_database
+    _run_alembic(database_name, '0068_schema_collation_alignment')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                "INSERT INTO tenants (name,slug,status) VALUES "
+                "('Tenant A','p02-a','ACTIVE'),('Tenant B','p02-b','ACTIVE')"
+            )
+            tenant_a = int(cursor.lastrowid)
+            tenant_b = tenant_a + 1
+            cursor.execute(
+                "INSERT INTO organizations (tenant_id,code,name,status) VALUES "
+                "(%s,'SOLE','Sole','ACTIVE'),(%s,'MULTI','Multi','ACTIVE'),"
+                "(%s,'ZERO','Zero','ACTIVE'),(%s,'FOREIGN','Foreign','ACTIVE')",
+                (tenant_a, tenant_a, tenant_a, tenant_b),
+            )
+            cursor.execute(
+                'SELECT id,tenant_id,code FROM organizations ORDER BY id'
+            )
+            organizations = {row['code']: row for row in cursor.fetchall()}
+            cursor.execute(
+                "INSERT INTO locations "
+                "(tenant_id,organization_id,code,name,timezone,status) VALUES "
+                "(%s,%s,'S1','Sole 1','America/Mexico_City','ACTIVE'),"
+                "(%s,%s,'M1','Multi 1','America/Mexico_City','ACTIVE'),"
+                "(%s,%s,'M2','Multi 2','America/Mexico_City','ACTIVE'),"
+                "(%s,%s,'F1','Foreign 1','America/Mexico_City','ACTIVE')",
+                (
+                    tenant_a, organizations['SOLE']['id'],
+                    tenant_a, organizations['MULTI']['id'],
+                    tenant_a, organizations['MULTI']['id'],
+                    tenant_b, organizations['FOREIGN']['id'],
+                ),
+            )
+    finally:
+        connection.close()
+
+    _run_alembic(database_name, '0069_org_hq_provisioning')
+    connection = _connect_isolated_database(integration_settings, database_name)
+    try:
+        with connection.cursor() as cursor:
+            cursor.execute(
+                'SELECT code,headquarters_location_id FROM organizations ORDER BY code'
+            )
+            headquarters = {
+                row['code']: row['headquarters_location_id'] for row in cursor.fetchall()
+            }
+            assert headquarters['SOLE'] is not None
+            assert headquarters['FOREIGN'] is not None
+            assert headquarters['MULTI'] is None
+            assert headquarters['ZERO'] is None
+            with pytest.raises(pymysql.err.IntegrityError):
+                cursor.execute(
+                    'UPDATE organizations SET headquarters_location_id=%s WHERE code=%s',
+                    (headquarters['FOREIGN'], 'SOLE'),
+                )
+            cursor.execute(
+                "SELECT COUNT(*) AS amount FROM information_schema.TABLES "
+                "WHERE TABLE_SCHEMA=DATABASE() AND TABLE_NAME IN "
+                "('organization_headquarters_changes','minimal_provisioning_runs')"
+            )
+            assert cursor.fetchone()['amount'] == 2
+            cursor.execute('SELECT version_num FROM alembic_version')
+            assert cursor.fetchone()['version_num'] == (
+                '0069_org_hq_provisioning'
+            )
     finally:
         connection.close()
 

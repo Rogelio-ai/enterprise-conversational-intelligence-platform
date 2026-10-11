@@ -90,7 +90,12 @@ from app.models.menu import (
     ProductCategoryExternalMapping,
     ProductExternalMapping,
 )
-from app.models.organization import Location, Organization
+from app.models.organization import (
+    Location,
+    MinimalProvisioningRun,
+    Organization,
+    OrganizationHeadquartersChange,
+)
 from app.models.order_draft import OrderDraft, OrderDraftItem, OrderDraftItemSelection
 from app.models.onboarding import OnboardingImport, OnboardingStaffContinuation
 from app.models.paid_check_print import PaidCheckDispatch, PaidCheckDispatchAttempt
@@ -205,6 +210,8 @@ __all__ = [
     'MenuSection',
     'MenuSectionExternalMapping',
     'Location',
+    'MinimalProvisioningRun',
+    'OrganizationHeadquartersChange',
     'IntelligenceDerivation',
     'InventoryItem',
     'InternalOperationalMessage',

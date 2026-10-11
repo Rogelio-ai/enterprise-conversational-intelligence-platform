@@ -506,6 +506,21 @@ def sql_connection(integration_settings: Settings):
                 (f'{prefix}%',),
             )
             cursor.execute(
+                'DELETE FROM minimal_provisioning_runs WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'DELETE FROM organization_headquarters_changes WHERE tenant_id IN '
+                '(SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
+                'UPDATE organizations SET headquarters_location_id = NULL '
+                'WHERE tenant_id IN (SELECT id FROM tenants WHERE slug LIKE %s)',
+                (f'{prefix}%',),
+            )
+            cursor.execute(
                 'DELETE FROM locations WHERE tenant_id IN '
                 '(SELECT id FROM tenants WHERE slug LIKE %s)',
                 (f'{prefix}%',),
@@ -517,5 +532,6 @@ def sql_connection(integration_settings: Settings):
             )
             cursor.execute('DELETE FROM tenants WHERE slug LIKE %s', (f'{prefix}%',))
             cursor.execute('DELETE FROM users WHERE email LIKE %s', (f'{prefix}%@example.test',))
+            cursor.execute('DELETE FROM users WHERE username LIKE %s', (f'{prefix}%',))
             cursor.execute('DELETE FROM permissions WHERE code LIKE %s', (f'{prefix}.%',))
         connection.close()

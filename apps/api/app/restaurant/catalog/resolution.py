@@ -71,6 +71,7 @@ async def _scope_is_valid(
             Organization.id == organization_id,
             Organization.tenant_id == tenant_id,
             Organization.status == 'ACTIVE',
+            Organization.headquarters_location_id.is_not(None),
         )
     )
     if organization is None:

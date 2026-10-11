@@ -61,6 +61,11 @@ def _scope(connection, prefix: str, *, resource_type: str = 'TABLE', resource_st
         _execute(connection, 'INSERT INTO role_permissions (role_id,permission_id) VALUES (%s,%s)', (role_id, permission_id))
     organization_id = _execute(connection, "INSERT INTO organizations (tenant_id,code,name,status) VALUES (%s,%s,'Organization','ACTIVE')", (tenant_id, f'ORG-{uuid4().hex[:12]}'))
     location_id = _execute(connection, "INSERT INTO locations (tenant_id,organization_id,code,name,timezone,status) VALUES (%s,%s,%s,'Location','America/Mexico_City','ACTIVE')", (tenant_id, organization_id, f'LOC-{uuid4().hex[:12]}'))
+    _execute(
+        connection,
+        'UPDATE organizations SET headquarters_location_id=%s WHERE id=%s',
+        (location_id, organization_id),
+    )
     resource_id = _execute(connection, "INSERT INTO resources (tenant_id,location_id,code,name,resource_type,status) VALUES (%s,%s,%s,'Table',%s,%s)", (tenant_id, location_id, f'T-{uuid4().hex[:12]}', resource_type, resource_status))
     if resource_type == 'TABLE' and resource_status == 'ACTIVE':
         _execute(

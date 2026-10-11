@@ -114,6 +114,7 @@ async def _valid_location(db: AsyncSession, conversation: Conversation) -> Locat
             Location.organization_id == conversation.organization_id,
             Location.status == 'ACTIVE',
             Organization.status == 'ACTIVE',
+            Organization.headquarters_location_id.is_not(None),
         )
     )
     if location is None:

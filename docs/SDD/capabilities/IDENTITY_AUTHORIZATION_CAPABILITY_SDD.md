@@ -4,8 +4,8 @@
 **Capability:** Identity & Authorization
 **Document:** `IDENTITY_AUTHORIZATION_CAPABILITY_SDD.md`
 **Template:** `CAPABILITY_SDD_TEMPLATE.md`
-**Status:** APPROVED
-**Version:** 0.1.0
+**Status:** CERTIFIED AS-BUILT
+**Version:** 0.2.0
 **Owner:** Identity / Enterprise Core
 **Last Updated:** 2026-10-10
 
@@ -14,12 +14,14 @@
 # 1. PURPOSE
 
 Define the authoritative technical design for the existing Identity & Authorization
-foundation and the missing independent initialization of its canonical permission catalog.
+foundation, independent initialization of its canonical permission catalog, and controlled
+participation of existing access provisioning in a caller-owned transaction.
 
 The capability establishes Staff identity and authentication, Tenant and Location access,
 roles and permission assignments, session enforcement, and credential administration. This
-version adds only a permission-registration mechanism; it does not redesign existing identity
-behavior or create Restaurant business authority.
+Version 0.1.0 added only permission registration. This approved version 0.2.0 adds the minimal
+P02-D05 transaction-participation extension while preserving existing Identity behavior,
+authorization, public consumers, and ownership.
 
 ---
 
@@ -33,6 +35,8 @@ Domain Authority: N/A — this version introduces no Restaurant domain rule
 Global Architectural Authority:
   - AGENTS.md
   - docs/SDD/DOCUMENT_AUTHORITY_HIERARCHY.md
+  - P02-D05 caller-owned Identity transaction participation, approved by the Project Operator
+    acting as Product Owner and Architecture Authority on 2026-10-10
 Global SDD: docs/SDD/GLOBAL_SDD.md (APPROVED, version 0.2.0)
 Applicable ADRs: None found for this capability
 Security Baseline: docs/SDD/GLOBAL_SDD.md Section 18
@@ -43,6 +47,7 @@ Other executable/repository contracts:
   - apps/api/app/api/routes/auth.py
   - apps/api/app/identity/
   - apps/api/app/bootstrap_admin.py
+  - docs/SDD/capabilities/ORGANIZATION_LOCATION_PROVISIONING_CAPABILITY_SDD.md
   - apps/api/alembic/versions/0002_auth_tenant_foundation.py
   - apps/api/alembic/versions/0063_staff_username_login.py
   - apps/api/alembic/versions/0064_location_scoped_staff_rbac.py
@@ -51,16 +56,18 @@ Other executable/repository contracts:
 ```
 
 This SDD inherits all applicable higher-authority rules. Repository implementation and tests
-are evidence of existing contracts; this document is the approval candidate that preserves
-those contracts and defines the new capability-specific initialization design.
+are evidence of existing contracts. Version 0.2.0 preserves the approved version 0.1.0 design
+and adds only the P02-D05 transaction-participation contract.
 
 ## 2.2 Authority of This SDD
 
-This approved document is authoritative for the technical design of Identity & Authorization
-within its stated boundary. Prompts, conversations, implementation reports, and tests do not
-independently redefine it. Approval does not imply implementation or certification.
+The approved version 0.1.0 remains historical authority within its stated boundary. Approved
+version 0.2.0 supersedes it for the complete Identity design recorded here. Prompts,
+implementation reports, and tests do not independently redefine the design.
 
 ## 2.3 Approval Record
+
+Historical approval preserved:
 
 ```text
 Document path: docs/SDD/capabilities/IDENTITY_AUTHORIZATION_CAPABILITY_SDD.md
@@ -72,7 +79,28 @@ Approval evidence/reference: Explicit operator authorization in “P01 — CANON
 Open conditions: NONE
 ```
 
-This approval applies only to version 0.1.0 and the design boundary recorded here.
+Version 0.2.0 amendment approval record:
+
+```text
+Document path: docs/SDD/capabilities/IDENTITY_AUTHORIZATION_CAPABILITY_SDD.md
+Document version: 0.2.0
+Approving authority/role: Project Operator acting as Architecture Authority
+Explicit decision: APPROVED
+Decision date: 2026-10-10
+Approval evidence/reference: Explicit operator approval recorded in the ChatGPT conversation
+  on 2026-10-10 in response to the formal approval request for Identity & Authorization SDD
+  version 0.2.0
+Open conditions: NONE
+```
+
+The version 0.1.0 approval remains preserved as historical evidence. Version 0.2.0 approval
+includes caller-owned transaction participation for existing Identity provisioning services
+while preserving existing consumer behavior, authorization, Tenant isolation, and security
+invariants.
+
+Repository governance requires meaningful design changes to update the document version but
+defines no more specific increment rule. Version `0.2.0` is therefore the next minor design
+version for this backward-compatible contract extension.
 
 ---
 
@@ -87,6 +115,8 @@ This approval applies only to version 0.1.0 and the design boundary recorded her
 - Server-side resolution and enforcement of Tenant- and Location-scoped Staff authority.
 - Administrative credential changes and resulting Staff-session revocation.
 - Canonical permission definitions and permission-only catalog initialization.
+- Transaction-safe participation of existing Identity access provisioning when an authorized
+  application service owns the surrounding transaction.
 
 ## Does Not Own
 
@@ -94,6 +124,8 @@ This approval applies only to version 0.1.0 and the design boundary recorded her
 - Restaurant roles, operational profiles, Reception/Waiter responsibilities, or their business
   permission policy.
 - Restaurant provisioning, onboarding workflow, commercial data, or business records.
+- Ownership of the caller's Organization/Location provisioning transaction or its business
+  lifecycle; Identity participates only through its owned access-provisioning contract.
 - Capability-specific authorization decisions owned by Restaurant capabilities.
 - Diner identity/session behavior, external connector identity, or payment credentials.
 - Frontend navigation or presentation.
@@ -112,12 +144,17 @@ This approval applies only to version 0.1.0 and the design boundary recorded her
 - Make administrative bootstrap consume the same definitions while preserving its current grant
   behavior.
 - Focused isolated verification of initialization and affected authorization behavior.
+- A non-committing internal access-provisioning participant using a caller-provided
+  `AsyncSession`, with compatibility wrappers preserving current commit behavior.
+- Focused verification of caller commit, caller rollback, failure propagation, Tenant isolation,
+  delegation safety, and existing-consumer compatibility.
 
 ## 4.2 Non-Goals / Out of Scope
 
 - New permissions, roles, actors, user-management workflows, or authorization semantics.
-- Staff Login, invitation, access-provisioning, Reception, or Waiter redesign.
-- New API or frontend surface for permission initialization.
+- Staff Login, invitation, access-provisioning authorization semantics, Reception, or Waiter
+  redesign.
+- New public API or frontend surface for permission initialization or transaction participation.
 - New service, microservice, queue, event, table, or infrastructure dependency.
 - Automatic changes to existing role-permission or membership assignments.
 - Modification of historical migrations.
@@ -135,7 +172,7 @@ This approval applies only to version 0.1.0 and the design boundary recorded her
 ```text
 Repository: /home/rogelio/proyectos/pryecip
 Branch: feat/ws-00-01-runtime-reuse-baseline
-Commit: 7fbfca2305a1287aa8c3141d103decfb90bf619e
+Commit: d6810e98f2b2fc7c871afe507f15c34446dd628b
 Migration head: 0068_schema_collation_alignment
 
 Relevant backend:
@@ -164,6 +201,10 @@ Relevant documentation: GLOBAL_SDD.md Sections 5-9, 18, 29, 32 and 33
 The existing foundation is `IMPLEMENTED_NOT_CERTIFIED` as one unified capability under this SDD.
 Focused executable evidence covers its material security contracts.
 
+`access_provisioning.provision_access` currently accepts an `AsyncSession` but commits internally.
+Version 0.2.0 designs a non-committing participant beneath compatibility wrappers; no such
+participant is implemented at this design baseline.
+
 Repository inspection confirms 83 unique existing permission definitions: 74 seeded by migrations
 and nine currently dependent on `bootstrap_admin.py`. Fifty definitions overlap with identical
 descriptions, and no conflicting definition was found. `bootstrap_admin.py` owns 59 definitions
@@ -181,6 +222,7 @@ independent permission-only initializer exists.
 | `bootstrap_admin` permission definitions | Identity bootstrap | Reuse with minimal extension | Consume canonical catalog and retain its existing 59-code grant subset | Accidental grant expansion |
 | `DatabaseManager` / `AsyncSession` transactions | API persistence | Reuse as-is | Add an internal invocation wrapper | Low |
 | Authentication and authorization dependencies | Identity | Reuse as-is | None | Security regression if touched |
+| `identity/access_provisioning.py` | Identity | Reuse with minimal extension | Separate non-committing participant from existing commit-owning wrapper | Partial commit or consumer regression |
 
 The canonical definitions, initializer, and invocation wrapper belong in one bounded module,
 proposed as `apps/api/app/identity/permission_catalog.py`. The definitions MUST NOT be duplicated
@@ -208,6 +250,7 @@ Reason: Two current initialization paths require one owned definition source; no
 | Authorized administrator | Administer existing Staff credentials/access | Existing server-enforced permissions and Tenant/Location scope |
 | Installation operator | Invoke permission initialization during controlled installation | Infrastructure/database execution authority; not a Restaurant-user permission |
 | Application bootstrap | Reuse canonical registration before its existing grant workflow | Internal process, not an authenticated business actor |
+| Authorized calling application service | Own an approved outer transaction and invoke Identity participation | Existing authenticated/authorized actor context plus caller-provided `AsyncSession` |
 
 ## 7.2 Domain Concepts
 
@@ -220,6 +263,7 @@ Reason: Two current initialization paths require one owned definition source; no
 | Role Permission | Assignment of a registered permission to a Tenant role | This SDD after approval | `role_permissions` |
 | Location authority | Role/permission composition for one granted Location | Global SDD Sections 6-8; this SDD | grants and `membership_location_roles` |
 | Staff session | Server-verifiable active authentication session | This SDD after approval | `staff_auth_sessions` |
+| Transaction participant | Identity-owned access-provisioning operation that flushes into, but never completes, a caller-owned transaction | P02-D05; this SDD version 0.2.0 after approval | Internal service operation using caller `AsyncSession` |
 
 ---
 
@@ -280,6 +324,19 @@ Enforcement: Bounded initializer dependency and transaction writes restricted to
 Failure behavior: Any unauthorized side effect is a certification failure.
 Verification: V5 and V6.
 
+## IA-INV-007 — Caller-Owned Transaction Participation
+
+Rule: When access provisioning runs in participant mode, the authorized caller exclusively owns
+transaction begin, commit, rollback, and session close. Identity validates, authorizes, mutates,
+and MAY flush through the caller-provided `AsyncSession`, but MUST NOT commit, roll back, or close
+that session.
+Authority: P02-D05; Global SDD Sections 12 and 18; this SDD version 0.2.0 after approval.
+Enforcement: One internal non-committing participant; current consumers use compatibility wrappers
+that retain their existing commit/rollback behavior.
+Failure behavior: Propagate the original typed failure to the transaction owner; no hidden
+recovery or partial commit.
+Verification: T1-T8 and T12.
+
 ---
 
 # 9. LIFECYCLE AND KEY FLOWS
@@ -319,6 +376,19 @@ Main flow: Invoke the shared permission initializer, then execute existing provi
 only the same 59 permission codes granted before this design.
 Postconditions: Existing bootstrap behavior remains compatible; catalog definitions are shared.
 Failure cases: Existing bootstrap rollback behavior remains authoritative.
+
+### UC-003 — Participate in Caller-Owned Access Provisioning
+
+Actor: Authorized calling application service acting for an existing authorized administrator.
+Preconditions: Caller has opened a transaction on a provided `AsyncSession`; existing Identity
+authentication, active Tenant/Membership, Location, role, and delegation requirements pass.
+Trigger: Caller invokes the internal participant rather than a commit-owning compatibility wrapper.
+Main flow: Identity performs existing validation and authorization, locks in existing deterministic
+order, creates/converges the approved User/Membership/role/grant state, flushes as required, and
+returns its structured result without completing the transaction.
+Postconditions: Participating writes are visible in the caller transaction and persist only if the
+caller commits.
+Failure cases: Typed failure propagates unchanged; caller rolls back the entire operation.
 
 ---
 
@@ -401,6 +471,8 @@ A future schema requirement would require separate design approval and migration
 | `initialize_canonical_permissions` | Validate catalog, insert missing rows, validate stored rows, report created codes/count | `AsyncSession`; structured result | `Permission`, SQLAlchemy |
 | Permission initialization command | Controlled non-API invocation and transaction ownership | Settings/database; status summary | `DatabaseManager`, initializer |
 | Administrative bootstrap adapter | Initialize catalog, then preserve existing 59-code grant selection | Existing bootstrap inputs/results | Initializer and existing bootstrap flow |
+| Access-provisioning transaction participant | Execute existing authorized User/Membership/role/Location-grant mutations without transaction completion | Caller `AsyncSession` and existing provisioning inputs; structured result | Existing access-provisioning validation, locking, and models |
+| Access-provisioning compatibility wrapper | Preserve current consumer commit/rollback behavior | Existing API/service inputs and results | Transaction participant |
 
 The proposed owned module is `app.identity.permission_catalog`. It contains definitions and the
 internal initializer. Its command entry point MAY reside in the same module or a thin adjacent
@@ -410,6 +482,11 @@ Transaction ownership: The command wrapper owns one transaction. A caller with a
 transaction, including `bootstrap_admin`, owns commit/rollback and passes its session.
 Side effects: Missing `permissions` rows and non-sensitive summary logging only.
 Failure behavior: Raise a typed initialization error; transaction owner rolls back.
+
+Access-provisioning transaction ownership: The participant never begins, commits, rolls back, or
+closes the caller's transaction/session. The caller performs those operations. Existing wrappers
+continue owning their current transaction completion and delegate Identity work to the same
+participant. Participant failure propagates without internal rollback or hidden recovery.
 
 ---
 
@@ -429,6 +506,17 @@ External side effects: Non-sensitive completion/failure logging only
 Administrative bootstrap retains its current single transaction; permission registration and its
 existing provisioning/grants succeed or roll back together.
 
+```text
+Operation: Caller-owned Identity access provisioning
+Reads / locks: Existing Tenant, actor/target User and Membership, Role/Permission assignments,
+               Organization, and target Locations using the existing authorization lock order
+Writes: Existing authorized User, TenantMembership, MembershipRole,
+        MembershipLocationGrant, and MembershipLocationRole changes
+Commit point: None inside the participant; the authorized caller owns completion
+Rollback behavior: Participant propagates failure; caller rolls back the entire outer operation
+External side effects: None
+```
+
 ## 13.2 Concurrency
 
 ```text
@@ -443,6 +531,9 @@ Conflict behavior: A duplicate-key race rolls back safely; a retry converges wit
 
 No new global lock or infrastructure is introduced.
 
+Participant mode preserves existing access-provisioning locks, deterministic ordering,
+revalidation, and conflict behavior. It introduces no second lock strategy.
+
 ## 13.3 Idempotency
 
 ```text
@@ -454,6 +545,10 @@ Replay behavior: Creates zero rows and leaves all rows unchanged
 Duplicate side-effect prevention: No grants or external effects; database uniqueness
 ```
 
+Access-provisioning replay behavior, uniqueness, and conflict handling remain unchanged. The
+participant does not add an idempotency owner; the authorized outer capability owns any broader
+operation key or replay evidence.
+
 ---
 
 # 14. API AND DTO CONTRACTS
@@ -464,6 +559,9 @@ No new HTTP API is authorized. Permission initialization is an internal service/
 not a Restaurant-user operation.
 
 Existing authentication and identity endpoints remain unchanged.
+
+No participant-mode HTTP endpoint is introduced. Existing access-provisioning endpoints retain
+their request, response, authorization, status, and transaction-completion behavior.
 
 ## 14.2 DTOs / Schemas
 
@@ -491,6 +589,7 @@ General architecture is inherited from Global SDD Sections 7 and 8.
 | Resolve current Staff authority | Existing assigned permissions | Tenant and assigned Locations | Active user, membership, Tenant, and session required |
 | Change Staff password | `staff_credentials.manage` | Actor and target in same Tenant | Target active; revoke target sessions atomically |
 | Provision access | Existing `user.manage`, `role.manage`, `location.manage` combination | Each target Location | Actor cannot delegate permissions it lacks |
+| Participate in caller-owned provisioning | Same existing provisioning requirements | Existing Tenant and each target Location | Caller supplies session/transaction; participant gains no additional authority |
 | Initialize permissions | N/A — controlled installation authority | Platform database | Not reachable by Restaurant API; creates no grants |
 
 Reception and Waiter operational authority and all existing role assignments remain unchanged.
@@ -503,6 +602,7 @@ Reception and Waiter operational authority and all existing role assignments rem
 |---|---|---|---|
 | Staff credential change | Authorized Staff administrator | Existing structured security log | Target IDs and sessions revoked; never credential value |
 | Permission initialization | Installation process | Non-sensitive structured summary | Counts/status; permission codes MAY be diagnostic, no secrets |
+| Caller-owned access provisioning | Existing authorized actor; outer capability records its operation evidence | Existing Identity structured evidence within caller transaction | Same scoped IDs and assignment changes as existing provisioning; never credentials |
 
 No new persistent audit table is required for idempotent global reference-data initialization.
 
@@ -522,6 +622,7 @@ N/A — no external integration is introduced.
 | Tenant/Organization/Location | Ownership references used by grants | Identity references Enterprise Core state | Existing composite ownership constraints | Invalid cross-scope assignment rejected |
 | Administrative bootstrap | Canonical definitions and initializer | Bootstrap consumes Identity service | Internal function call in caller transaction | Bootstrap rolls back |
 | Restaurant operations | Existing roles/grants only | Restaurant consumes resolved authority | No initializer coupling | No behavior change |
+| Organization / Location / Minimal Provisioning | Atomic Staff access participation | P02 calls Identity | P02 SDD v0.1.0 and the approved version of this amendment | Failure propagates and outer transaction rolls back |
 
 ## 17.3 Events / Async Processing
 
@@ -566,7 +667,8 @@ Security concerns:
   and exposing initialization to Restaurant users
 Required controls:
   server-side Tenant/Location authorization; database scope constraints; one-active-session
-  enforcement; command-only initialization; permission-only writes; no automatic grants
+  enforcement; command-only initialization; permission-only writes; no automatic grants;
+  participant mode reuses all existing authorization and cannot complete caller transactions
 Personal data:
   existing Staff usernames, optional email, display name, and credential hash; initializer handles
   none of these
@@ -577,6 +679,9 @@ Logging restrictions:
 ```
 
 Registering a permission is not granting it. Initialization MUST NOT change effective authority.
+Transaction participation is not an authorization bypass: caller ownership changes only commit /
+rollback responsibility, never Identity validation, Tenant/Location scope, delegation bounds, or
+credential/session rules.
 
 ---
 
@@ -589,6 +694,9 @@ Registering a permission is not granting it. Initialization MUST NOT change effe
 | Database failure mid-initialization | Transaction rolled back | Explicit failure | Restore dependency and retry |
 | Duplicate-key race | Failed transaction leaves no partial initializer state | Explicit retryable failure | Retry; unique code converges |
 | Bootstrap failure after initialization call | Whole bootstrap transaction rolled back | Existing bootstrap failure contract | Correct cause and rerun |
+| Participant validation/authorization failure | Uncommitted outer transaction only | Typed failure propagates | Caller rolls back and corrects request/authority |
+| Failure after Identity writes but before outer completion | No committed partial result | Outer operation fails | Caller rollback removes all participating writes |
+| Existing wrapper failure | Same state/result as before amendment | Existing API/service error | Existing recovery contract |
 
 Failures leave determinate state and no partial grants.
 
@@ -606,6 +714,11 @@ Failures leave determinate state and no partial grants.
   and Restaurant workflows.
 - Historical migrations remain immutable; the canonical source governs runtime initialization
   after approval and implementation, not historical revision behavior.
+- Existing access-provisioning wrappers retain current commit/rollback behavior, inputs, outputs,
+  authorization, and conflict semantics.
+- Staff Login, one-active-session enforcement, concurrent-login rejection, logout invalidation,
+  credential administration, target-session revocation, User creation, TenantMembership,
+  Location grants/roles, P01 initialization, and administrative bootstrap remain unchanged.
 
 ---
 
@@ -632,6 +745,8 @@ No optimization infrastructure is justified.
 - One controlled internal/CLI invocation boundary.
 - Minimal `bootstrap_admin` reuse wiring preserving its existing grant subset.
 - Directly related focused tests.
+- One internal non-committing access-provisioning participant extracted from the existing service.
+- Minimal compatibility wrappers preserving current access-provisioning transaction completion.
 
 ## Conditionally Allowed
 
@@ -648,6 +763,8 @@ No optimization infrastructure is justified.
 - New HTTP API, frontend, service, microservice, queue, or infrastructure dependency.
 - Unrelated refactoring, renaming, formatting, dependency upgrades, schema/API changes, or frontend
   changes.
+- A parallel Identity/provisioning service, participant-mode public endpoint, authorization
+  bypass, changed permission code, expanded role privilege, or hidden transaction recovery.
 
 ```text
 Backend: YES
@@ -663,12 +780,12 @@ External integration: NO
 # 25. IMPLEMENTATION SEQUENCE
 
 ```text
-1. Establish the canonical catalog from verified existing definitions.
-2. Implement the transaction-aware permission-only initializer and controlled command.
-3. Adapt administrative bootstrap to reuse the catalog while retaining its 59-code grant subset.
-4. Add focused initialization and regression tests.
-5. Verify in an isolated MySQL 8.4 database.
-6. Certify the defined scenarios and regression boundary.
+1. Preserve the implemented/certified P01 permission-catalog behavior without rework.
+2. After explicit version 0.2.0 approval, extract the existing access-provisioning mutation into
+   the non-committing participant and retain commit-owning wrappers.
+3. Add focused transaction-participation and compatibility tests.
+4. Verify T1-T12 in isolated MySQL 8.4 with the consuming P02 transaction boundary.
+5. Certify the amendment and affected regression boundary.
 ```
 
 ```text
@@ -679,6 +796,16 @@ Depends on: Explicit approval of SDD version 0.1.0
 Allowed changes: Section 24 Allowed boundary
 Verification: Sections 26-29
 Exit condition: Focused certification PASS with no unauthorized design deviation
+```
+
+```text
+UNIT: P02 Identity Transaction Participation
+Objective: Permit existing authorized access provisioning to join a caller-owned transaction
+           without changing authorization or current consumers.
+Depends on: Explicit Architecture Authority approval of SDD version 0.2.0
+Allowed changes: Existing access-provisioning service/wrappers and focused tests only
+Verification: T1-T12 and AC-005
+Exit condition: Focused certification PASS before P02 certification declares conformity
 ```
 
 ---
@@ -696,6 +823,10 @@ Exit condition: Focused certification PASS with no unauthorized design deviation
 | Credential preservation | Focused API/integration regression | Authorized change/revocation and cross-Tenant denial |
 | Location authority preservation | Focused API/integration regression | Grant plus per-Location permission enforcement |
 | Tenant isolation | Focused authorization regression | Cross-Tenant token/assignment/target denied |
+| Participant transaction ownership | Service + MySQL integration | No begin/commit/rollback/session close inside participant |
+| Caller rollback/commit | Service + MySQL integration | Rollback removes all writes; commit persists complete result |
+| Existing wrapper compatibility | Focused API/integration regression | Current commit behavior, DTOs, errors, and authorization unchanged |
+| Atomic P02 composition contract | Service + MySQL integration | Failure after Identity participation leaves no partial core/Identity state |
 
 Use an isolated MySQL 8.4 database. Do not use the normal development database, reserved pilot
 candidate, or historical volumes. Sequential focused execution is sufficient.
@@ -707,9 +838,10 @@ candidate, or historical volumes. Sequential focused execution is sufficient.
 ## Direct
 
 ```text
-Affected: Canonical definitions, initializer, invocation, administrative bootstrap
-Risk: Missing/duplicate definitions, altered descriptions, unintended grants
-Verification: New focused permission-initialization tests and existing bootstrap idempotency test
+Affected: Canonical definitions, initializer, invocation, administrative bootstrap, and access
+          provisioning transaction boundary
+Risk: Missing/duplicate definitions, altered descriptions, unintended grants, or hidden commit
+Verification: Permission-initialization tests, bootstrap idempotency, and T1-T8/T12
 ```
 
 ## Secondary
@@ -803,6 +935,67 @@ Expected result: Every pre-existing code retains its original ID; only missing c
 IDs.
 Evidence: Before/after ID comparison.
 
+## T1 — Existing Wrapper Commit Compatibility
+
+Action: Invoke the existing authorized provisioning wrapper.
+Expected result: Its current complete result is committed exactly as before the amendment.
+
+## T2 — Participant Does Not Commit
+
+Action: Invoke the participant inside a caller transaction and inspect from an independent
+connection before caller completion.
+Expected result: No participating write is committed or externally visible.
+
+## T3 — Caller Rollback
+
+Action: Invoke the participant, then roll back the caller transaction.
+Expected result: All participating User/Membership/role/grant writes are absent.
+
+## T4 — Caller Commit
+
+Action: Invoke the participant, then commit the caller transaction.
+Expected result: The complete authorized result persists.
+
+## T5 — Mid-Operation Failure
+
+Action: Cause a deterministic failure after at least one participating write/flush.
+Expected result: Failure propagates; caller rollback leaves no partial records.
+
+## T6 — Cross-Tenant Denial
+
+Action: Request a target identity, Organization, Role, or Location outside the caller Tenant.
+Expected result: Existing denial semantics apply and no state changes.
+
+## T7 — Unauthorized Role Assignment
+
+Action: Attempt to delegate permissions absent from the actor's target-Location authority.
+Expected result: Existing authorization error and no state changes.
+
+## T8 — Location Grant Integrity
+
+Action: Provision authorized multi-Location access through participant and wrapper modes.
+Expected result: Membership grants and Location roles remain same-Tenant, correctly scoped, and
+equivalent across modes.
+
+## T9 — Staff Login Preservation
+
+Expected result: One-active-session, concurrent-login rejection, logout invalidation, and relogin
+remain unchanged.
+
+## T10 — Credential Administration Preservation
+
+Expected result: Authorized password changes, target-session revocation, and cross-Tenant denial
+remain unchanged.
+
+## T11 — P01 Permission Initialization Preservation
+
+Expected result: V1-V9 continue to pass with 83 unique canonical codes and unchanged grants.
+
+## T12 — Existing Consumer Compatibility
+
+Action: Run focused tests for every current access-provisioning caller/wrapper.
+Expected result: Existing inputs, outputs, commits, conflicts, and authorization remain unchanged.
+
 ---
 
 # 29. ACCEPTANCE AND PASS / FAIL
@@ -836,6 +1029,16 @@ Verification: V7-V9 and focused regression.
 PASS: All evidence passes with no unauthorized grant or behavior change.
 FAIL: Any identifier replacement, grant expansion, authorization regression, or security failure.
 
+## AC-005 — Caller-Owned Transaction Participation
+
+Requirement: Identity access provisioning participates without internal transaction completion and
+without changing existing consumers or security behavior.
+Verification: T1-T12.
+PASS: Caller alone commits/rolls back/closes; failures propagate; all writes are atomic;
+Tenant/Location/delegation/session/credential/P01 invariants and wrappers remain unchanged.
+FAIL: Any internal participant commit/rollback/close, partial record, privilege expansion,
+cross-Tenant mutation, credential exposure, or existing-consumer regression.
+
 Overall `PASS` requires all applicable criteria and certification scenarios to pass, no
 unauthorized deviation, and no blocking security issue. `NOT_RUN` is not `PASS`.
 
@@ -854,6 +1057,10 @@ Implementation MUST stop and report instead of guessing when:
 7. the isolated MySQL 8.4 certification environment cannot be guaranteed;
 8. repository reality materially differs from the baseline in a way affecting this design;
 9. any higher-authority or security conflict appears.
+10. participant mode would require weakened authorization, a public endpoint, or a competing
+    Identity service;
+11. an existing consumer cannot retain its current transaction and error behavior;
+12. P02 attempts implementation before version 0.2.0 is explicitly approved.
 
 Use the canonical stop report from `CAPABILITY_SDD_TEMPLATE.md`.
 
@@ -875,6 +1082,8 @@ Use the canonical stop report from `CAPABILITY_SDD_TEMPLATE.md`.
 | Bootstrap consumes all 83 codes as grants | Privilege escalation | Separate existing 59-code grant subset; V7 exact-set assertion | Low |
 | Description conflict in an upgraded environment | Initialization cannot complete | Fail closed without overwrite; operator reconciliation | Low |
 | Certification touches a protected database | Unsafe state mutation | Isolated MySQL 8.4 identity and pre-write isolation check | Low |
+| Participant accidentally commits or rolls back | Partial outer provisioning or hidden recovery | Single non-committing operation; T2-T5 | Low |
+| Wrapper behavior changes during extraction | Existing consumer regression | Thin wrappers plus T1/T12 exact compatibility | Low |
 
 ## Deferred Items
 
@@ -889,39 +1098,43 @@ None; see Section 4.3.
 | Tenant/Location isolation | Global SDD Sections 5-9, 18 | 8, 10, 15, 20 | Existing models, `api/deps.py`, `identity/access_provisioning.py` | V8 |
 | One active Staff session | This SDD after approval; migration 0065 evidence | 8, 15 | Existing `identity/auth_sessions.py` | V8 |
 | Credential change revokes sessions | This SDD after approval; existing evidence | 8, 15, 21 | Existing `identity/credential_administration.py` | V8 |
-| Complete canonical catalog | This SDD after approval; verified repository definitions | 8, 11-13 | Proposed `identity/permission_catalog.py` | V1-V4, V9 |
-| Registration grants nothing | Global SDD Sections 7, 8, 18; this SDD | 8, 12, 20 | Proposed bounded initializer | V5-V6 |
-| Bootstrap compatibility | Global SDD Sections 29, 32; this SDD | 6, 9, 22 | Existing `bootstrap_admin.py` using proposed initializer | V7 |
+| Complete canonical catalog | This SDD after approval; verified repository definitions | 8, 11-13 | `identity/permission_catalog.py` | V1-V4, V9 |
+| Registration grants nothing | Global SDD Sections 7, 8, 18; this SDD | 8, 12, 20 | Bounded initializer | V5-V6 |
+| Bootstrap compatibility | Global SDD Sections 29, 32; this SDD | 6, 9, 22 | `bootstrap_admin.py` using canonical initializer | V7 |
+| Caller-owned transaction participation | P02-D05; Global SDD Section 12 | 8, 9, 12-13, 20-22 | Existing `identity/access_provisioning.py` extended after approval | T1-T8, T12 |
+| Identity security preservation | Global SDD Sections 5-9, 18; P02-D05 | 15, 20-22 | Existing authorization reused unchanged | T6-T12 |
 
 ---
 
 # 33. CERTIFICATION EVIDENCE
 
 ```text
-SDD version: 0.1.0
+SDD version: 0.2.0 APPROVED — CERTIFIED AS-BUILT
 
 Repository: /home/rogelio/proyectos/pryecip
-Branch: PENDING IMPLEMENTATION BASELINE
-Commit: PENDING
-Working tree: PENDING
-Migration head: 0068_schema_collation_alignment at design baseline; rediscover for certification
+Branch: feat/ws-00-01-runtime-reuse-baseline
+Certification baseline: d6810e98f2b2fc7c871afe507f15c34446dd628b plus certified
+  working-tree implementation; packaging commit follows PASS
+Migration head: 0069_org_hq_provisioning
 
-Backend targeted tests: NOT RUN — design phase
-Backend regression: NOT RUN — design phase
+Identity access-provisioning and participant tests: PASS within 35-test focused run
+Identity/catalog/session/credential/Location-authority regression: PASS — 36 passed
+Permission catalog: PASS — 83 rows / 83 distinct codes
 Frontend tests: NOT APPLICABLE
-E2E: NOT RUN — design phase
-Typecheck: NOT RUN — design phase
-Build: NOT RUN — design phase
-Migration verification: NOT RUN — design phase
+Typecheck: NOT CONFIGURED; syntax compilation PASS
+Build: PASS — isolated Docker development image
+Migration verification: PASS — clean install and populated upgrade on isolated MySQL 8.4
 
 Certification scenarios:
-V1-V9: NOT RUN — design phase
+V1-V9: PASS as applicable; existing P01 behavior retained and catalog reverified
+T1-T12: PASS as applicable; caller-owned participant flushes without commit/rollback/close,
+  wrappers retain commit behavior, authorization and rollback remain conformant
 
-Known deviations: None identified in design
-Approved exceptions: None
+Known deviations: NONE
+Approved exceptions: NONE
 
-Result: NOT CERTIFIED
-Certification date: N/A
+Result: PASS
+Certification date: 2026-10-10
 ```
 
 ---
@@ -946,7 +1159,8 @@ Certification date: N/A
 [x] No blocking design question remains
 ```
 
-Readiness means eligible for explicit approval, not approved or implemented.
+Readiness result: `CERTIFIED AS-BUILT`. The approved amendment is implemented and its focused
+Identity and P02 certification evidence is recorded above.
 
 ---
 
@@ -955,14 +1169,14 @@ Readiness means eligible for explicit approval, not approved or implemented.
 The capability change is done only when:
 
 ```text
-[ ] This exact SDD version is explicitly approved
-[ ] Approved design is implemented
-[ ] Executable contracts conform to the SDD
-[ ] Critical invariants are verified
-[ ] Required focused tests and regression pass
-[ ] V1-V9 pass in an isolated MySQL 8.4 environment
-[ ] No blocking security defect or unauthorized grant exists
-[ ] Approved exceptions, if any, are recorded
-[ ] Certification evidence identifies the exact design and implementation baseline
-[ ] This SDD reflects the certified as-built implementation
+[x] This exact SDD version 0.2.0 is explicitly approved
+[x] Approved design is implemented
+[x] Executable contracts conform to the SDD
+[x] Critical invariants are verified
+[x] Required focused tests and regression pass
+[x] V1-V9 and T1-T12 pass as applicable in an isolated MySQL 8.4 environment
+[x] No blocking security defect or unauthorized grant exists
+[x] Approved exceptions, if any, are recorded
+[x] Certification evidence identifies the exact design and implementation baseline
+[x] This SDD reflects the certified as-built implementation
 ```

@@ -5,6 +5,7 @@ import asyncio
 from fastapi.testclient import TestClient
 
 from app.core.security import hash_password
+from app.db.session import DatabaseManager
 from app.identity import access_provisioning
 from app.main import create_app
 from test_inventory_recipe_stock_foundation import (
@@ -204,6 +205,44 @@ def test_staff_account_provisioning_creates_username_login_without_email(
             (created.json()['membership_id'], scope.location_id),
         )
         assert cursor.fetchone()['role_id'] is not None
+
+
+def test_access_transaction_participant_never_commits_caller_state(
+    integration_settings, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _scope(connection, f'{prefix}-participant')
+    for code in ('user.manage', 'role.manage', 'location.manage'):
+        _permission(connection, scope.role_id, code)
+    target_user_id, _ = _user(connection, prefix, 'participant-target')
+    role_name = f'{prefix}-PARTICIPANT'
+    _role(connection, scope.tenant_id, role_name, ())
+
+    async def exercise() -> int:
+        database = DatabaseManager(integration_settings)
+        try:
+            async with database.session_factory() as session:
+                result = await access_provisioning.provision_access_in_transaction(
+                    session,
+                    tenant_id=scope.tenant_id,
+                    actor_membership_id=scope.membership_id,
+                    user_id=target_user_id,
+                    role_name=role_name,
+                    locations=(access_provisioning.LocationGrantCandidate(
+                        organization_id=scope.organization_id,
+                        location_id=scope.location_id,
+                    ),),
+                )
+                membership_id = result.membership.id
+                assert _membership_count(connection, scope.tenant_id, (target_user_id,)) == 0
+                await session.rollback()
+                return membership_id
+        finally:
+            await database.dispose()
+
+    membership_id = asyncio.run(exercise())
+    assert membership_id > 0
+    assert _membership_count(connection, scope.tenant_id, (target_user_id,)) == 0
 
 
 def test_access_plan_fails_closed_for_authority_privilege_and_scope_conflicts(

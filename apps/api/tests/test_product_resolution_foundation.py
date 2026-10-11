@@ -47,8 +47,9 @@ def _scope(connection, prefix: str) -> Scope:
     email = f'{prefix}@example.test'
     user_id = _execute(
         connection,
-        "INSERT INTO users (email,password_hash,display_name,status) VALUES (%s,%s,'User','ACTIVE')",
-        (email, hash_password(PASSWORD)),
+        "INSERT INTO users (username,email,password_hash,display_name,status) "
+        "VALUES (%s,%s,%s,'User','ACTIVE')",
+        (prefix.casefold(), email, hash_password(PASSWORD)),
     )
     membership_id = _execute(
         connection,
@@ -87,6 +88,11 @@ def _scope(connection, prefix: str) -> Scope:
             (tenant_id, organization_id, code, name),
         )
         for code, name in (('A', 'Location A'), ('B', 'Location B'))
+    )
+    _execute(
+        connection,
+        'UPDATE organizations SET headquarters_location_id=%s WHERE id=%s',
+        (locations[0], organization_id),
     )
     return Scope(tenant_id, organization_id, locations[0], locations[1], email)
 
@@ -132,7 +138,9 @@ def _expose(connection, scope: Scope, product_ids: tuple[int, ...]):
 
 
 def _headers(client: TestClient, scope: Scope) -> dict[str, str]:
-    response = client.post('/auth/login', json={'email': scope.email, 'password': PASSWORD})
+    response = client.post('/auth/login', json={
+        'username': scope.email.partition('@')[0], 'password': PASSWORD,
+    })
     assert response.status_code == 200
     return {'Authorization': f"Bearer {response.json()['access_token']}"}
 
@@ -160,6 +168,33 @@ def test_normalization_is_bounded_deterministic_and_unicode_aware():
         resolution.normalize_alias(' \n\t ')
     assert resolution.validate_language_tag('es-MX')
     assert not resolution.validate_language_tag('és-MX')
+
+
+def test_configuration_incomplete_organization_is_not_operational(
+    integration_settings, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _scope(connection, prefix)
+    _execute(
+        connection,
+        'UPDATE organizations SET headquarters_location_id=NULL WHERE id=%s',
+        (scope.organization_id,),
+    )
+
+    async def exercise() -> bool:
+        database = DatabaseManager(integration_settings)
+        try:
+            async with database.session_factory() as session:
+                return await resolution._scope_is_valid(
+                    session,
+                    tenant_id=scope.tenant_id,
+                    organization_id=scope.organization_id,
+                    location_id=scope.location_a,
+                )
+        finally:
+            await database.dispose()
+
+    assert not asyncio.run(exercise())
 
 
 def test_product_alias_api_normalizes_scopes_lifecycle_and_duplicates(client, sql_connection):

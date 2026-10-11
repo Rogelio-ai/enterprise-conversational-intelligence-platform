@@ -46,6 +46,7 @@ from app.models import (
     TenantMembership,
     User,
 )
+from app.organization_location import assign_headquarters_in_transaction
 
 
 DEMO_MODE = os.environ.get('DEMO_ENV') == 'demo'
@@ -375,14 +376,18 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                     display_name=ADMIN_DISPLAY_NAME, status='ACTIVE',
                 )
 
-                organization = await _one(session, select(Organization).where(
-                    Organization.tenant_id == core.tenant_id,
-                    Organization.code == ORGANIZATION_CODE,
-                ), 'Organization')
+                organization = await _one(
+                    session,
+                    select(Organization).where(
+                        Organization.tenant_id == core.tenant_id,
+                        Organization.code == ORGANIZATION_CODE,
+                    ).with_for_update(),
+                    'Organization',
+                )
                 if organization is None:
                     organization = Organization(
                         tenant_id=core.tenant_id, code=ORGANIZATION_CODE,
-                        name=TENANT_NAME, status='ACTIVE',
+                        name=TENANT_NAME, status='INACTIVE',
                     )
                     session.add(organization)
                     await session.flush()
@@ -422,6 +427,20 @@ async def bootstrap_pilot_minimum() -> PilotResult:
                     session, core.tenant_id, core.membership_id, location.id,
                     core.role_id, created, 'ADMIN',
                 )
+                if organization.headquarters_location_id is None:
+                    await assign_headquarters_in_transaction(
+                        session,
+                        organization=organization,
+                        location_id=location.id,
+                        actor_membership_id=core.membership_id,
+                        operation_id=f'pilot-minimum-{core.tenant_id}-headquarters',
+                    )
+                    created.append('organization_headquarters')
+                elif organization.headquarters_location_id != location.id:
+                    raise RuntimeError(
+                        'existing Organization headquarters conflicts with pilot Location'
+                    )
+                organization.status = 'ACTIVE'
                 staff_memberships: dict[str, int] = {}
                 for role_code, email, name, permissions in STAFF:
                     membership = await _staff(

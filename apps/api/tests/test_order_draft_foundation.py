@@ -47,8 +47,9 @@ def _scope(
     email = f'{prefix}@example.test'
     user_id = _execute(
         connection,
-        "INSERT INTO users (email,password_hash,display_name,status) VALUES (%s,%s,'User','ACTIVE')",
-        (email, hash_password(PASSWORD)),
+        "INSERT INTO users (username,email,password_hash,display_name,status) "
+        "VALUES (%s,%s,%s,'User','ACTIVE')",
+        (prefix.casefold(), email, hash_password(PASSWORD)),
     )
     membership_id = _execute(
         connection,
@@ -84,6 +85,11 @@ def _scope(
         "INSERT INTO locations (tenant_id,organization_id,code,name,timezone,status) "
         "VALUES (%s,%s,%s,'Location','America/Mexico_City','ACTIVE')",
         (tenant_id, organization_id, f'LOC-{uuid4().hex[:12]}'),
+    )
+    _execute(
+        connection,
+        'UPDATE organizations SET headquarters_location_id=%s WHERE id=%s',
+        (location_id, organization_id),
     )
     conversation_id = _execute(
         connection,
@@ -172,7 +178,9 @@ def _composition(connection, scope: Scope, parent_id: int):
 
 
 def _headers(client: TestClient, scope: Scope) -> dict[str, str]:
-    response = client.post('/auth/login', json={'email': scope.email, 'password': PASSWORD})
+    response = client.post('/auth/login', json={
+        'username': scope.email.partition('@')[0], 'password': PASSWORD,
+    })
     assert response.status_code == 200
     return {'Authorization': f"Bearer {response.json()['access_token']}"}
 

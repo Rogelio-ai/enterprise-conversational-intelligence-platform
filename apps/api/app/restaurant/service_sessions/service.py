@@ -129,6 +129,7 @@ async def open_service_session(
                 Organization.id == location.organization_id,
                 Organization.tenant_id == tenant_id,
                 Organization.status == 'ACTIVE',
+                Organization.headquarters_location_id.is_not(None),
             )
         )
         if (

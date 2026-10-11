@@ -4,6 +4,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Annotated, Literal
+from uuid import uuid4
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
@@ -13,7 +14,12 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import AuthenticatedContext, get_db, require_permission
 from app.core.middleware import get_correlation_id
-from app.models import Organization
+from app.models import Location, Organization
+from app.organization_location import (
+    OrganizationLocationConflictError,
+    assign_headquarters_in_transaction,
+    validate_organization_activation,
+)
 
 
 router = APIRouter(prefix='/organizations', tags=['organizations'])
@@ -71,6 +77,7 @@ class OrganizationResponse(BaseModel):
     code: str
     name: str
     status: str
+    headquarters_location_id: int | None
     created_at: datetime
     updated_at: datetime
 
@@ -79,6 +86,13 @@ class OrganizationListResponse(BaseModel):
     items: list[OrganizationResponse]
     limit: int
     offset: int
+
+
+class HeadquartersUpdateRequest(BaseModel):
+    model_config = ConfigDict(extra='forbid')
+
+    location_id: int = Field(gt=0)
+    deactivate_previous: bool = False
 
 
 def _not_found() -> HTTPException:
@@ -127,7 +141,7 @@ async def create_organization(
         tenant_id=context.tenant_id,
         code=payload.code,
         name=payload.name,
-        status='ACTIVE',
+        status='INACTIVE',
     )
     db.add(organization)
     try:
@@ -187,7 +201,13 @@ async def update_organization(
     if organization is None:
         raise _not_found()
 
-    for field, value in payload.model_dump(exclude_unset=True).items():
+    updates = payload.model_dump(exclude_unset=True)
+    if updates.get('status') == 'ACTIVE':
+        try:
+            await validate_organization_activation(db, organization=organization)
+        except OrganizationLocationConflictError as exc:
+            raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    for field, value in updates.items():
         setattr(organization, field, value)
     try:
         await db.commit()
@@ -205,6 +225,88 @@ async def update_organization(
             'tenant_id': context.tenant_id,
             'user_id': context.user_id,
             'organization_id': organization.id,
+            'correlation_id': get_correlation_id(),
+        },
+    )
+    return organization
+
+
+@router.put('/{organization_id}/headquarters', response_model=OrganizationResponse)
+async def update_headquarters(
+    organization_id: Annotated[int, Path(gt=0)],
+    payload: HeadquartersUpdateRequest,
+    context: Annotated[AuthenticatedContext, Depends(require_permission('organization.manage'))],
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> Organization:
+    organization = await db.scalar(
+        select(Organization)
+        .where(
+            Organization.id == organization_id,
+            Organization.tenant_id == context.tenant_id,
+        )
+        .with_for_update()
+    )
+    if organization is None:
+        raise _not_found()
+
+    headquarters_scope_ids = tuple(
+        value for value in {
+            organization.headquarters_location_id,
+            payload.location_id,
+        }
+        if value is not None
+    )
+    scoped_locations = tuple((await db.scalars(
+        select(Location).where(
+            Location.id.in_(headquarters_scope_ids),
+            Location.tenant_id == context.tenant_id,
+            Location.organization_id == organization.id,
+        )
+    )).all())
+    scoped_ids = {value.id for value in scoped_locations}
+    if payload.location_id not in scoped_ids:
+        raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Location not found')
+    required_location_ids = {payload.location_id}
+    if organization.headquarters_location_id is not None:
+        required_location_ids.add(organization.headquarters_location_id)
+    if any(
+        context.authority_for_location(location_id) is None
+        or 'location.manage' not in context.authority_for_location(location_id).permissions
+        for location_id in required_location_ids
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail='Insufficient Location permission',
+        )
+    try:
+        await assign_headquarters_in_transaction(
+            db,
+            organization=organization,
+            location_id=payload.location_id,
+            actor_membership_id=context.membership_id,
+            operation_id=str(uuid4()),
+            deactivate_previous=payload.deactivate_previous,
+        )
+        await db.commit()
+    except OrganizationLocationConflictError as exc:
+        await db.rollback()
+        raise HTTPException(status_code=status.HTTP_409_CONFLICT, detail=str(exc)) from exc
+    except IntegrityError:
+        await db.rollback()
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail='Headquarters update conflicted with concurrent state',
+        )
+    await db.refresh(organization)
+    logger.info(
+        'Organization headquarters updated',
+        extra={
+            'event': 'organization_headquarters_updated',
+            'operation': 'update_headquarters',
+            'tenant_id': context.tenant_id,
+            'user_id': context.user_id,
+            'organization_id': organization.id,
+            'location_id': payload.location_id,
             'correlation_id': get_correlation_id(),
         },
     )

@@ -4,6 +4,7 @@ import logging
 import re
 from datetime import datetime
 from typing import Annotated, Literal
+from uuid import uuid4
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from fastapi import APIRouter, Depends, HTTPException, Path, Query, status
@@ -27,6 +28,7 @@ from app.models import (
     MembershipRole,
     Organization,
 )
+from app.organization_location import assign_headquarters_in_transaction
 
 
 router = APIRouter(prefix='/locations', tags=['locations'])
@@ -196,13 +198,6 @@ def _organization_not_found() -> HTTPException:
     return HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail='Organization not found')
 
 
-def _inactive_parent() -> HTTPException:
-    return HTTPException(
-        status_code=status.HTTP_409_CONFLICT,
-        detail='Organization must be active',
-    )
-
-
 def _duplicate_code() -> HTTPException:
     return HTTPException(
         status_code=status.HTTP_409_CONFLICT,
@@ -283,9 +278,17 @@ async def create_location(
         tenant_id=context.tenant_id,
         for_update=True,
     )
-    if organization.status != 'ACTIVE':
-        raise _inactive_parent()
-
+    existing_active_location_id = await db.scalar(
+        select(Location.id)
+        .where(
+            Location.tenant_id == context.tenant_id,
+            Location.organization_id == organization.id,
+            Location.status == 'ACTIVE',
+        )
+        .order_by(Location.id)
+        .limit(1)
+        .with_for_update()
+    )
     values = payload.model_dump()
     values['tenant_id'] = context.tenant_id
     location = Location(**values, status='ACTIVE')
@@ -312,6 +315,17 @@ async def create_location(
                 location_id=location.id, role_id=role_id,
             ) for role_id in role_ids
         ])
+        if (
+            organization.headquarters_location_id is None
+            and existing_active_location_id is None
+        ):
+            await assign_headquarters_in_transaction(
+                db,
+                organization=organization,
+                location_id=location.id,
+                actor_membership_id=context.membership_id,
+                operation_id=str(uuid4()),
+            )
         await db.commit()
     except IntegrityError as exc:
         await db.rollback()
@@ -362,11 +376,27 @@ async def update_location(
     ],
     db: Annotated[AsyncSession, Depends(get_db)],
 ) -> Location:
+    location_scope = await db.scalar(
+        select(Location)
+        .where(
+            Location.id == location_id,
+            Location.tenant_id == context.tenant_id,
+        )
+    )
+    if location_scope is None:
+        raise _location_not_found()
+    organization = await _get_organization(
+        db,
+        organization_id=location_scope.organization_id,
+        tenant_id=context.tenant_id,
+        for_update=True,
+    )
     location = await db.scalar(
         select(Location)
         .where(
             Location.id == location_id,
             Location.tenant_id == context.tenant_id,
+            Location.organization_id == organization.id,
         )
         .with_for_update()
     )
@@ -374,15 +404,17 @@ async def update_location(
         raise _location_not_found()
 
     updates = payload.model_dump(exclude_unset=True)
-    if updates.get('status') == 'ACTIVE':
-        organization = await _get_organization(
-            db,
-            organization_id=location.organization_id,
-            tenant_id=context.tenant_id,
-            for_update=True,
+    if (
+        updates.get('status') == 'INACTIVE'
+        and organization.status == 'ACTIVE'
+        and organization.headquarters_location_id == location.id
+    ):
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=(
+                'Current headquarters must be replaced before it can be deactivated'
+            ),
         )
-        if organization.status != 'ACTIVE':
-            raise _inactive_parent()
     for field, value in updates.items():
         setattr(location, field, value)
     try:

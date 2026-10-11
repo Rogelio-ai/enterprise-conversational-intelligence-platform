@@ -1,17 +1,22 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 
 import pymysql
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy.exc import IntegrityError
+from sqlalchemy import select
 
 from app.api.routes.locations import _is_duplicate_code_error as is_location_code_conflict
 from app.api.routes.locations import validate_timezone
 from app.api.routes.organizations import _is_duplicate_code_error as is_organization_code_conflict
 from app.core.security import hash_password
+from app.db.session import DatabaseManager
 from app.main import create_app
+from app.models import Organization
+from app.organization_location import assign_headquarters_in_transaction
 
 
 PASSWORD = 'Test Password 123!'
@@ -169,7 +174,8 @@ def test_organization_api_auth_permission_cardinality_and_no_delete(client, sql_
     assert first.json()['tenant_id'] == authority.tenant_id
     assert first.json()['code'] == 'ONE'
     assert first.json()['name'] == 'One'
-    assert first.json()['status'] == 'ACTIVE'
+    assert first.json()['status'] == 'INACTIVE'
+    assert first.json()['headquarters_location_id'] is None
     listing = client.get('/organizations', headers=headers)
     assert [item['id'] for item in listing.json()['items']] == [first.json()['id'], second.json()['id']]
 
@@ -257,16 +263,16 @@ def test_location_api_crud_cardinality_uniqueness_and_optional_fields(client, sq
     listing = client.get(f'/locations?organization_id={organization_id}', headers=headers)
     assert [item['id'] for item in listing.json()['items']] == [first.json()['id'], second.json()['id']]
     updated = client.patch(
-        f"/locations/{first.json()['id']}",
+        f"/locations/{second.json()['id']}",
         headers=headers,
         json={'name': 'Renamed', 'status': 'INACTIVE', 'address_line2': None},
     )
     assert updated.status_code == 200, updated.text
     assert updated.json()['name'] == 'Renamed'
     assert updated.json()['status'] == 'INACTIVE'
-    assert client.get(f"/locations/{first.json()['id']}", headers=headers).status_code == 200
-    assert client.patch(f"/locations/{first.json()['id']}", headers=headers, json={}).status_code == 422
-    assert client.delete(f"/locations/{first.json()['id']}", headers=headers).status_code == 405
+    assert client.get(f"/locations/{second.json()['id']}", headers=headers).status_code == 200
+    assert client.patch(f"/locations/{second.json()['id']}", headers=headers, json={}).status_code == 422
+    assert client.delete(f"/locations/{second.json()['id']}", headers=headers).status_code == 405
 
 
 def test_location_auth_permission_validation_and_immutable_ownership(client, sql_connection) -> None:
@@ -322,7 +328,7 @@ def test_valid_iana_timezones_are_accepted(timezone: str) -> None:
     assert validate_timezone(timezone) == timezone
 
 
-def test_inactive_and_cross_tenant_parent_rules_are_enforced(client, sql_connection) -> None:
+def test_configuration_and_cross_tenant_parent_rules_are_enforced(client, sql_connection) -> None:
     connection, prefix = sql_connection
     authority = _seed_authority(connection, prefix)
     other = _seed_authority(connection, f'{prefix}-other')
@@ -342,9 +348,10 @@ def test_inactive_and_cross_tenant_parent_rules_are_enforced(client, sql_connect
         'timezone': 'America/Mexico_City',
     }
 
-    assert client.post(
+    configured = client.post(
         '/locations', headers=headers, json={**payload, 'organization_id': inactive_organization_id}
-    ).status_code == 409
+    )
+    assert configured.status_code == 201, configured.text
     assert client.post(
         '/locations', headers=headers, json={**payload, 'organization_id': foreign_organization_id}
     ).status_code == 404
@@ -361,7 +368,7 @@ def test_inactive_and_cross_tenant_parent_rules_are_enforced(client, sql_connect
         ('INACTIVE', active_organization_id),
     )
     _execute(connection, 'UPDATE locations SET status = %s WHERE id = %s', ('INACTIVE', location_id))
-    assert client.patch(f'/locations/{location_id}', headers=headers, json={'status': 'ACTIVE'}).status_code == 409
+    assert client.patch(f'/locations/{location_id}', headers=headers, json={'status': 'ACTIVE'}).status_code == 200
 
     foreign_location_id = _location(connection, other.tenant_id, foreign_organization_id, 'OTHER')
     assert client.get(f'/locations/{foreign_location_id}', headers=headers).status_code == 404
@@ -401,3 +408,164 @@ def test_database_rejects_cross_tenant_location_and_invalid_lifecycle(sql_connec
                 'SUSPENDED',
             ),
         )
+
+
+def test_first_location_establishes_headquarters_and_gates_activation(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    authority = _seed_authority(connection, prefix)
+    headers = _login(client, authority)
+    created = client.post(
+        '/organizations', headers=headers, json={'code': 'HQ', 'name': 'Headquarters'},
+    )
+    assert created.status_code == 201, created.text
+    organization_id = created.json()['id']
+    assert created.json()['status'] == 'INACTIVE'
+    assert client.patch(
+        f'/organizations/{organization_id}', headers=headers, json={'status': 'ACTIVE'},
+    ).status_code == 409
+
+    first = client.post('/locations', headers=headers, json={
+        'organization_id': organization_id,
+        'code': 'FIRST',
+        'name': 'First',
+        'timezone': 'America/Mexico_City',
+    })
+    assert first.status_code == 201, first.text
+    organization = client.get(f'/organizations/{organization_id}', headers=headers)
+    assert organization.json()['headquarters_location_id'] == first.json()['id']
+
+    second = client.post('/locations', headers=headers, json={
+        'organization_id': organization_id,
+        'code': 'SECOND',
+        'name': 'Second',
+        'timezone': 'America/Mexico_City',
+    })
+    assert second.status_code == 201, second.text
+    assert client.get(
+        f'/organizations/{organization_id}', headers=headers,
+    ).json()['headquarters_location_id'] == first.json()['id']
+    activated = client.patch(
+        f'/organizations/{organization_id}', headers=headers, json={'status': 'ACTIVE'},
+    )
+    assert activated.status_code == 200, activated.text
+    assert client.patch(
+        f"/locations/{first.json()['id']}", headers=headers, json={'status': 'INACTIVE'},
+    ).status_code == 409
+
+
+def test_headquarters_replacement_is_scoped_audited_and_can_deactivate_previous(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    authority = _seed_authority(connection, prefix)
+    other = _seed_authority(connection, f'{prefix}-other')
+    headers = _login(client, authority)
+    organization_id = _organization(connection, authority.tenant_id, 'OWN')
+    first_id = _location(connection, authority.tenant_id, organization_id, 'FIRST')
+    second_id = _location(connection, authority.tenant_id, organization_id, 'SECOND')
+    _grant_location(connection, authority, first_id)
+    _grant_location(connection, authority, second_id)
+    _execute(
+        connection,
+        'UPDATE organizations SET headquarters_location_id=%s WHERE id=%s',
+        (first_id, organization_id),
+    )
+    foreign_organization_id = _organization(connection, other.tenant_id, 'FOREIGN')
+    foreign_location_id = _location(
+        connection, other.tenant_id, foreign_organization_id, 'FOREIGN',
+    )
+
+    foreign = client.put(
+        f'/organizations/{organization_id}/headquarters',
+        headers=headers,
+        json={'location_id': foreign_location_id},
+    )
+    assert foreign.status_code == 404
+    replaced = client.put(
+        f'/organizations/{organization_id}/headquarters',
+        headers=headers,
+        json={'location_id': second_id, 'deactivate_previous': True},
+    )
+    assert replaced.status_code == 200, replaced.text
+    assert replaced.json()['headquarters_location_id'] == second_id
+    with connection.cursor() as cursor:
+        cursor.execute('SELECT status FROM locations WHERE id=%s', (first_id,))
+        assert cursor.fetchone()['status'] == 'INACTIVE'
+        cursor.execute(
+            'SELECT previous_location_id,new_location_id,actor_membership_id '
+            'FROM organization_headquarters_changes WHERE organization_id=%s',
+            (organization_id,),
+        )
+        evidence = cursor.fetchone()
+        assert evidence == {
+            'previous_location_id': first_id,
+            'new_location_id': second_id,
+            'actor_membership_id': authority.membership_id,
+        }
+
+
+def test_concurrent_headquarters_replacements_serialize_with_complete_evidence(
+    integration_settings, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    authority = _seed_authority(connection, prefix)
+    organization_id = _organization(connection, authority.tenant_id, 'SERIAL')
+    initial_id = _location(connection, authority.tenant_id, organization_id, 'INITIAL')
+    target_a = _location(connection, authority.tenant_id, organization_id, 'TARGET-A')
+    target_b = _location(connection, authority.tenant_id, organization_id, 'TARGET-B')
+    _execute(
+        connection,
+        'UPDATE organizations SET headquarters_location_id=%s WHERE id=%s',
+        (initial_id, organization_id),
+    )
+
+    async def replace(database: DatabaseManager, location_id: int, operation_id: str) -> None:
+        async with database.session_factory() as session:
+            organization = await session.scalar(
+                select(Organization)
+                .where(
+                    Organization.id == organization_id,
+                    Organization.tenant_id == authority.tenant_id,
+                )
+                .with_for_update()
+            )
+            assert organization is not None
+            await assign_headquarters_in_transaction(
+                session,
+                organization=organization,
+                location_id=location_id,
+                actor_membership_id=authority.membership_id,
+                operation_id=operation_id,
+            )
+            await session.commit()
+
+    async def exercise() -> None:
+        database = DatabaseManager(integration_settings)
+        try:
+            await asyncio.gather(
+                replace(database, target_a, f'{prefix}-a'),
+                replace(database, target_b, f'{prefix}-b'),
+            )
+        finally:
+            await database.dispose()
+
+    asyncio.run(exercise())
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'SELECT headquarters_location_id FROM organizations WHERE id=%s',
+            (organization_id,),
+        )
+        final_id = cursor.fetchone()['headquarters_location_id']
+        assert final_id in {target_a, target_b}
+        cursor.execute(
+            'SELECT previous_location_id,new_location_id FROM '
+            'organization_headquarters_changes WHERE organization_id=%s ORDER BY id',
+            (organization_id,),
+        )
+        changes = cursor.fetchall()
+        assert len(changes) == 2
+        assert changes[0]['previous_location_id'] == initial_id
+        assert changes[1]['previous_location_id'] == changes[0]['new_location_id']
+        assert changes[1]['new_location_id'] == final_id

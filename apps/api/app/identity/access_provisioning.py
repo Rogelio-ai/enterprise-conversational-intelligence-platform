@@ -73,6 +73,28 @@ async def provision_staff_account(
 ) -> AccessProvisioningResult:
     """Create canonical Staff credentials and their initial access atomically."""
     try:
+        result = await provision_staff_account_in_transaction(
+            db, tenant_id=tenant_id, actor_membership_id=actor_membership_id,
+            username=username, password=password, display_name=display_name,
+            email=email, password_minimum_length=password_minimum_length,
+            role_name=role_name, locations=locations,
+        )
+        await db.commit()
+        await db.refresh(result.membership)
+        return result
+    except Exception:
+        await db.rollback()
+        raise
+
+
+async def provision_staff_account_in_transaction(
+    db: AsyncSession, *, tenant_id: int, actor_membership_id: int,
+    username: str, password: str, display_name: str, email: str | None,
+    password_minimum_length: int, role_name: str,
+    locations: tuple[LocationGrantCandidate, ...],
+) -> AccessProvisioningResult:
+    """Participate in the caller's transaction without committing or rolling back."""
+    try:
         canonical_username = normalize_username(username)
         password_hash = hash_password(password, minimum_length=password_minimum_length)
     except ValueError as exc:
@@ -100,11 +122,10 @@ async def provision_staff_account(
     try:
         await db.flush()
     except IntegrityError as exc:
-        await db.rollback()
         raise AccessProvisioningConflictError(
             'Staff identity provisioning conflicted with concurrent state'
         ) from exc
-    return await provision_access(
+    return await provision_access_in_transaction(
         db, tenant_id=tenant_id, actor_membership_id=actor_membership_id,
         user_id=user.id, role_name=role_name, locations=locations,
     )
@@ -236,6 +257,25 @@ async def provision_access(
     locations: tuple[LocationGrantCandidate, ...],
 ) -> AccessProvisioningResult:
     """Validate a complete access plan, then atomically converge it."""
+    try:
+        result = await provision_access_in_transaction(
+            db, tenant_id=tenant_id, actor_membership_id=actor_membership_id,
+            user_id=user_id, role_name=role_name, locations=locations,
+        )
+        await db.commit()
+        await db.refresh(result.membership)
+        return result
+    except Exception:
+        await db.rollback()
+        raise
+
+
+async def provision_access_in_transaction(
+    db: AsyncSession, *, tenant_id: int, actor_membership_id: int,
+    user_id: int, role_name: str,
+    locations: tuple[LocationGrantCandidate, ...],
+) -> AccessProvisioningResult:
+    """Participate in a caller-owned transaction without finalizing the session."""
     canonical_role_name = _role_name(role_name)
     requested_locations = _location_candidates(locations)
 
@@ -387,10 +427,8 @@ async def provision_access(
                 location_id=candidate.location_id,
                 operation=operation,
             ))
-        await db.commit()
-        await db.refresh(membership)
+        await db.flush()
     except IntegrityError as exc:
-        await db.rollback()
         raise AccessProvisioningConflictError(
             'Access provisioning conflicted with concurrent state'
         ) from exc
