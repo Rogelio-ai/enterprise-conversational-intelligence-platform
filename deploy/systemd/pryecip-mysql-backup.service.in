@@ -1,0 +1,22 @@
+[Unit]
+Description=PRYECIP verified MySQL backup
+Requires=docker.service
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+User=@BACKUP_SERVICE_USER@
+Group=@BACKUP_SERVICE_GROUP@
+EnvironmentFile=@BACKUP_CONFIG_FILE@
+Environment=BACKUP_RUN_MODE=scheduled
+Environment=BACKUP_APPLY_RETENTION=1
+ExecStart=@INSTALL_ROOT@/scripts/mysql-backup.sh
+UMask=0077
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=@BACKUP_DESTINATION_DIR@
+
+[Install]
+WantedBy=multi-user.target

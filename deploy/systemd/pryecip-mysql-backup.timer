@@ -1,0 +1,10 @@
+[Unit]
+Description=Daily PRYECIP verified MySQL backup
+
+[Timer]
+OnCalendar=*-*-* 03:00:00 America/Mexico_City
+Persistent=true
+Unit=pryecip-mysql-backup.service
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,30 @@
+name: ${MYSQL_CERTIFICATION_PROJECT:?MYSQL_CERTIFICATION_PROJECT is required}
+
+services:
+  mysql:
+    image: mysql:8.4
+    environment:
+      MYSQL_DATABASE: ${MYSQL_CERTIFICATION_DATABASE:?MYSQL_CERTIFICATION_DATABASE is required}
+      MYSQL_ROOT_PASSWORD_FILE: /run/secrets/root_password
+    secrets:
+      - root_password
+    volumes:
+      - data:/var/lib/mysql
+    healthcheck:
+      test: [CMD-SHELL, 'MYSQL_PWD="$$(cat /run/secrets/root_password)" mysqladmin ping --silent -h 127.0.0.1 -uroot']
+      interval: 2s
+      timeout: 5s
+      retries: 60
+      start_period: 10s
+    networks: [isolated]
+
+secrets:
+  root_password:
+    file: ${MYSQL_CERTIFICATION_ROOT_PASSWORD_FILE:?MYSQL_CERTIFICATION_ROOT_PASSWORD_FILE is required}
+
+networks:
+  isolated:
+    internal: true
+
+volumes:
+  data: {}

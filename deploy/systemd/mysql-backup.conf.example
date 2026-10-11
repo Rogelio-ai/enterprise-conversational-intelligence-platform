@@ -1,0 +1,15 @@
+# Install as a root/service-owned 0600 file; never place credentials in this file.
+MYSQL_DEFAULTS_FILE=/etc/pryecip/mysql-backup.cnf
+MYSQL_HOST=127.0.0.1
+MYSQL_PORT=3306
+MYSQL_DATABASE=ecip
+MYSQL_EXPECTED_VERSION_PREFIX=8.4.
+MYSQL_AVAILABILITY_TIMEOUT_SECONDS=60
+BACKUP_DESTINATION_DIR=/var/lib/pryecip/backups
+BACKUP_CLASS=daily
+DAILY_RETENTION_DAYS=14
+WEEKLY_RETENTION_WEEKS=8
+MONTHLY_RETENTION_MONTHS=12
+DATABASE_OPERATIONS_LOCK_FILE=/var/lib/pryecip/backups/.locks/ecip.operations.lock
+SOURCE_CONTAINER_IDENTITY=replace-with-deployment-container-identity
+SOURCE_VOLUME_IDENTITY=replace-with-deployment-volume-identity

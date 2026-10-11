@@ -4,9 +4,9 @@
 **Capability:** MySQL Backup & Recovery
 **Document:** `MYSQL_BACKUP_RECOVERY_CAPABILITY_SDD.md`
 **Template:** `CAPABILITY_SDD_TEMPLATE.md`
-**Status:** APPROVED
+**Status:** CERTIFIED
 **Version:** 0.1.1
-**Last Updated:** 2026-10-08
+**Last Updated:** 2026-10-10
 
 ---
 
@@ -60,8 +60,9 @@ This approved document is authoritative for the technical design of MySQL Backup
 It inherits applicable approved higher authority. Prompts, conversations, implementation reports,
 and tests do not independently redefine it.
 
-This document is `APPROVED` and may govern the authorized MySQL Backup & Recovery implementation.
-Approval does not mean the capability is implemented, activated, or certified.
+This document is `CERTIFIED`: the approved design has been implemented and independently verified
+for the local backup, retention, prepared-automation, and isolated-restore boundary recorded in
+Section 33. Certification does not mean host automation is installed or active.
 
 ## 2.3 Approval Record
 
@@ -1063,17 +1064,52 @@ See Section 4.3.
 
 # 33. CERTIFICATION EVIDENCE
 
-Not yet applicable. This document is APPROVED and no implementation/certification was performed.
+The approved design was implemented and certified without changing database schema, application
+behavior, or the protected source. Historical approval evidence in Section 2.3 remains unchanged.
 
 ```text
 SDD version: 0.1.1
 Repository: /home/rogelio/proyectos/pryecip
 Branch: feat/ws-00-01-runtime-reuse-baseline
-Commit: ebb761d0b20f43780fe5a50f936f02b840e797d3
-Working tree: dirty with preserved pre-existing work plus this SDD
-Migration head: 0067_internal_operational_message_foundation
-Result: NOT RUN
-Certification date: N/A
+Implementation baseline HEAD: 9b0cbe8ecc499a553ed008eac29237deedaba370
+Working tree: P03 implementation pending controlled Git closure; unrelated ECIP_DATABASE_SCHEMA.txt preserved
+Repository migration head: 0069_org_hq_provisioning
+Protected source migration: 0067_internal_operational_message_foundation
+Protected source: pryecip-mysql-1 / pryecip_mysql-data / ecip / MySQL 8.4.8
+Result: PASS
+Certification date: 2026-10-10 (America/Mexico_City)
+Automation state: READY_FOR_ACTIVATION; host installation/activation NOT AUTHORIZED
+External encrypted copy: NOT CONFIGURED (approved deferred boundary)
+```
+
+Executed evidence:
+
+- Focused script suite: 32 PASS, 0 FAIL. It covered atomic publication, required metadata and
+  checksum, restrictive modes, dump/checksum/source/import failures, overlap rejection, duplicate
+  scheduled suppression, retention dry-run/apply and unsafe-target guards, incomplete/corrupt
+  restore inputs, protected-target rejection, cleanup-failure reporting, and systemd contracts.
+- Final backup set:
+  `ecip_ecip_20261011T003812Z_p03-final-certification_441668`; 112562 bytes; SHA-256
+  `d884a9698c064e392419eeb1cf75f5d69bee5757fec5423566b94af15cc316d1`;
+  `BACKUP_VERIFIED`; owner-only modes.
+- Isolated restore: unique MySQL 8.4 Compose project with an internal network, no published database
+  port, and a task-owned volume. Import, checksum/gzip, 152 base tables, schema-object counts,
+  Alembic `0067_internal_operational_message_foundation`, and representative per-table count hash
+  passed. Unique resources were removed.
+- Source preservation: container ID, `pryecip_mysql-data`, MySQL version, Alembic revision, base-table
+  count, schema-object counts, and representative count hash matched before/after.
+- Scheduling: rendered service/timer passed `systemd-analyze verify`; calendar normalized to 03:00
+  `America/Mexico_City`; `Persistent=true`. No service or timer was installed, enabled, or started.
+- Regression: controlled migration shares the database-operations lock; artifact/checksum consumers
+  remain compatible; repository artifact scan, diff check, protected-resource inventory, and no-0070
+  verification passed.
+
+Certification scenario result:
+
+```text
+V1 PASS   V2 PASS   V3 PASS   V4 PASS   V5 PASS
+V6 PASS   V7 PASS   V8 PASS   V9 PASS (prepared boundary; activation not authorized)
+V10 PASS
 ```
 
 ---
@@ -1098,8 +1134,7 @@ Certification date: N/A
 [x] Required governance/security design questions are resolved
 ```
 
-The approved design is ready to govern an authorized implementation. Implementation and
-certification evidence remain pending.
+The approved design governed the certified implementation recorded in Section 33.
 
 ---
 
@@ -1108,16 +1143,16 @@ certification evidence remain pending.
 The capability is done when:
 
 ```text
-[ ] Approved design is implemented
-[ ] Executable contracts conform to this SDD
-[ ] Critical invariants are verified
-[ ] Required focused tests pass
-[ ] Required direct/secondary/collateral regression passes
-[ ] V1–V10 pass where applicable
-[ ] No blocking security defect remains
-[ ] Isolated restore certification passes
-[ ] Source preservation passes
-[ ] Operational documentation matches verified commands
-[ ] Deployment activation state is reported independently and accurately
-[ ] The SDD is reconciled to certified as-built reality
+[x] Approved design is implemented
+[x] Executable contracts conform to this SDD
+[x] Critical invariants are verified
+[x] Required focused tests pass
+[x] Required direct/secondary/collateral regression passes
+[x] V1–V10 pass where applicable
+[x] No blocking security defect remains
+[x] Isolated restore certification passes
+[x] Source preservation passes
+[x] Operational documentation matches verified commands
+[x] Deployment activation state is reported independently and accurately
+[x] The SDD is reconciled to certified as-built reality
 ```
