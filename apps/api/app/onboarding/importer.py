@@ -29,6 +29,7 @@ from app.models import (
 )
 from app.onboarding.analyzer import AnalysisResult, AnalyzedRow
 from app.onboarding.contract import CONTRACT_VERSION, ONBOARDING_CONTRACT
+from app.onboarding.official_contract import OFFICIAL_BY_KEY, OFFICIAL_PROFILE, OFFICIAL_SHEETS
 from app.onboarding import staff_provisioning
 from app.identity import access_provisioning
 from app.restaurant.catalog import category_provisioning
@@ -159,6 +160,9 @@ class PlanItem:
 class ImportPlan:
     scope: ImportScope
     items: tuple[PlanItem, ...]
+    profile: str = 'legacy-generated'
+    binding_contract_version: str = CONTRACT_VERSION
+    required_deferred_groups: tuple[str, ...] = REQUIRED_DEFERRED_GROUPS
 
     @property
     def blocking_errors(self) -> tuple[str, ...]:
@@ -200,6 +204,8 @@ def dataset_fingerprint(analysis: AnalysisResult) -> str:
 
     payload = {
         'contract_version': analysis.contract_version,
+        'profile': analysis.profile,
+        'metadata': _json_value(analysis.metadata),
         'rows': [
             {
                 'group': row.group,
@@ -214,25 +220,222 @@ def dataset_fingerprint(analysis: AnalysisResult) -> str:
 
 
 def coverage() -> tuple[dict[str, Any], ...]:
-    values = []
-    for group in ONBOARDING_CONTRACT:
-        if group.key in IMPORTABLE_NOW:
-            classification = 'IMPORTABLE_NOW'
-            authority = AUTHORITY_BY_GROUP[group.key]
-        elif group.key in OPERATIONAL_NOT_CATALOG_IMPORT:
-            classification = 'OPERATIONAL_NOT_CATALOG_IMPORT'
-            authority = 'authorized payment capability/credential workflow'
-        else:
-            classification = 'DEFERRED_PROVISIONING'
-            authority = group.authority
-        values.append({
-            'group': group.key,
-            'classification': classification,
-            'authority': authority,
-            'business_key': list(group.business_key),
-            'required_for_stage0': group.required_for_stage0,
-        })
-    return tuple(values)
+    supported = {
+        'organizations': ('SUPPORTED', 'Existing authorized Organization binding only; creation is not claimed'),
+        'locations': ('SUPPORTED', 'Existing selected Location/headquarters binding only; creation or replacement is not claimed'),
+        'categories': ('SUPPORTED', None),
+        'products': ('PARTIAL', 'Core Product is imported; sale_uom has no current Product owner field'),
+        'menus': ('SUPPORTED', None),
+        'menu_sections': ('SUPPORTED', None),
+        'menu_items': ('SUPPORTED', 'item_code remains a workbook-local reference and is not persisted'),
+        'prices': ('PARTIAL', 'Undated MXN prices are imported; validity windows remain deferred'),
+    }
+    return tuple({
+        'profile': OFFICIAL_PROFILE,
+        'sheet': sheet.name,
+        'group': sheet.key,
+        'capture_status': 'SUPPORTED',
+        'import_status': supported.get(sheet.key, ('UNSUPPORTED', None))[0],
+        'design_target': sheet.design_import_status,
+        'classification': (
+            'CAPTURE_SUPPORTED_IMPORT_' + supported.get(sheet.key, ('UNSUPPORTED', None))[0]
+        ),
+        'authority': sheet.owner,
+        'business_key': list(sheet.business_key),
+        'dependencies': list(sheet.dependencies),
+        'reason': (
+            supported.get(sheet.key, ('UNSUPPORTED', None))[1]
+            or sheet.limitation
+            or 'Official-profile persistence adapter is not implemented and certified'
+        ),
+        'required_for_stage0': True,
+    } for sheet in OFFICIAL_SHEETS)
+
+
+_OFFICIAL_ADAPTED_PROFILE = f'{OFFICIAL_PROFILE}-adapted'
+
+
+def _adapted_row(row: AnalyzedRow, values: dict[str, Any]) -> AnalyzedRow:
+    return AnalyzedRow(
+        group=row.group, sheet=row.sheet, row=row.row,
+        business_key=row.business_key, values=values, errors=(),
+    )
+
+
+async def _build_official_import_plan(
+    db: AsyncSession, *, analysis: AnalysisResult, tenant_id: int,
+    tenant_slug: str, location_id: int, authorized_location_ids: tuple[int, ...],
+    permissions: frozenset[str],
+) -> ImportPlan:
+    if analysis.metadata is None or analysis.metadata.get('capture_status') != 'CONFIRMADO':
+        raise ImportRejectedError(
+            'DATASET_NOT_CONFIRMED',
+            'Official Metadata.capture_status must be CONFIRMADO before persistence',
+        )
+    if location_id not in authorized_location_ids:
+        raise ImportRejectedError('UNAUTHORIZED_SCOPE', 'Location is not authorized')
+
+    authority = (await db.execute(
+        select(Tenant, Organization, Location)
+        .join(Organization, Organization.tenant_id == Tenant.id)
+        .join(
+            Location,
+            (Location.organization_id == Organization.id)
+            & (Location.tenant_id == Tenant.id),
+        )
+        .where(Tenant.id == tenant_id, Location.id == location_id)
+    )).first()
+    if authority is None:
+        raise ImportRejectedError('UNAUTHORIZED_SCOPE', 'Authorized location scope was not found')
+    tenant, organization, location = authority
+
+    confirmed = tuple(
+        row for row in analysis.rows
+        if row.values.get('capture_status') == 'CONFIRMADO'
+    )
+    organizations = tuple(row for row in confirmed if row.group == 'organizations')
+    locations = tuple(row for row in confirmed if row.group == 'locations')
+    if len(organizations) != 1 or len(locations) != 1:
+        raise ImportRejectedError(
+            'SCOPE_MISMATCH',
+            'Incremental official import requires exactly one confirmed existing Organization and Location',
+        )
+    organization_row, location_row = organizations[0], locations[0]
+    if (
+        tenant.slug != tenant_slug
+        or organization_row.values['organization_code'] != organization.code
+        or location_row.values['organization_code'] != organization.code
+        or location_row.values['location_code'] != location.code
+    ):
+        raise ImportRejectedError(
+            'SCOPE_MISMATCH', 'Official workbook scope does not match the authorized server scope'
+        )
+    if (
+        organization_row.values['status'] != organization.status
+        or location_row.values['name'] != location.name
+        or location_row.values['timezone'] != location.timezone
+        or location_row.values['status'] != location.status
+        or (location_row.values['is_headquarters'] == 'YES')
+        != (organization.headquarters_location_id == location.id)
+    ):
+        raise ImportRejectedError(
+            'SCOPE_MISMATCH',
+            'Official Organization/Location values differ from the selected existing scope',
+        )
+
+    item_products = {
+        row.values['item_code']: row.values['product_code']
+        for row in confirmed if row.group == 'menu_items'
+    }
+    adapted: list[AnalyzedRow] = [AnalyzedRow(
+        group='restaurant_profile', sheet='Organizations / Locations', row=organization_row.row,
+        business_key={
+            'tenant_slug': tenant.slug,
+            'organization_code': organization.code,
+            'location_code': location.code,
+        },
+        values={
+            'tenant_slug': tenant.slug, 'tenant_name': tenant.name,
+            'organization_code': organization.code, 'organization_name': organization.name,
+            'location_code': location.code, 'location_name': location.name,
+            'timezone': location.timezone, 'address_line1': location.address_line1,
+            'address_line2': location.address_line2, 'locality': location.locality,
+            'administrative_area': location.administrative_area,
+            'postal_code': location.postal_code, 'country_code': location.country_code,
+            'phone': location.phone, 'email': location.email, 'status': location.status,
+        }, errors=(),
+    )]
+    for row in confirmed:
+        value = row.values
+        if row.group == 'categories':
+            adapted.append(_adapted_row(row, {
+                'category_key': value['category_code'],
+                'organization_code': organization.code, 'name': value['name'],
+                'parent_category_key': value['parent_category_code'],
+                'display_order': 0, 'status': value['status'],
+            }))
+        elif row.group == 'products':
+            adapted.append(_adapted_row(row, {
+                'product_key': value['product_code'],
+                'organization_code': organization.code,
+                'category_key': value['category_code'], 'name': value['name'],
+                'description': value['description'], 'status': value['status'],
+            }))
+        elif row.group == 'menus':
+            adapted.append(_adapted_row(row, {
+                'location_code': value['location_code'], 'menu_key': value['menu_code'],
+                'name': value['name'], 'status': value['status'],
+            }))
+        elif row.group == 'menu_sections':
+            adapted.append(_adapted_row(row, {
+                'menu_key': value['menu_code'], 'section_key': value['section_code'],
+                'name': value['name'], 'display_order': value['display_order'],
+                'status': value['status'],
+            }))
+        elif row.group == 'menu_items':
+            adapted.append(_adapted_row(row, {
+                'menu_key': value['menu_code'], 'section_key': value['section_code'],
+                'product_key': value['product_code'],
+                'display_order': value['display_order'], 'status': value['status'],
+            }))
+        elif row.group == 'prices' and value['valid_from'] is None and value['valid_to'] is None:
+            product_key = item_products.get(value['item_code'])
+            if product_key is None:
+                raise ImportRejectedError(
+                    'UNRESOLVED_REFERENCE',
+                    f'Prices row {row.row} does not resolve to a confirmed Menu Item',
+                )
+            adapted.append(_adapted_row(row, {
+                'location_code': value['location_code'], 'product_key': product_key,
+                'amount': value['amount_mxn'], 'currency': 'MXN', 'status': value['status'],
+            }))
+
+    delegated_analysis = AnalysisResult(
+        contract_version=CONTRACT_VERSION, status='VALID',
+        total_populated_rows=len(adapted), valid_rows=len(adapted), invalid_rows=0,
+        warning_count=0, persisted_rows=0, groups=(), rows=tuple(adapted),
+        errors=(), warnings=(), profile=_OFFICIAL_ADAPTED_PROFILE,
+    )
+    delegated = await build_import_plan(
+        db, analysis=delegated_analysis, tenant_id=tenant_id,
+        tenant_slug=tenant_slug, location_id=location_id,
+        authorized_location_ids=authorized_location_ids, permissions=permissions,
+    )
+    items = [
+        PlanItem(
+            'organizations', organization_row.row, organization_row.business_key,
+            'UNCHANGED', 'P02 existing Organization scope binding',
+            organization_row.values, organization.id,
+        ),
+        PlanItem(
+            'locations', location_row.row, location_row.business_key,
+            'UNCHANGED', 'P02 existing Location/headquarters scope binding',
+            location_row.values, location.id,
+        ),
+        *(item for item in delegated.items if item.group != 'restaurant_profile'),
+    ]
+    adapted_keys = {(item.group, item.row) for item in items}
+    for row in analysis.rows:
+        if row.values.get('capture_status') == 'NO APLICA':
+            continue
+        if (row.group, row.row) in adapted_keys:
+            continue
+        items.append(PlanItem(
+            row.group, row.row, row.business_key, 'DEFERRED',
+            OFFICIAL_BY_KEY[row.group].owner, row.values,
+        ))
+    required_deferred = tuple(sorted({
+        *(item.group for item in items if item.operation == 'DEFERRED'),
+        *(
+            ('products',)
+            if any(row.group == 'products' for row in confirmed)
+            else ()
+        ),
+    }))
+    return ImportPlan(
+        delegated.scope, tuple(items), OFFICIAL_PROFILE,
+        f'{CONTRACT_VERSION}:{OFFICIAL_PROFILE}', required_deferred,
+    )
 
 
 def _same(value: Any, expected: Any) -> bool:
@@ -267,6 +470,12 @@ async def build_import_plan(
 
     if analysis.status != 'VALID' or analysis.contract_version != CONTRACT_VERSION:
         raise ImportRejectedError('INVALID_ANALYSIS', 'Only a valid current-contract analysis can be confirmed')
+    if analysis.profile == OFFICIAL_PROFILE:
+        return await _build_official_import_plan(
+            db, analysis=analysis, tenant_id=tenant_id, tenant_slug=tenant_slug,
+            location_id=location_id, authorized_location_ids=authorized_location_ids,
+            permissions=permissions,
+        )
     if location_id not in authorized_location_ids:
         raise ImportRejectedError('UNAUTHORIZED_SCOPE', 'Location is not authorized')
     if 'location.manage' not in permissions:
@@ -398,11 +607,15 @@ async def build_import_plan(
             'Staff provisioning requires user, Role, and Location management authority',
         )
 
+    binding_contract_version = (
+        f'{CONTRACT_VERSION}:{OFFICIAL_PROFILE}'
+        if analysis.profile == _OFFICIAL_ADAPTED_PROFILE else CONTRACT_VERSION
+    )
     product_namespace = product_provisioning.onboarding_binding_namespace(
-        contract_version=CONTRACT_VERSION, organization_id=organization.id,
+        contract_version=binding_contract_version, organization_id=organization.id,
     )
     menu_namespace = menu_provisioning.onboarding_binding_namespace(
-        contract_version=CONTRACT_VERSION, organization_id=organization.id,
+        contract_version=binding_contract_version, organization_id=organization.id,
     )
     menu_definition_error = None
     try:
@@ -1004,7 +1217,10 @@ async def build_import_plan(
                 None if current is None else current.id,
                 None if current is None else current.version, blocker,
             ))
-    return ImportPlan(ImportScope(tenant_id, organization.id, location.id), tuple(items))
+    return ImportPlan(
+        ImportScope(tenant_id, organization.id, location.id), tuple(items),
+        analysis.profile, binding_contract_version,
+    )
 
 
 def _classification(group_key: str) -> str:
@@ -1016,6 +1232,20 @@ def _classification(group_key: str) -> str:
 
 
 def _empty_summaries(plan: ImportPlan) -> dict[str, dict[str, Any]]:
+    if plan.profile == OFFICIAL_PROFILE:
+        classifications = {value['group']: value['classification'] for value in coverage()}
+        values = {
+            sheet.key: {
+                'classification': classifications[sheet.key],
+                'authority': sheet.owner,
+                'required_for_stage0': True,
+                'planned': 0, 'created': 0, 'updated': 0, 'unchanged': 0,
+                'deferred': 0, 'failed': 0,
+            }
+            for sheet in OFFICIAL_SHEETS
+        }
+        values['staff']['pending'] = 0
+        return values
     values = {
         group.key: {
             'classification': _classification(group.key),
@@ -1063,7 +1293,7 @@ def _result(
         'status': status,
         'replay': replay,
         'total_planned_rows': len(plan.items),
-        'required_deferred_groups': list(REQUIRED_DEFERRED_GROUPS),
+        'required_deferred_groups': list(plan.required_deferred_groups),
         **totals,
         'groups': summaries,
         'errors': errors,
@@ -1213,7 +1443,7 @@ async def confirm_import(
             'import_id': previous.import_id, 'contract_version': CONTRACT_VERSION,
             'dataset_fingerprint': fingerprint, 'scope': asdict(plan.scope),
             'status': 'PARTIAL', 'replay': True, 'total_planned_rows': len(plan.items),
-            'required_deferred_groups': list(REQUIRED_DEFERRED_GROUPS),
+            'required_deferred_groups': list(plan.required_deferred_groups),
             'created': 0, 'updated': 0, 'unchanged': 0, 'deferred': 0, 'failed': 1,
             'groups': _empty_summaries(plan),
             'errors': [{'code': 'RECOVERY_REQUIRED', 'message': 'The prior import has no terminal result; it was not re-executed'}],
@@ -1242,7 +1472,7 @@ async def confirm_import(
             'import_id': previous.import_id, 'contract_version': CONTRACT_VERSION,
             'dataset_fingerprint': fingerprint, 'scope': asdict(plan.scope),
             'status': 'PARTIAL', 'replay': True, 'total_planned_rows': len(plan.items),
-            'required_deferred_groups': list(REQUIRED_DEFERRED_GROUPS),
+            'required_deferred_groups': list(plan.required_deferred_groups),
             'created': 0, 'updated': 0, 'unchanged': 0, 'deferred': 0, 'failed': 1,
             'groups': _empty_summaries(plan),
             'errors': [{'code': 'RECOVERY_REQUIRED', 'message': 'The import is already in progress and was not re-executed'}],
@@ -1400,7 +1630,7 @@ async def confirm_import(
                     organization_id=plan.scope.organization_id,
                     location_id=location_id,
                     binding_namespace=product_provisioning.onboarding_binding_namespace(
-                        contract_version=CONTRACT_VERSION,
+                        contract_version=plan.binding_contract_version,
                         organization_id=plan.scope.organization_id,
                     ),
                     product_key=value['product_key'], policy=value['policy'],
@@ -1413,7 +1643,7 @@ async def confirm_import(
                     db, tenant_id=tenant_id,
                     organization_id=plan.scope.organization_id,
                     binding_namespace=product_provisioning.onboarding_binding_namespace(
-                        contract_version=CONTRACT_VERSION,
+                        contract_version=plan.binding_contract_version,
                         organization_id=plan.scope.organization_id,
                     ),
                     category_key=value['category_key'],
@@ -1427,7 +1657,7 @@ async def confirm_import(
                     db, tenant_id=tenant_id,
                     organization_id=plan.scope.organization_id,
                     binding_namespace=product_provisioning.onboarding_binding_namespace(
-                        contract_version=CONTRACT_VERSION,
+                        contract_version=plan.binding_contract_version,
                         organization_id=plan.scope.organization_id,
                     ),
                     product_key=value['product_key'],
@@ -1441,7 +1671,7 @@ async def confirm_import(
                     organization_id=plan.scope.organization_id,
                     location_id=location_id,
                     binding_namespace=menu_provisioning.onboarding_binding_namespace(
-                        contract_version=CONTRACT_VERSION,
+                        contract_version=plan.binding_contract_version,
                         organization_id=plan.scope.organization_id,
                     ),
                     menu_key=value['menu_key'], name=value['name'],
@@ -1453,7 +1683,7 @@ async def confirm_import(
                     db, tenant_id=tenant_id,
                     organization_id=plan.scope.organization_id,
                     binding_namespace=menu_provisioning.onboarding_binding_namespace(
-                        contract_version=CONTRACT_VERSION,
+                        contract_version=plan.binding_contract_version,
                         organization_id=plan.scope.organization_id,
                     ),
                     menu_key=value['menu_key'],
@@ -1467,7 +1697,7 @@ async def confirm_import(
                     db, tenant_id=tenant_id,
                     organization_id=plan.scope.organization_id,
                     binding_namespace=menu_provisioning.onboarding_binding_namespace(
-                        contract_version=CONTRACT_VERSION,
+                        contract_version=plan.binding_contract_version,
                         organization_id=plan.scope.organization_id,
                     ),
                     menu_key=value['menu_key'],
@@ -1483,7 +1713,7 @@ async def confirm_import(
                     organization_id=plan.scope.organization_id,
                     location_id=location_id,
                     binding_namespace=product_provisioning.onboarding_binding_namespace(
-                        contract_version=CONTRACT_VERSION,
+                        contract_version=plan.binding_contract_version,
                         organization_id=plan.scope.organization_id,
                     ),
                     product_key=value['product_key'], amount=_decimal(value['amount']),
@@ -1511,7 +1741,7 @@ async def confirm_import(
                         location_id=location_id,
                         binding_namespace=(
                             product_provisioning.onboarding_binding_namespace(
-                                contract_version=CONTRACT_VERSION,
+                                contract_version=plan.binding_contract_version,
                                 organization_id=plan.scope.organization_id,
                             )
                         ),
@@ -1559,7 +1789,7 @@ async def confirm_import(
                     location_id=location_id,
                     binding_namespace=(
                         product_provisioning.onboarding_binding_namespace(
-                            contract_version=CONTRACT_VERSION,
+                            contract_version=plan.binding_contract_version,
                             organization_id=plan.scope.organization_id,
                         )
                     ),
@@ -1707,7 +1937,7 @@ async def confirm_import(
         )
     else:
         status = 'PARTIAL' if (
-            REQUIRED_DEFERRED_GROUPS
+            plan.required_deferred_groups
             or any(s['deferred'] for s in summaries.values())
             or summaries['staff']['pending']
             or any(s['failed'] for s in summaries.values())

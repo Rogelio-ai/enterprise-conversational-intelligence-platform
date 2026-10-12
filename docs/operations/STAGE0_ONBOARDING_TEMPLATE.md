@@ -1,42 +1,41 @@
-# Stage 0 restaurant onboarding template
+# Stage 0 restaurant onboarding workbook
 
 Contract version: `restaurant-onboarding/v1`
 
-The official workbook captures configuration for a real-restaurant Stage 0 rehearsal. It is a
-capture contract, not a domain authority, and it does not import or persist data. Later analysis and
-import must apply values through the existing ECIP application/domain authorities.
+The Product-approved workbook is
+`docs/operations/templates/ECIP_Stage0_Restaurant_Onboarding.xlsx`.
 
-Generate the workbook from the repository root after installing API development dependencies:
+It is an immutable 35-sheet capture artifact: `Instructions`, `Metadata`, `_Lists`, and 32
+capture sheets. Do not regenerate, rename, reformat, or replace it through the legacy template
+generator. Its approved pristine SHA-256 is
+`52036dd971c570b52448ddc33c0554329616adcc4e661417f3c98f1a2e3b4fff`.
 
-```bash
-python3 scripts/generate-stage0-onboarding-template.py
-```
+Metadata uses the exact four-column header `field,value,required,notes`. Complete every field
+marked `YES`, retain `contract_version=restaurant-onboarding/v1` and
+`dataset_kind=REAL_PREPILOT`, and set the dataset plus applicable rows to `CONFIRMADO` only after
+Restaurant review. Use `NO APLICA` for an intentional exclusion. A confirmed operational
+Organization must identify exactly one confirmed active headquarters Location.
 
-The output is
-`docs/operations/templates/ECIP_Stage0_Restaurant_Onboarding_v1.xlsx`. It contains Instructions,
-Metadata and 32 dependency-ordered capture sheets covering restaurant identity, staff metadata,
-resources, preparation, menu/commercial structure, inventory configuration, suppliers, recipes,
-tax classification and payment-method selection. Optional capability sheets may remain empty when
-the restaurant confirms they do not apply.
+The analyze and coverage endpoints recognize this official profile without changing it. Coverage
+separates capture recognition from actual import support; a recognized worksheet is not proof that
+its rows can be persisted. The certified incremental confirmation boundary is:
 
-Dark blue headers are required and gray headers are optional. Header comments contain types,
-formats, references and allowed values. Cross-sheet references use existing business codes where
-the platform has them. `product_key`, `menu_key`, `section_key`, `choice_group_key`,
-`promotion_key`, `recipe_key` and `tax_rule_key` are workbook-local capture keys because those
-authorities do not currently expose an operator-safe code. They are not database IDs and must not
-be persisted as invented domain identifiers.
+- bind one confirmed Organization and one confirmed headquarters Location to the exact existing,
+  authorized server scope; this path does not create or replace either record;
+- import confirmed Categories, Menus, Menu Sections, and Menu Items through their existing owners;
+- import the core confirmed Product while reporting `PARTIAL` because `sale_uom` has no current
+  Product owner field; and
+- import confirmed undated MXN Prices while deferring any row with `valid_from` or `valid_to`.
 
-Do not enter passwords, hashes, tokens, access codes, provider credentials, generated IDs,
-timestamps, stock movements, lots, receipts, losses, preparation batches, transfers or valuation
-history. Opening stock must later use an authorized inventory operation and is intentionally absent
-from the workbook.
+All other populated official rows remain explicitly deferred. `NO APLICA` rows are intentionally
+excluded. Confirmation fails closed on scope, permission, owner-plan, and reference conflicts.
 
-This workstream performs no XLSX upload, analyze/preview, import, user/RBAC provisioning, tax
-provisioning or POS access/integration. Those remain later controlled workstreams.
+Do not enter passwords, hashes, tokens, access codes, provider credentials, generated database
+IDs, stock movements, lots, receipts, losses, preparation batches, transfers, valuation history,
+or payment-provider secrets. Workbook identifiers are business-supplied or workbook-local as
+defined by the approved Stage 0 Capability SDD; they never authorize cross-Tenant resolution or
+invent a domain identifier.
 
-Known later-application dependencies are intentionally preserved: staff/RBAC and tax records have
-no general provisioning API; named warehouses have a model/business code but the current API only
-lists them and changes policy; and several commercial authorities lack a persistent operator-safe
-code. B1.2 may analyze their capture data, but a later confirmed-import workstream must resolve
-these authority gaps before persistence. Opening stock remains a separate authorized inventory
-operation.
+The historical generator and its in-memory workbook remain only as legacy executable-contract
+regression evidence. They are not the official operator workbook and must not recreate the deleted
+`ECIP_Stage0_Restaurant_Onboarding_v1.xlsx` artifact.

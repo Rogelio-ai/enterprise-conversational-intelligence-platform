@@ -8,6 +8,7 @@ from decimal import Decimal, InvalidOperation
 from io import BytesIO
 import re
 from typing import Any
+import unicodedata
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from zipfile import BadZipFile, ZipFile, is_zipfile
 
@@ -20,6 +21,17 @@ from app.onboarding.contract import (
     ONBOARDING_CONTRACT,
     Field,
     Group,
+)
+from app.onboarding.official_contract import (
+    CAPTURE_STATUSES,
+    OFFICIAL_BY_NAME,
+    OFFICIAL_METADATA_KEYS,
+    OFFICIAL_MAX_CAPTURE_ROWS,
+    OFFICIAL_PROFILE,
+    OFFICIAL_REQUIRED_METADATA,
+    OFFICIAL_SHEETS,
+    OFFICIAL_WORKBOOK_SHEETS,
+    OfficialSheet,
 )
 
 
@@ -109,6 +121,8 @@ class AnalysisResult:
     rows: tuple[AnalyzedRow, ...]
     errors: tuple[AnalysisIssue, ...]
     warnings: tuple[AnalysisIssue, ...]
+    profile: str = "legacy-generated"
+    metadata: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         """Return a deterministic, JSON-compatible preview representation."""
@@ -154,6 +168,8 @@ def analyze_xlsx(content: bytes, *, filename: str | None = None) -> AnalysisResu
         )
 
     try:
+        if _is_official_profile(workbook):
+            return _analyze_official(workbook)
         version, structural_errors, warnings = _validate_structure(workbook)
         if structural_errors:
             return _empty_result(version, structural_errors, warnings)
@@ -165,6 +181,573 @@ def analyze_xlsx(content: bytes, *, filename: str | None = None) -> AnalysisResu
         return _build_result(version, working_rows, warnings)
     finally:
         workbook.close()
+
+
+def _is_official_profile(workbook: Any) -> bool:
+    if "Metadata" not in workbook.sheetnames:
+        return any(name in workbook.sheetnames for name in OFFICIAL_BY_NAME)
+    return _trimmed_headers(workbook["Metadata"]) == (
+        "field", "value", "required", "notes",
+    ) or any(name in workbook.sheetnames for name in OFFICIAL_BY_NAME)
+
+
+def _analyze_official(workbook: Any) -> AnalysisResult:
+    structural_errors, warnings = _validate_official_structure(workbook)
+    metadata, metadata_errors = _parse_official_metadata(workbook)
+    version = metadata.get("contract_version")
+    if structural_errors:
+        return _empty_result(
+            str(version) if version is not None else None,
+            [*structural_errors, *metadata_errors],
+            warnings,
+            profile=OFFICIAL_PROFILE,
+            metadata=metadata,
+            groups=tuple(
+                GroupSummary(sheet.key, sheet.name, 0, 0, 0)
+                for sheet in OFFICIAL_SHEETS
+            ),
+        )
+    rows = _parse_official_rows(workbook)
+    _validate_official_duplicates(rows)
+    _validate_official_references(rows)
+    _validate_official_dataset(rows, metadata)
+    return _build_official_result(
+        str(version), rows, warnings, metadata, global_errors=metadata_errors,
+    )
+
+
+def _validate_official_structure(
+    workbook: Any,
+) -> tuple[list[AnalysisIssue], list[AnalysisIssue]]:
+    errors: list[AnalysisIssue] = []
+    warnings: list[AnalysisIssue] = []
+    expected = tuple(OFFICIAL_WORKBOOK_SHEETS)
+    for name in expected:
+        if name not in workbook.sheetnames:
+            errors.append(_workbook_issue(
+                "MISSING_SHEET", f'Required official sheet "{name}" is missing.', sheet=name,
+            ))
+    for name in workbook.sheetnames:
+        if name not in expected:
+            errors.append(_workbook_issue(
+                "UNEXPECTED_SHEET", f'Sheet "{name}" is not part of the official v1 profile.', sheet=name,
+            ))
+    if tuple(workbook.sheetnames) != expected and not any(
+        issue.code in {"MISSING_SHEET", "UNEXPECTED_SHEET"} for issue in errors
+    ):
+        errors.append(_workbook_issue(
+            "INVALID_SHEET_ORDER", "Official workbook sheets must retain their approved order.",
+        ))
+    if "Instructions" in workbook.sheetnames:
+        if workbook["Instructions"]["B3"].value != CONTRACT_VERSION:
+            errors.append(_workbook_issue(
+                "INVALID_TEMPLATE_IDENTITY",
+                f'Instructions contract must be "{CONTRACT_VERSION}".',
+                sheet="Instructions", row=3, field="contract_version",
+            ))
+    if "Metadata" in workbook.sheetnames and _trimmed_headers(workbook["Metadata"]) != (
+        "field", "value", "required", "notes",
+    ):
+        errors.append(_workbook_issue(
+            "INVALID_METADATA_HEADERS",
+            'Metadata headers must be exactly "field", "value", "required", and "notes".',
+            sheet="Metadata", row=1,
+        ))
+    for spec in OFFICIAL_SHEETS:
+        if spec.name not in workbook.sheetnames:
+            continue
+        sheet = workbook[spec.name]
+        headers = _trimmed_headers(sheet)
+        if headers != spec.headers:
+            duplicates = sorted({h for h in headers if h is not None and headers.count(h) > 1})
+            for header in duplicates:
+                errors.append(_workbook_issue(
+                    "DUPLICATE_HEADER", f'Duplicate header "{header}".',
+                    group=spec.key, sheet=spec.name, row=1, field=str(header),
+                ))
+            missing = [header for header in spec.headers if header not in headers]
+            for header in missing:
+                errors.append(_workbook_issue(
+                    "MISSING_HEADER", f'Required official column "{header}" is missing.',
+                    group=spec.key, sheet=spec.name, row=1, field=header,
+                ))
+            if not missing and not duplicates:
+                errors.append(_workbook_issue(
+                    "INVALID_HEADER_CONTRACT",
+                    "Columns must match the official contract exactly and in order.",
+                    group=spec.key, sheet=spec.name, row=1,
+                ))
+        if sheet.max_column > len(spec.headers):
+            for row_number in _official_populated_row_numbers(sheet):
+                if any(
+                    sheet.cell(row_number, column).data_type == "f"
+                    or _blank_to_none(sheet.cell(row_number, column).value) is not None
+                    for column in range(len(spec.headers) + 1, sheet.max_column + 1)
+                ):
+                    errors.append(_workbook_issue(
+                        "UNSUPPORTED_COLUMN_DATA", "Data exists outside official columns.",
+                        group=spec.key, sheet=spec.name, row=row_number,
+                    ))
+    return errors, warnings
+
+
+def _parse_official_metadata(
+    workbook: Any,
+) -> tuple[dict[str, Any], list[AnalysisIssue]]:
+    metadata: dict[str, Any] = {}
+    errors: list[AnalysisIssue] = []
+    if "Metadata" not in workbook.sheetnames:
+        return metadata, errors
+    sheet = workbook["Metadata"]
+    seen: set[str] = set()
+    flags: dict[str, str] = {}
+    for row_number in _populated_row_numbers(sheet):
+        field = _normalized_text(sheet.cell(row_number, 1).value)
+        value = _normalized_value(sheet.cell(row_number, 2).value)
+        required = _normalized_text(sheet.cell(row_number, 3).value)
+        if field is None:
+            errors.append(_workbook_issue(
+                "INVALID_METADATA", "Metadata field must be non-empty text.",
+                sheet="Metadata", row=row_number, field="field",
+            ))
+            continue
+        if field in seen:
+            errors.append(_workbook_issue(
+                "DUPLICATE_METADATA_KEY", f'Duplicate Metadata field "{field}".',
+                sheet="Metadata", row=row_number, field=field,
+            ))
+            continue
+        seen.add(field)
+        if field not in OFFICIAL_METADATA_KEYS:
+            errors.append(_workbook_issue(
+                "UNKNOWN_METADATA_KEY", f'Metadata field "{field}" is not defined by v1.',
+                sheet="Metadata", row=row_number, field=field,
+            ))
+        if required not in {"YES", "NO"}:
+            errors.append(_workbook_issue(
+                "INVALID_METADATA_REQUIRED", 'Metadata required must be "YES" or "NO".',
+                sheet="Metadata", row=row_number, field=field, value=required,
+            ))
+        else:
+            flags[field] = required
+        metadata[field] = value
+    for field in OFFICIAL_METADATA_KEYS:
+        if field not in metadata:
+            errors.append(_workbook_issue(
+                "MISSING_METADATA_KEY", f'Metadata field "{field}" is required by the profile.',
+                sheet="Metadata", field=field,
+            ))
+            continue
+        expected = "YES" if field in OFFICIAL_REQUIRED_METADATA else "NO"
+        if flags.get(field) != expected:
+            errors.append(_workbook_issue(
+                "METADATA_REQUIRED_CONFLICT",
+                f'Metadata field "{field}" must declare required={expected}.',
+                sheet="Metadata", field=field, value=flags.get(field),
+            ))
+        if field in OFFICIAL_REQUIRED_METADATA and metadata[field] is None:
+            errors.append(_workbook_issue(
+                "REQUIRED_METADATA_VALUE", f'Metadata value "{field}" is required.',
+                sheet="Metadata", field=field,
+            ))
+    if metadata.get("contract_version") != CONTRACT_VERSION:
+        errors.append(_workbook_issue(
+            "UNSUPPORTED_CONTRACT_VERSION",
+            f'Metadata.contract_version must be "{CONTRACT_VERSION}".',
+            sheet="Metadata", field="contract_version", value=metadata.get("contract_version"),
+        ))
+    if metadata.get("dataset_kind") != "REAL_PREPILOT":
+        errors.append(_workbook_issue(
+            "INVALID_DATASET_KIND", 'Metadata.dataset_kind must be "REAL_PREPILOT".',
+            sheet="Metadata", field="dataset_kind", value=metadata.get("dataset_kind"),
+        ))
+    capture_status = metadata.get("capture_status")
+    if capture_status not in CAPTURE_STATUSES:
+        errors.append(_workbook_issue(
+            "INVALID_METADATA_STATUS", "Metadata.capture_status is not an approved capture state.",
+            sheet="Metadata", field="capture_status", value=capture_status,
+        ))
+    confirmed_at = metadata.get("confirmed_at")
+    if confirmed_at is not None:
+        try:
+            _parse_official_instant(confirmed_at)
+        except ValueError:
+            errors.append(_workbook_issue(
+                "INVALID_METADATA_VALUE",
+                "Metadata.confirmed_at must be an ISO 8601 value with timezone.",
+                sheet="Metadata", field="confirmed_at", value=confirmed_at,
+            ))
+    return metadata, errors
+
+
+def _normalized_text(value: Any) -> str | None:
+    if not isinstance(value, str):
+        return None if value is None else str(value)
+    normalized = unicodedata.normalize("NFC", value.strip())
+    return normalized or None
+
+
+def _normalized_value(value: Any) -> Any:
+    return _normalized_text(value) if isinstance(value, str) else value
+
+
+def _parse_official_rows(workbook: Any) -> list[tuple[OfficialSheet, int, dict[str, Any], list[AnalysisIssue]]]:
+    rows: list[tuple[OfficialSheet, int, dict[str, Any], list[AnalysisIssue]]] = []
+    for spec in OFFICIAL_SHEETS:
+        sheet = workbook[spec.name]
+        allowed = dict(spec.allowed)
+        for row_number in _official_populated_row_numbers(sheet):
+            values: dict[str, Any] = {}
+            issues: list[AnalysisIssue] = []
+            for column, field in enumerate(spec.headers, start=1):
+                cell = sheet.cell(row_number, column)
+                if cell.data_type == "f":
+                    values[field] = None
+                    issues.append(_official_row_issue(
+                        spec, row_number, "FORMULA_NOT_ALLOWED",
+                        "Formulas are not authoritative onboarding data.", field=field,
+                    ))
+                else:
+                    values[field] = _normalized_value(_blank_to_none(cell.value))
+            if row_number > OFFICIAL_MAX_CAPTURE_ROWS + 1:
+                issues.append(_official_row_issue(
+                    spec, row_number, "ROW_LIMIT_EXCEEDED",
+                    f"Rows beyond {OFFICIAL_MAX_CAPTURE_ROWS + 1} are not supported.",
+                ))
+            if values.get("capture_status") != "NO APLICA":
+                for field in spec.required:
+                    if values.get(field) is None:
+                        issues.append(_official_row_issue(
+                            spec, row_number, "REQUIRED_FIELD", "A required value is missing.", field=field,
+                        ))
+            for field, choices in allowed.items():
+                value = values.get(field)
+                if value is not None and value not in choices:
+                    issues.append(_official_row_issue(
+                        spec, row_number, "INVALID_CONTROLLED_VALUE",
+                        f'Value must be one of: {", ".join(choices)}.', field=field, value=value,
+                    ))
+            for field in spec.integer_fields:
+                value = values.get(field)
+                if value is not None:
+                    try:
+                        values[field] = _parse_integer(value)
+                    except ValueError:
+                        issues.append(_official_row_issue(
+                            spec, row_number, "INVALID_FIELD_VALUE", "Value must be an integer.",
+                            field=field, value=value,
+                        ))
+            for field in spec.decimal_fields:
+                value = values.get(field)
+                if value is not None:
+                    try:
+                        parsed = _parse_decimal(value)
+                        if Decimal(parsed) < 0:
+                            raise ValueError
+                        values[field] = parsed
+                    except (InvalidOperation, TypeError, ValueError):
+                        issues.append(_official_row_issue(
+                            spec, row_number, "INVALID_FIELD_VALUE",
+                            "Value must be a non-negative finite decimal.", field=field, value=value,
+                        ))
+            for field in ("valid_from", "valid_to"):
+                value = values.get(field)
+                if value is not None:
+                    try:
+                        values[field] = _parse_official_instant(value)
+                    except ValueError:
+                        issues.append(_official_row_issue(
+                            spec, row_number, "INVALID_FIELD_VALUE",
+                            "Value must be ISO 8601 with timezone.", field=field, value=value,
+                        ))
+            for field in ("email", "email_optional"):
+                value = values.get(field)
+                if value is not None and not _EMAIL_PATTERN.fullmatch(str(value)):
+                    issues.append(_official_row_issue(
+                        spec, row_number, "INVALID_FIELD_VALUE", "Value must be an email address.",
+                        field=field, value=value,
+                    ))
+            if spec.name == "UOM_Conversions":
+                if values.get("from_uom") == values.get("to_uom"):
+                    issues.append(_official_row_issue(
+                        spec, row_number, "INVALID_FIELD_VALUE",
+                        "from_uom and to_uom must differ.", field="to_uom", value=values.get("to_uom"),
+                    ))
+                factor = values.get("factor")
+                if factor is not None:
+                    try:
+                        invalid_factor = Decimal(str(factor)) <= 0
+                    except (InvalidOperation, ValueError):
+                        invalid_factor = False  # The generic decimal validation already reported it.
+                    if invalid_factor:
+                        issues.append(_official_row_issue(
+                            spec, row_number, "INVALID_FIELD_VALUE",
+                            "factor must be positive.", field="factor", value=factor,
+                        ))
+            if spec.name == "Modifier_Groups":
+                minimum, maximum = values.get("min_select"), values.get("max_select")
+                if minimum is not None and maximum is not None and minimum > maximum:
+                    issues.append(_official_row_issue(
+                        spec, row_number, "INVALID_FIELD_VALUE",
+                        "min_select cannot exceed max_select.", field="max_select", value=maximum,
+                    ))
+            rows.append((spec, row_number, values, issues))
+    return rows
+
+
+def _parse_official_instant(value: Any) -> str:
+    if isinstance(value, datetime):
+        parsed = value
+    elif isinstance(value, str):
+        text = value.strip()
+        parsed = datetime.fromisoformat(text[:-1] + "+00:00" if text.endswith("Z") else text)
+    else:
+        raise ValueError
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError
+    return parsed.isoformat()
+
+
+def _official_populated_row_numbers(sheet: Any) -> tuple[int, ...]:
+    """Return the approved 60-row capture area, excluding immutable footer guidance."""
+
+    return tuple(
+        sorted({
+            cell.row
+            for cell in sheet._cells.values()
+            if 2 <= cell.row <= OFFICIAL_MAX_CAPTURE_ROWS + 1
+            and (cell.data_type == "f" or _blank_to_none(cell.value) is not None)
+        })
+    )
+
+
+def _validate_official_duplicates(
+    rows: list[tuple[OfficialSheet, int, dict[str, Any], list[AnalysisIssue]]],
+) -> None:
+    seen: dict[tuple[str, tuple[Any, ...]], list[tuple[OfficialSheet, int, dict[str, Any], list[AnalysisIssue]]]] = {}
+    for row in rows:
+        spec, _, values, _ = row
+        if values.get("capture_status") == "NO APLICA":
+            continue
+        key = tuple(values.get(field) for field in spec.business_key)
+        if all(value is not None for value in key):
+            seen.setdefault((spec.key, key), []).append(row)
+    for duplicates in seen.values():
+        if len(duplicates) > 1:
+            for spec, row_number, _, issues in duplicates:
+                issues.append(_official_row_issue(
+                    spec, row_number, "DUPLICATE_BUSINESS_KEY",
+                    "The normalized business key is duplicated in this sheet.",
+                ))
+
+
+def _validate_official_references(
+    rows: list[tuple[OfficialSheet, int, dict[str, Any], list[AnalysisIssue]]],
+) -> None:
+    indexes: dict[
+        tuple[str, str],
+        dict[Any, list[tuple[OfficialSheet, int, dict[str, Any], list[AnalysisIssue]]]],
+    ] = {}
+    for row in rows:
+        spec, _, values, _ = row
+        if values.get("capture_status") == "NO APLICA":
+            continue
+        for field in spec.headers:
+            value = values.get(field)
+            if value is not None:
+                index = indexes.setdefault((spec.name, field), {})
+                index.setdefault(value, []).append(row)
+    derived_locations = _official_row_locations(rows, indexes)
+    for spec, row_number, values, issues in rows:
+        if values.get("capture_status") == "NO APLICA":
+            continue
+        for field, target_sheet, target_field in spec.references:
+            value = values.get(field)
+            if value is None:
+                continue
+            candidates = list(indexes.get((target_sheet, target_field), {}).get(value, ()))
+            source_location = derived_locations.get((spec.name, row_number))
+            if source_location is not None:
+                scoped = [
+                    candidate for candidate in candidates
+                    if derived_locations.get((candidate[0].name, candidate[1])) in {
+                        None, source_location,
+                    }
+                ]
+                candidates = scoped
+            count = len(candidates)
+            if count != 1:
+                issues.append(_official_row_issue(
+                    spec, row_number,
+                    "UNRESOLVED_REFERENCE" if count == 0 else "AMBIGUOUS_REFERENCE",
+                    f'{field} must resolve exactly once in {target_sheet}.{target_field}.',
+                    field=field, value=value,
+                ))
+    category_parents = {
+        values.get("category_code"): values.get("parent_category_code")
+        for spec, _, values, _ in rows
+        if spec.name == "Categories" and values.get("capture_status") != "NO APLICA"
+    }
+    for spec, row_number, values, issues in rows:
+        if spec.name != "Categories" or values.get("category_code") is None:
+            continue
+        origin = values["category_code"]
+        cursor = category_parents.get(origin)
+        visited = {origin}
+        while cursor is not None:
+            if cursor in visited:
+                issues.append(_official_row_issue(
+                    spec, row_number, "CYCLIC_REFERENCE",
+                    "Category parent references contain a cycle.",
+                    field="parent_category_code", value=values.get("parent_category_code"),
+                ))
+                break
+            visited.add(cursor)
+            cursor = category_parents.get(cursor)
+    section_menus = {
+        values.get("section_code"): values.get("menu_code")
+        for spec, _, values, _ in rows if spec.name == "Menu_Sections"
+    }
+    for spec, row_number, values, issues in rows:
+        if spec.name == "Menu_Items" and values.get("section_code") in section_menus:
+            if section_menus[values["section_code"]] != values.get("menu_code"):
+                issues.append(_official_row_issue(
+                    spec, row_number, "REFERENCE_SCOPE_MISMATCH",
+                    "section_code must belong to the referenced menu_code.",
+                    field="section_code", value=values.get("section_code"),
+                ))
+
+
+def _official_row_locations(
+    rows: list[tuple[OfficialSheet, int, dict[str, Any], list[AnalysisIssue]]],
+    indexes: dict[
+        tuple[str, str],
+        dict[Any, list[tuple[OfficialSheet, int, dict[str, Any], list[AnalysisIssue]]]],
+    ],
+) -> dict[tuple[str, int], Any]:
+    locations: dict[tuple[str, int], Any] = {}
+    for spec, row_number, values, _ in rows:
+        if values.get("location_code") is not None:
+            locations[(spec.name, row_number)] = values["location_code"]
+    menu_locations = {
+        values.get("menu_code"): values.get("location_code")
+        for spec, _, values, _ in rows
+        if spec.name == "Menus" and values.get("menu_code") is not None
+    }
+    warehouse_locations = {
+        values.get("warehouse_code"): values.get("location_code")
+        for spec, _, values, _ in rows
+        if spec.name == "Warehouses" and values.get("warehouse_code") is not None
+    }
+    inventory_locations = {
+        values.get("inventory_code"): warehouse_locations.get(values.get("warehouse_code"))
+        for spec, _, values, _ in rows
+        if spec.name == "Inventory_Items" and values.get("inventory_code") is not None
+    }
+    for spec, row_number, values, _ in rows:
+        key = (spec.name, row_number)
+        if key in locations:
+            continue
+        if values.get("menu_code") is not None:
+            locations[key] = menu_locations.get(values.get("menu_code"))
+        elif values.get("warehouse_code") is not None:
+            locations[key] = warehouse_locations.get(values.get("warehouse_code"))
+        elif values.get("inventory_code") is not None:
+            locations[key] = inventory_locations.get(values.get("inventory_code"))
+    return locations
+
+
+def _validate_official_dataset(
+    rows: list[tuple[OfficialSheet, int, dict[str, Any], list[AnalysisIssue]]],
+    metadata: dict[str, Any],
+) -> None:
+    confirmed_organizations = [row for row in rows if row[0].name == "Organizations" and row[2].get("capture_status") == "CONFIRMADO"]
+    if metadata.get("capture_status") == "CONFIRMADO":
+        if len(confirmed_organizations) != 1:
+            issue = _workbook_issue(
+                "ORGANIZATION_CARDINALITY",
+                "Confirmed Metadata requires exactly one confirmed Organization row.",
+                sheet="Organizations",
+            )
+            if confirmed_organizations:
+                for row in confirmed_organizations:
+                    row[3].append(issue)
+        elif confirmed_organizations[0][2].get("organization_code") != metadata.get("organization_code"):
+            confirmed_organizations[0][3].append(_official_row_issue(
+                confirmed_organizations[0][0], confirmed_organizations[0][1],
+                "METADATA_SCOPE_MISMATCH",
+                "Organization code conflicts with Metadata.organization_code.",
+                field="organization_code",
+                value=confirmed_organizations[0][2].get("organization_code"),
+            ))
+        confirmed_locations = [row for row in rows if row[0].name == "Locations" and row[2].get("capture_status") == "CONFIRMADO" and row[2].get("status") == "ACTIVE"]
+        headquarters = [row for row in confirmed_locations if row[2].get("is_headquarters") == "YES"]
+        if confirmed_organizations and confirmed_organizations[0][2].get("status") == "ACTIVE" and len(headquarters) != 1:
+            target_rows = confirmed_locations or confirmed_organizations
+            for spec, row_number, _, issues in target_rows:
+                issues.append(_official_row_issue(
+                    spec, row_number, "INVALID_HEADQUARTERS_CARDINALITY",
+                    "An active confirmed Organization requires exactly one confirmed active headquarters Location.",
+                    field="is_headquarters" if spec.name == "Locations" else None,
+                ))
+
+
+def _build_official_result(
+    version: str,
+    working_rows: list[tuple[OfficialSheet, int, dict[str, Any], list[AnalysisIssue]]],
+    warnings: list[AnalysisIssue],
+    metadata: dict[str, Any],
+    *,
+    global_errors: list[AnalysisIssue],
+) -> AnalysisResult:
+    rows = tuple(
+        AnalyzedRow(
+            group=spec.key,
+            sheet=spec.name,
+            row=row_number,
+            business_key={field: values.get(field) for field in spec.business_key},
+            values=values,
+            errors=tuple(sorted(issues, key=_issue_sort_key)),
+        )
+        for spec, row_number, values, issues in working_rows
+    )
+    all_errors = tuple(sorted((
+        *global_errors,
+        *(error for row in rows for error in row.errors),
+    ), key=_issue_sort_key))
+    groups = tuple(
+        GroupSummary(
+            spec.key, spec.name,
+            sum(row.group == spec.key for row in rows),
+            sum(row.group == spec.key and row.valid for row in rows),
+            sum(row.group == spec.key and not row.valid for row in rows),
+        )
+        for spec in OFFICIAL_SHEETS
+    )
+    valid_count = sum(row.valid for row in rows)
+    return AnalysisResult(
+        contract_version=version,
+        status="VALID" if not all_errors else "INVALID",
+        total_populated_rows=len(rows), valid_rows=valid_count,
+        invalid_rows=len(rows) - valid_count, warning_count=len(warnings),
+        persisted_rows=0, groups=groups, rows=rows, errors=all_errors,
+        warnings=tuple(sorted(warnings, key=_issue_sort_key)),
+        profile=OFFICIAL_PROFILE, metadata=metadata,
+    )
+
+
+def _official_row_issue(
+    spec: OfficialSheet,
+    row: int,
+    code: str,
+    message: str,
+    *,
+    field: str | None = None,
+    value: Any = None,
+) -> AnalysisIssue:
+    return _workbook_issue(
+        code, message, group=spec.key, sheet=spec.name, row=row, field=field, value=value,
+    )
 
 
 def _validate_archive_boundary(content: bytes) -> AnalysisIssue | None:
@@ -907,6 +1490,10 @@ def _empty_result(
     version: str | None,
     errors: list[AnalysisIssue],
     warnings: list[AnalysisIssue] | None = None,
+    *,
+    profile: str = "legacy-generated",
+    metadata: dict[str, Any] | None = None,
+    groups: tuple[GroupSummary, ...] | None = None,
 ) -> AnalysisResult:
     warnings = warnings or []
     return AnalysisResult(
@@ -917,10 +1504,16 @@ def _empty_result(
         invalid_rows=0,
         warning_count=len(warnings),
         persisted_rows=0,
-        groups=tuple(GroupSummary(group.key, group.sheet, 0, 0, 0) for group in ONBOARDING_CONTRACT),
+        groups=(
+            groups
+            if groups is not None
+            else tuple(GroupSummary(group.key, group.sheet, 0, 0, 0) for group in ONBOARDING_CONTRACT)
+        ),
         rows=(),
         errors=tuple(sorted(errors, key=_issue_sort_key)),
         warnings=tuple(sorted(warnings, key=_issue_sort_key)),
+        profile=profile,
+        metadata=metadata,
     )
 
 
@@ -966,7 +1559,13 @@ def _blank_to_none(value: Any) -> Any:
 def _group_order(group_key: str | None) -> int:
     if group_key is None:
         return -1
-    return next((group.order for group in ONBOARDING_CONTRACT if group.key == group_key), 10**9)
+    legacy = next((group.order for group in ONBOARDING_CONTRACT if group.key == group_key), None)
+    if legacy is not None:
+        return legacy
+    return next(
+        (index for index, group in enumerate(OFFICIAL_SHEETS, start=1) if group.key == group_key),
+        10**9,
+    )
 
 
 def _issue_sort_key(issue: AnalysisIssue) -> tuple[Any, ...]:

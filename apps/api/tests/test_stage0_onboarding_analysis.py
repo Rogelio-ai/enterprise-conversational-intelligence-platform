@@ -10,7 +10,14 @@ from openpyxl.styles import PatternFill
 
 from app.onboarding.analyzer import MAX_XLSX_BYTES, analyze_xlsx
 from app.onboarding.contract import CONTRACT_VERSION
+from app.onboarding.official_contract import OFFICIAL_PROFILE
 from app.onboarding.xlsx import deterministic_bytes
+
+
+OFFICIAL = (
+    Path(__file__).resolve().parents[3]
+    / "docs/operations/templates/ECIP_Stage0_Restaurant_Onboarding.xlsx"
+)
 
 
 def _edited_workbook(edit) -> bytes:
@@ -63,19 +70,146 @@ def _add_valid_menu_dataset(workbook) -> None:
 
 
 def test_official_empty_workbook_is_recognized_without_business_rows() -> None:
-    official = (
-        Path(__file__).resolve().parents[3]
-        / "docs/operations/templates/ECIP_Stage0_Restaurant_Onboarding_v1.xlsx"
-    )
+    result = analyze_xlsx(OFFICIAL.read_bytes(), filename=OFFICIAL.name)
 
-    result = analyze_xlsx(official.read_bytes(), filename=official.name)
-
-    assert result.status == "VALID"
+    assert result.status == "INVALID"
+    assert result.profile == OFFICIAL_PROFILE
     assert result.contract_version == CONTRACT_VERSION
     assert result.total_populated_rows == result.valid_rows == result.invalid_rows == 0
     assert result.persisted_rows == 0
     assert len(result.groups) == 32
     assert result.to_dict()["persisted_rows"] == 0
+    assert {error.code for error in result.errors} == {"REQUIRED_METADATA_VALUE"}
+
+
+def _official_workbook(edit) -> bytes:
+    workbook = load_workbook(OFFICIAL, data_only=False)
+    for cell, value in {
+        "B4": "Restaurante Sintético",
+        "B5": "ORG-TEST",
+        "B6": "CONFIRMADO",
+        "B7": "Capturador de prueba",
+        "B8": "Confirmador de prueba",
+        "B9": "2026-10-11T12:00:00-06:00",
+    }.items():
+        workbook["Metadata"][cell] = value
+    _set_row(workbook, "Organizations", (
+        "ORG-TEST", "Restaurante Sintético SA", "Restaurante Sintético",
+        "ACTIVE", "CONFIRMADO", None,
+    ))
+    _set_row(workbook, "Locations", (
+        "ORG-TEST", "LOC-TEST", "Matriz", "YES", "ACTIVE", "es-MX",
+        "America/Mexico_City", None, None, None, "CONFIRMADO", None,
+    ))
+    edit(workbook)
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
+def test_official_four_column_metadata_rows_and_references_are_validated() -> None:
+    def edit(workbook) -> None:
+        _set_row(workbook, "Categories", (
+            "CAT-1", "Tacos", None, "ACTIVE", "CONFIRMADO", None,
+        ))
+        _set_row(workbook, "Products", (
+            "PROD-1", "CAT-1", "Taco", None, "UNIT", "ACTIVE", "CONFIRMADO", None,
+        ))
+        _set_row(workbook, "Menus", (
+            "LOC-TEST", "MENU-1", "Principal", "ACTIVE", "CONFIRMADO", None,
+        ))
+        _set_row(workbook, "Menu_Sections", (
+            "MENU-1", "SEC-1", "Comida", 1, "ACTIVE", "CONFIRMADO", None,
+        ))
+        _set_row(workbook, "Menu_Items", (
+            "MENU-1", "SEC-1", "ITEM-1", "PROD-1", 1,
+            "ACTIVE", "CONFIRMADO", None,
+        ))
+
+    result = analyze_xlsx(_official_workbook(edit), filename=OFFICIAL.name)
+
+    assert result.status == "VALID", result.errors
+    assert result.profile == OFFICIAL_PROFILE
+    assert result.metadata["organization_code"] == "ORG-TEST"
+    assert result.total_populated_rows == 7
+    assert all(row.values["capture_status"] == "CONFIRMADO" for row in result.rows)
+
+
+def test_official_metadata_headers_duplicates_controls_and_references_fail_explicitly() -> None:
+    def edit(workbook) -> None:
+        workbook["Metadata"]["C2"] = "NO"
+        _set_row(workbook, "Products", (
+            "DUP", "MISSING", "Producto", None, "BROKEN", "ACTIVE", "CONFIRMADO", None,
+        ))
+        _set_row(workbook, "Products", (
+            "DUP", "MISSING", "Otro", None, "UNIT", "ACTIVE", "CONFIRMADO", None,
+        ), row=3)
+
+    result = analyze_xlsx(_official_workbook(edit), filename=OFFICIAL.name)
+    codes = {error.code for error in result.errors}
+
+    assert result.status == "INVALID"
+    assert {
+        "METADATA_REQUIRED_CONFLICT", "INVALID_CONTROLLED_VALUE",
+        "DUPLICATE_BUSINESS_KEY", "UNRESOLVED_REFERENCE",
+    } <= codes
+
+
+def test_official_structure_and_cyclic_references_fail_with_provenance() -> None:
+    def edit(workbook) -> None:
+        first = workbook["Products"]["A1"].value
+        second = workbook["Products"]["B1"].value
+        workbook["Products"]["A1"] = second
+        workbook["Products"]["B1"] = first
+        _set_row(workbook, "Categories", (
+            "CAT-A", "A", "CAT-B", "ACTIVE", "CONFIRMADO", None,
+        ))
+        _set_row(workbook, "Categories", (
+            "CAT-B", "B", "CAT-A", "ACTIVE", "CONFIRMADO", None,
+        ), row=3)
+
+    result = analyze_xlsx(_official_workbook(edit), filename=OFFICIAL.name)
+
+    assert result.status == "INVALID"
+    assert "INVALID_HEADER_CONTRACT" in {error.code for error in result.errors}
+
+    def cycle_only(workbook) -> None:
+        _set_row(workbook, "Categories", (
+            "CAT-A", "A", "CAT-B", "ACTIVE", "CONFIRMADO", None,
+        ))
+        _set_row(workbook, "Categories", (
+            "CAT-B", "B", "CAT-A", "ACTIVE", "CONFIRMADO", None,
+        ), row=3)
+
+    cycle_result = analyze_xlsx(_official_workbook(cycle_only), filename=OFFICIAL.name)
+    assert sum(error.code == "CYCLIC_REFERENCE" for error in cycle_result.errors) == 2
+
+
+def test_official_references_resolve_with_location_scope() -> None:
+    def edit(workbook) -> None:
+        _set_row(workbook, "Locations", (
+            "ORG-TEST", "LOC-OTHER", "Sucursal", "NO", "ACTIVE", "es-MX",
+            "America/Mexico_City", None, None, None, "CONFIRMADO", None,
+        ), row=3)
+        _set_row(workbook, "Resources", (
+            "LOC-TEST", "REGISTER", "Caja matriz", "CASH_REGISTER", None,
+            None, "ACTIVE", "CONFIRMADO", None,
+        ))
+        _set_row(workbook, "Resources", (
+            "LOC-OTHER", "REGISTER", "Caja sucursal", "CASH_REGISTER", None,
+            None, "ACTIVE", "CONFIRMADO", None,
+        ), row=3)
+        _set_row(workbook, "Cash_Registers", (
+            "LOC-TEST", "REGISTER", "Caja matriz", "REGISTER", "YES",
+            "ACTIVE", "CONFIRMADO", None,
+        ))
+
+    result = analyze_xlsx(_official_workbook(edit), filename=OFFICIAL.name)
+
+    assert result.status == "VALID", result.errors
+    cash_register = next(row for row in result.rows if row.group == "cash_registers")
+    assert not cash_register.errors
 
 
 def test_valid_rows_normalize_and_resolve_deterministically() -> None:

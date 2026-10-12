@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime
 from decimal import Decimal
 from io import BytesIO
+from pathlib import Path
 
 from fastapi.testclient import TestClient
 from openpyxl import load_workbook
@@ -12,6 +13,7 @@ import pytest
 from app.main import create_app
 from app.onboarding.importer import coverage
 from app.onboarding.contract import CONTRACT_VERSION, ONBOARDING_CONTRACT
+from app.onboarding.official_contract import OFFICIAL_SHEETS
 from app.onboarding.xlsx import deterministic_bytes
 from app.restaurant.catalog import category_provisioning
 from app.restaurant.catalog import provisioning as product_provisioning
@@ -40,6 +42,10 @@ from test_inventory_recipe_stock_foundation import _headers, _permission, _scope
 
 
 MEDIA_TYPE = 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet'
+OFFICIAL = (
+    Path(__file__).resolve().parents[3]
+    / 'docs/operations/templates/ECIP_Stage0_Restaurant_Onboarding.xlsx'
+)
 
 
 def test_all_contract_groups_have_one_explicit_import_classification() -> None:
@@ -47,26 +53,22 @@ def test_all_contract_groups_have_one_explicit_import_classification() -> None:
     assert len(values) == 32
     by_group = {value['group']: value for value in values}
     assert len(by_group) == 32
-    assert by_group['inventory_items']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['resources']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['preparation_configuration']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['preparation_areas']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['preparation_routes']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['categories']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['products']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['menus']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['menu_sections']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['menu_items']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['prices']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['consumption_definitions']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['consumption_components']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['staff']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['tax_rules']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['product_fiscal_classifications']['classification'] == (
-        'IMPORTABLE_NOW'
-    )
-    assert by_group['warehouses']['classification'] == 'IMPORTABLE_NOW'
-    assert by_group['payment_methods']['classification'] == 'OPERATIONAL_NOT_CATALOG_IMPORT'
+    assert {value['sheet'] for value in values} == {
+        sheet.name for sheet in OFFICIAL_SHEETS
+    }
+    assert all(value['capture_status'] == 'SUPPORTED' for value in values)
+    assert by_group['organizations']['import_status'] == 'SUPPORTED'
+    assert by_group['locations']['import_status'] == 'SUPPORTED'
+    assert by_group['categories']['import_status'] == 'SUPPORTED'
+    assert by_group['products']['import_status'] == 'PARTIAL'
+    assert by_group['menus']['import_status'] == 'SUPPORTED'
+    assert by_group['menu_sections']['import_status'] == 'SUPPORTED'
+    assert by_group['menu_items']['import_status'] == 'SUPPORTED'
+    assert by_group['prices']['import_status'] == 'PARTIAL'
+    assert by_group['staff']['import_status'] == 'UNSUPPORTED'
+    assert by_group['staff']['design_target'] == 'PARTIAL'
+    assert by_group['payment_methods']['design_target'] == 'UNSUPPORTED'
+    assert by_group['categories']['design_target'] == 'SUPPORTED'
     assert all(value['authority'] and value['business_key'] for value in values)
 
 
@@ -191,6 +193,53 @@ def _workbook(
     return output.getvalue()
 
 
+def _official_binding_workbook(*, catalog: bool = False) -> bytes:
+    workbook = load_workbook(OFFICIAL, data_only=False)
+    for cell, value in {
+        'B4': 'Inventory Organization',
+        'B5': 'ORG',
+        'B6': 'CONFIRMADO',
+        'B7': 'Synthetic capturer',
+        'B8': 'Synthetic confirmer',
+        'B9': '2026-10-11T12:00:00-06:00',
+    }.items():
+        workbook['Metadata'][cell] = value
+    _set_row(workbook, 'Organizations', (
+        'ORG', 'Inventory Organization', 'Inventory Organization',
+        'ACTIVE', 'CONFIRMADO', None,
+    ))
+    _set_row(workbook, 'Locations', (
+        'ORG', 'LOC', 'Inventory Location', 'YES', 'ACTIVE', 'es-MX',
+        'America/Mexico_City', None, None, None, 'CONFIRMADO', None,
+    ))
+    if catalog:
+        _set_row(workbook, 'Categories', (
+            'CAT-1', 'Tacos', None, 'ACTIVE', 'CONFIRMADO', None,
+        ))
+        _set_row(workbook, 'Products', (
+            'PROD-1', 'CAT-1', 'Taco', 'Taco de prueba', 'UNIT',
+            'ACTIVE', 'CONFIRMADO', None,
+        ))
+        _set_row(workbook, 'Menus', (
+            'LOC', 'MENU-1', 'Principal', 'ACTIVE', 'CONFIRMADO', None,
+        ))
+        _set_row(workbook, 'Menu_Sections', (
+            'MENU-1', 'SEC-1', 'Comida', 1, 'ACTIVE', 'CONFIRMADO', None,
+        ))
+        _set_row(workbook, 'Menu_Items', (
+            'MENU-1', 'SEC-1', 'ITEM-1', 'PROD-1', 1,
+            'ACTIVE', 'CONFIRMADO', None,
+        ))
+        _set_row(workbook, 'Prices', (
+            'LOC', 'ITEM-1', '125.50', None, None,
+            'ACTIVE', 'CONFIRMADO', None,
+        ))
+    output = BytesIO()
+    workbook.save(output)
+    workbook.close()
+    return output.getvalue()
+
+
 def _prepare(connection, prefix: str):
     scope = _scope(connection, f'{prefix}-onboarding')
     with connection.cursor() as cursor:
@@ -237,6 +286,91 @@ def _count(connection, table: str, tenant_id: int) -> int:
     with connection.cursor() as cursor:
         cursor.execute(f'SELECT COUNT(*) AS amount FROM {table} WHERE tenant_id=%s', (tenant_id,))
         return int(cursor.fetchone()['amount'])
+
+
+def test_official_incremental_catalog_import_replays_without_duplicate_mutation(
+    client, sql_connection,
+) -> None:
+    connection, prefix = sql_connection
+    scope = _prepare(connection, prefix)
+    with connection.cursor() as cursor:
+        cursor.execute(
+            'UPDATE organizations SET headquarters_location_id=%s WHERE id=%s',
+            (scope.location_id, scope.organization_id),
+        )
+    headers = _headers(client, scope)
+    content = _official_binding_workbook(catalog=True)
+    before = {
+        'organizations': _count(connection, 'organizations', scope.tenant_id),
+        'locations': _count(connection, 'locations', scope.tenant_id),
+        'evidence': _count(connection, 'onboarding_imports', scope.tenant_id),
+    }
+
+    coverage_response = client.get('/onboarding/stage0/coverage', headers=headers)
+    analysis_response = _analyze(client, headers, content)
+
+    assert coverage_response.status_code == 200
+    assert len(coverage_response.json()['groups']) == 32
+    by_group = {
+        item['group']: item for item in coverage_response.json()['groups']
+    }
+    assert by_group['categories']['import_status'] == 'SUPPORTED'
+    assert by_group['products']['import_status'] == 'PARTIAL'
+    assert by_group['prices']['import_status'] == 'PARTIAL'
+    assert analysis_response.status_code == 200
+    payload = analysis_response.json()
+    assert payload['analysis']['profile'] == 'official-35-sheet'
+    assert payload['analysis']['status'] == 'VALID', payload
+    assert payload['analysis']['persisted_rows'] == 0
+    assert {
+        'organizations': _count(connection, 'organizations', scope.tenant_id),
+        'locations': _count(connection, 'locations', scope.tenant_id),
+        'evidence': _count(connection, 'onboarding_imports', scope.tenant_id),
+    } == before
+
+    confirmation = _confirm(
+        client, headers, content, scope.location_id, payload['dataset_fingerprint'],
+    )
+    assert confirmation.status_code == 201, confirmation.text
+    result = confirmation.json()
+    assert result['status'] == 'PARTIAL'
+    assert result['replay'] is False
+    assert result['groups']['organizations']['unchanged'] == 1
+    assert result['groups']['locations']['unchanged'] == 1
+    assert result['groups']['categories']['created'] == 1
+    assert result['groups']['products']['created'] == 1
+    assert result['groups']['menus']['created'] == 1
+    assert result['groups']['menu_sections']['created'] == 1
+    assert result['groups']['menu_items']['created'] == 1
+    assert result['groups']['prices']['created'] == 1
+    assert result['required_deferred_groups'] == ['products']
+    assert _count(connection, 'product_categories', scope.tenant_id) == 1
+    assert _count(connection, 'products', scope.tenant_id) == 1
+    assert _count(connection, 'menus', scope.tenant_id) == 1
+    assert _count(connection, 'menu_sections', scope.tenant_id) == 1
+    assert _count(connection, 'menu_items', scope.tenant_id) == 1
+    assert _count(connection, 'product_prices', scope.tenant_id) == 1
+    assert _count(connection, 'onboarding_imports', scope.tenant_id) == 1
+
+    replay = _confirm(
+        client, headers, content, scope.location_id, payload['dataset_fingerprint'],
+    )
+    assert replay.status_code == 200, replay.text
+    assert replay.json()['replay'] is True
+    assert replay.json()['import_id'] == result['import_id']
+    assert _count(connection, 'product_categories', scope.tenant_id) == 1
+    assert _count(connection, 'products', scope.tenant_id) == 1
+    assert _count(connection, 'menus', scope.tenant_id) == 1
+    assert _count(connection, 'menu_sections', scope.tenant_id) == 1
+    assert _count(connection, 'menu_items', scope.tenant_id) == 1
+    assert _count(connection, 'product_prices', scope.tenant_id) == 1
+    assert {
+        'organizations': _count(connection, 'organizations', scope.tenant_id),
+        'locations': _count(connection, 'locations', scope.tenant_id),
+    } == {
+        'organizations': before['organizations'],
+        'locations': before['locations'],
+    }
 
 
 def test_confirmation_binding_authorities_replay_and_no_inventory_history(client, sql_connection) -> None:

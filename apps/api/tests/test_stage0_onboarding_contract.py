@@ -9,6 +9,7 @@ from zipfile import ZipFile
 from openpyxl import load_workbook
 
 from app.onboarding.contract import CONTRACT_VERSION, MAX_CAPTURE_ROWS, ONBOARDING_CONTRACT, validate_contract
+from app.onboarding.official_contract import OFFICIAL_SHEETS, OFFICIAL_WORKBOOK_SHEETS
 from app.onboarding.xlsx import deterministic_bytes, generate_template
 
 
@@ -58,9 +59,19 @@ def test_workbook_matches_contract_and_contains_no_capture_data_or_secrets(tmp_p
     assert capture_headers.isdisjoint(FORBIDDEN_FIELD_KEYS)
 
 
-def test_official_artifact_is_current_and_generation_has_no_persistence_path() -> None:
-    official = Path(__file__).resolve().parents[3] / "docs/operations/templates/ECIP_Stage0_Restaurant_Onboarding_v1.xlsx"
-    assert official.read_bytes() == deterministic_bytes()
+def test_official_artifact_matches_approved_profile_and_generation_has_no_persistence_path() -> None:
+    official = Path(__file__).resolve().parents[3] / "docs/operations/templates/ECIP_Stage0_Restaurant_Onboarding.xlsx"
+    assert sha256(official.read_bytes()).hexdigest() == (
+        "52036dd971c570b52448ddc33c0554329616adcc4e661417f3c98f1a2e3b4fff"
+    )
+    workbook = load_workbook(official, data_only=False)
+    assert tuple(workbook.sheetnames) == OFFICIAL_WORKBOOK_SHEETS
+    assert tuple(cell.value for cell in workbook["Metadata"][1]) == (
+        "field", "value", "required", "notes",
+    )
+    for sheet in OFFICIAL_SHEETS:
+        assert tuple(cell.value for cell in workbook[sheet.name][1]) == sheet.headers
+    workbook.close()
     import app.onboarding.contract as contract_module
     import app.onboarding.xlsx as xlsx_module
     source = inspect.getsource(contract_module) + inspect.getsource(xlsx_module)
